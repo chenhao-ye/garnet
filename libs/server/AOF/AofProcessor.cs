@@ -126,6 +126,7 @@ namespace Garnet.server
             var replayContext = aofReplayCoordinator.GetReplayContext(virtualSublogIdx);
             isCheckpointStart = false;
             var shardedLog = storeWrapper.serverOptions.AofPhysicalSublogCount > 1;
+            var updateSequenceNumber = shardedLog && storeWrapper.serverOptions.AofReadWithTimestamp;
 
             // Handle transactions
             if (aofReplayCoordinator.AddOrReplayTransactionOperation(virtualSublogIdx, ptr, length, asReplica))
@@ -147,7 +148,7 @@ namespace Garnet.server
                         replayContext.inFuzzyRegion = true;
                     }
 
-                    if (shardedLog)
+                    if (updateSequenceNumber)
                     {
                         shardedHeader = *(AofShardedHeader*)ptr;
                         storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, shardedHeader.sequenceNumber);
@@ -209,7 +210,7 @@ namespace Garnet.server
                 case AofEntryType.MainStoreStreamingCheckpointEndCommit:
                 case AofEntryType.ObjectStoreStreamingCheckpointEndCommit:
                     Debug.Assert(storeWrapper.serverOptions.ReplicaDisklessSync);
-                    if (shardedLog)
+                    if (updateSequenceNumber)
                     {
                         shardedHeader = *(AofShardedHeader*)ptr;
                         storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, shardedHeader.sequenceNumber);
@@ -267,47 +268,47 @@ namespace Garnet.server
             var bufferPtr = (byte*)Unsafe.AsPointer(ref replayContext.objectOutputBuffer[0]);
             var bufferLength = replayContext.objectOutputBuffer.Length;
 
-            var isSharded = storeWrapper.serverOptions.AofPhysicalSublogCount > 1;
+            var needUpdateSequenceNumber = storeWrapper.serverOptions.AofPhysicalSublogCount > 1 && storeWrapper.serverOptions.AofReadWithTimestamp;
             switch (header.opType)
             {
                 case AofEntryType.StoreUpsert:
-                    if (isSharded) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     StoreUpsert(stringContext, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.StoreRMW:
-                    if (isSharded) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     StoreRMW(stringContext, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.StoreDelete:
-                    if (isSharded) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     StoreDelete(stringContext, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.ObjectStoreRMW:
-                    if (isSharded) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     ObjectStoreRMW(objectContext, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.ObjectStoreUpsert:
-                    if (isSharded) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     ObjectStoreUpsert(objectContext, storeWrapper.GarnetObjectSerializer, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.ObjectStoreDelete:
-                    if (isSharded) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     ObjectStoreDelete(objectContext, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.UnifiedStoreRMW:
-                    if (isSharded) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     UnifiedStoreRMW(unifiedContext, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.UnifiedStoreStringUpsert:
-                    if (isSharded) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     UnifiedStoreStringUpsert(unifiedContext, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.UnifiedStoreObjectUpsert:
-                    if (isSharded) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     UnifiedStoreObjectUpsert(unifiedContext, storeWrapper.GarnetObjectSerializer, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.UnifiedStoreDelete:
-                    if (isSharded) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     UnifiedStoreDelete(unifiedContext, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.StoredProcedure:

@@ -604,7 +604,7 @@ namespace Garnet.cluster
         /// </summary>
         public void StartAdvanceTimeBackgroundTask()
         {
-            if (clusterProvider.serverOptions.AofPhysicalSublogCount > 1)
+            if (clusterProvider.serverOptions.AofPhysicalSublogCount > 1 && clusterProvider.serverOptions.AofReadWithTimestamp)
             {
                 if (!clusterProvider.storeWrapper.TaskManager.RegisterAndRun(TaskType.AdvanceTimeReplicaTask, (token) => AdvanceTimeBackground(token)))
                 {
