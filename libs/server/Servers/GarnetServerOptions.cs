@@ -97,6 +97,12 @@ namespace Garnet.server
         public int AofTailWitnessFreq = 100;
 
         /// <summary>
+        /// When true, use the Timestamp (prefix-consistent) read protocol on replicas.
+        /// When false, use the Snapshot read protocol. Only applies when MultiLog is enabled.
+        /// </summary>
+        public bool AofReadWithTimestamp = true;
+
+        /// <summary>
         /// Subscriber (safe tail address) refresh frequency in milliseconds (for pub-sub). 0 = auto refresh after every enqueue.
         /// </summary>
         public int SubscriberRefreshFrequencyMs = 0;

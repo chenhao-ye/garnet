@@ -70,6 +70,7 @@ namespace Garnet.server
         /// <param name="key"></param>
         public void ValidateKeySequenceNumber(PinnedSpanByte key)
         {
+            if (!storeWrapper.serverOptions.AofReadWithTimestamp) return;
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(consistentReadCts.Token);
             timeoutCts.CancelAfter(storeWrapper.serverOptions.ReplicaSyncTimeout);
             storeWrapper.appendOnlyFile.readConsistencyManager.ConsistentReadKeyPrepare(key, ref replicaReadContext, timeoutCts.Token);
@@ -79,6 +80,9 @@ namespace Garnet.server
         /// Consistent read key update callback
         /// </summary>
         public void UpdateKeySequenceNumber()
-            => storeWrapper.appendOnlyFile.readConsistencyManager.ConsistentReadSequenceNumberUpdate(ref replicaReadContext);
+        {
+            if (!storeWrapper.serverOptions.AofReadWithTimestamp) return;
+            storeWrapper.appendOnlyFile.readConsistencyManager.ConsistentReadSequenceNumberUpdate(ref replicaReadContext);
+        }
     }
 }

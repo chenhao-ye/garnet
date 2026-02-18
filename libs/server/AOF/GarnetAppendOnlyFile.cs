@@ -22,8 +22,15 @@ namespace Garnet.server
         /// <summary>
         /// Ensures prefix-consistent reads when the Garnet instance
         /// operates with multiple physical sublogs.
+        /// Only used if <see cref="GarnetServerOptions.AofReadWithTimestamp"/> is <c>true</c>.
         /// </summary>
         public ReadConsistencyManager readConsistencyManager = null;
+
+        /// <summary>
+        /// Alternative way to implement prefix-read by reading a snapshot.
+        /// Only used if <see cref="GarnetServerOptions.AofReadWithTimestamp"/> is <c>false</c>.
+        /// </summary>
+        public ReadSnapshotManager readSnapshotManager = null;
 
         /// <summary>
         /// Used to generate monotonically increasing sequence numbers for each enqueue operation
@@ -99,9 +106,18 @@ namespace Garnet.server
         {
             // Create manager only if sharded log is enabled
             if (!serverOptions.MultiLogEnabled) return;
-            var currentVersion = readConsistencyManager?.CurrentVersion ?? 0L;
-            var _readConsistencyManager = new ReadConsistencyManager(currentVersion + 1, this, serverOptions);
-            _ = Interlocked.CompareExchange(ref readConsistencyManager, _readConsistencyManager, readConsistencyManager);
+            if (serverOptions.AofReadWithTimestamp)
+            {
+                var currentVersion = readConsistencyManager?.CurrentVersion ?? 0L;
+                var _readConsistencyManager = new ReadConsistencyManager(currentVersion + 1, this, serverOptions);
+                _ = Interlocked.CompareExchange(ref readConsistencyManager, _readConsistencyManager, readConsistencyManager);
+            }
+            else
+            {
+                var currentVersion = readSnapshotManager?.CurrentVersion ?? 0L;
+                var _readSnapshotManager = new ReadSnapshotManager(currentVersion + 1, this, serverOptions);
+                _ = Interlocked.CompareExchange(ref readSnapshotManager, _readSnapshotManager, readSnapshotManager);
+            }
         }
 
         /// <summary>
