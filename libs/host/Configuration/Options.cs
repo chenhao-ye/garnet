@@ -219,6 +219,10 @@ namespace Garnet
         [Option("aof-read-protocol", Required = false, HelpText = "Read consistency protocol used on replicas when MultiLog AOF is enabled. Value options: \"timestamp\" (default), \"snapshot\".")]
         public string AofReadProtocol { get; set; }
 
+        [IntRangeValidation(0, int.MaxValue)]
+        [Option("aof-snapshot-freq", Required = false, HelpText = "Frequency in milliseconds at which a snapshot of the AOF read state is taken on replicas. Only used with AofReadProtocol is snapshot.")]
+        public int AofSnapshotFreq { get; set; }
+
         [IntRangeValidation(-1, int.MaxValue)]
         [Option("aof-commit-freq", Required = false, HelpText = "Write ahead logging (append-only file) commit issue frequency in milliseconds. 0 = issue an immediate commit per operation, -1 = manually issue commits using COMMITAOF command")]
         public int CommitFrequencyMs { get; set; }
@@ -843,6 +847,7 @@ namespace Garnet
                 AofReplayTaskCount = AofReplayTaskCount,
                 AofTailWitnessFreq = AofTailWitnessFreq,
                 AofReadWithTimestamp = string.IsNullOrEmpty(AofReadProtocol) || AofReadProtocol.Equals("timestamp", StringComparison.OrdinalIgnoreCase),
+                AofSnapshotFreq = AofSnapshotFreq,
                 AofReplicationRefreshFrequencyMs = AofReplicationRefreshFrequencyMs,
                 CommitFrequencyMs = CommitFrequencyMs,
                 WaitForCommit = WaitForCommit.GetValueOrDefault(),
