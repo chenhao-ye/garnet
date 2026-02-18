@@ -13,10 +13,13 @@ namespace Tsavorite.core
     /// </summary>
     /// <param name="ValidateKeySequenceNumber">Callback used to implement prepare phase of the consistent read protocol</param>
     /// <param name="UpdateKeySequenceNumber">Callback used to implement update phase of the consistent read protocol</param>
-    public class ConsistentReadContextCallbacks(Action<PinnedSpanByte> ValidateKeySequenceNumber, Action UpdateKeySequenceNumber)
+    /// <param name="GetSnapshotAddress">When non-null, Read() uses IterateKeyVersions bounded by this address instead of BasicContext.Read(). Pass null for the Timestamp path.</param>
+    public class ConsistentReadContextCallbacks(Action<PinnedSpanByte> ValidateKeySequenceNumber, Action UpdateKeySequenceNumber, Func<long> GetSnapshotAddress = null)
     {
         public readonly Action<PinnedSpanByte> validateKeySequenceNumber = ValidateKeySequenceNumber;
         public readonly Action updateKeySequenceNumber = UpdateKeySequenceNumber;
+        // When non-null, Read() uses IterateKeyVersions bounded by this address instead of BasicContext.Read().
+        public readonly Func<long> getSnapshotAddress = GetSnapshotAddress;
     }
 
     /// <summary>
@@ -44,6 +47,37 @@ namespace Tsavorite.core
         /// <inheritdoc/>
         public long GetKeyHash(ReadOnlySpan<byte> key) => BasicContext.GetKeyHash(key);
 
+        private struct SnapshotVersionScanFunctions : IScanIteratorFunctions
+        {
+            private readonly long snapshotMaxAddress;
+            // Address of the most-recent record at or before the snapshot boundary
+            internal long foundAddress;
+
+            internal SnapshotVersionScanFunctions(long snapshotMaxAddress)
+            {
+                this.snapshotMaxAddress = snapshotMaxAddress;
+                foundAddress = LogAddress.kInvalidAddress;
+            }
+
+            public bool OnStart(long beginAddress, long endAddress) => true;
+
+            public bool Reader<TSourceLogRecord>(in TSourceLogRecord logRecord, RecordMetadata recordMetadata,
+                long numberOfRecords, out CursorRecordResult cursorRecordResult)
+                where TSourceLogRecord : ISourceLogRecord
+            {
+                cursorRecordResult = CursorRecordResult.Accept;
+                if (recordMetadata.Address > snapshotMaxAddress)
+                    return true;  // version is newer than snapshot; keep iterating backwards
+                // must explicitly handle tombstone here because BasicContext.ReadAtAddress does not handle tombstone
+                if (!logRecord.Info.Tombstone)
+                    foundAddress = recordMetadata.Address;
+                return false;  // found most-recent version <= snapshot; stop
+            }
+
+            public void OnStop(bool completed, long numberOfRecords) { }
+            public void OnException(Exception exception, long numberOfRecords) { }
+        }
+
         #region ITsavoriteContext/Read
 
         /// <inheritdoc/>
@@ -52,7 +86,25 @@ namespace Tsavorite.core
         {
             var callbacks = Session.functions.GetContextCallbacks();
             callbacks.validateKeySequenceNumber.Invoke(PinnedSpanByte.FromPinnedSpan(key));
-            var status = BasicContext.Read(key, ref input, ref output, userContext);
+            Status status;
+            if (callbacks.getSnapshotAddress != null)
+            {
+                var scanFn = new SnapshotVersionScanFunctions(callbacks.getSnapshotAddress());
+                Session.store.Log.IterateKeyVersions(ref scanFn, key);
+                if (scanFn.foundAddress != LogAddress.kInvalidAddress)
+                {
+                    var readOptions = default(ReadOptions);
+                    status = BasicContext.ReadAtAddress(scanFn.foundAddress, key, ref input, ref output, ref readOptions, out _, userContext);
+                }
+                else
+                {
+                    status = new Status(StatusCode.NotFound);
+                }
+            }
+            else
+            {
+                status = BasicContext.Read(key, ref input, ref output, userContext);
+            }
             if (status.Found)
                 callbacks.updateKeySequenceNumber.Invoke();
             return status;
@@ -61,7 +113,7 @@ namespace Tsavorite.core
         /// <inheritdoc/>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Status Read(ReadOnlySpan<byte> key, ref TInput input, ref TOutput output, ref ReadOptions readOptions, TContext userContext = default)
-            => Read(key, ref input, ref output, ref readOptions, userContext);
+            => Read(key, ref input, ref output, ref readOptions, out _, userContext);
 
         /// <inheritdoc/>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -103,7 +155,25 @@ namespace Tsavorite.core
         {
             var callbacks = Session.functions.GetContextCallbacks();
             callbacks.validateKeySequenceNumber.Invoke(PinnedSpanByte.FromPinnedSpan(key));
-            var status = BasicContext.Read(key, ref input, ref output, ref readOptions, out recordMetadata, userContext);
+            Status status;
+            if (callbacks.getSnapshotAddress != null)
+            {
+                var scanFn = new SnapshotVersionScanFunctions(callbacks.getSnapshotAddress());
+                Session.store.Log.IterateKeyVersions(ref scanFn, key);
+                if (scanFn.foundAddress != LogAddress.kInvalidAddress)
+                {
+                    status = BasicContext.ReadAtAddress(scanFn.foundAddress, key, ref input, ref output, ref readOptions, out recordMetadata, userContext);
+                }
+                else
+                {
+                    recordMetadata = default;
+                    status = new Status(StatusCode.NotFound);
+                }
+            }
+            else
+            {
+                status = BasicContext.Read(key, ref input, ref output, ref readOptions, out recordMetadata, userContext);
+            }
             if (status.Found)
                 callbacks.updateKeySequenceNumber.Invoke();
             return status;
