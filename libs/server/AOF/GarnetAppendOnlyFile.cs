@@ -114,8 +114,7 @@ namespace Garnet.server
             }
             else
             {
-                var currentVersion = readSnapshotManager?.CurrentVersion ?? 0L;
-                var _readSnapshotManager = new ReadSnapshotManager(currentVersion + 1, this, serverOptions);
+                var _readSnapshotManager = new ReadSnapshotManager(this, serverOptions);
                 _ = Interlocked.CompareExchange(ref readSnapshotManager, _readSnapshotManager, readSnapshotManager);
             }
         }
