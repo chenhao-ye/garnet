@@ -128,6 +128,8 @@ namespace Garnet.server
         {
             if (!serverOptions.MultiLogEnabled)
                 return;
+            if (!serverOptions.AofReadWithTimestamp)
+                return;
             var physicalSublogMaxReplayedSequenceNumber = readConsistencyManager.GetPhysicalSublogMaxReplayedSequenceNumber();
             Log.ResetPhysicalSublogMaxSequenceNumber(physicalSublogMaxReplayedSequenceNumber);
             var start = physicalSublogMaxReplayedSequenceNumber.Max();

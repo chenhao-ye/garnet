@@ -1,9 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-using System;
-using System.Threading;
-
 namespace Garnet.server
 {
     /// <summary>
@@ -20,21 +17,5 @@ namespace Garnet.server
 
         /// <inheritdoc/>
         public long CurrentVersion { get; private set; } = currentVersion;
-
-        /// <inheritdoc/>
-        public AofAddress GetPhysicalSublogMaxReplayedSequenceNumber()
-            => throw new NotImplementedException();
-
-        /// <inheritdoc/>
-        public void ConsistentReadKeyPrepare(ReadOnlySpan<byte> key, ref ReplicaReadSessionContext ctx, CancellationToken ct)
-        {
-            // No-op: snapshot protocol allows reads to proceed without blocking.
-        }
-
-        /// <inheritdoc/>
-        public void ConsistentReadSequenceNumberUpdate(ref ReplicaReadSessionContext ctx)
-        {
-            // No-op: snapshot protocol does not track per-session sequence numbers.
-        }
     }
 }
