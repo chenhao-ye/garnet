@@ -91,8 +91,7 @@ namespace Tsavorite.core
             {
                 callbacks.validateKeySequenceNumber.Invoke(PinnedSpanByte.FromPinnedSpan(key));
                 status = BasicContext.Read(key, ref input, ref output, userContext);
-                if (status.Found)
-                    callbacks.updateKeySequenceNumber.Invoke();
+                callbacks.updateKeySequenceNumber.Invoke();
             }
             else
             {
@@ -160,8 +159,7 @@ namespace Tsavorite.core
             {
                 callbacks.validateKeySequenceNumber.Invoke(PinnedSpanByte.FromPinnedSpan(key));
                 status = BasicContext.Read(key, ref input, ref output, ref readOptions, out recordMetadata, userContext);
-                if (status.Found)
-                    callbacks.updateKeySequenceNumber.Invoke();
+                callbacks.updateKeySequenceNumber.Invoke();
             }
             else
             {
