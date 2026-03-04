@@ -13,13 +13,14 @@ namespace Tsavorite.core
     /// </summary>
     /// <param name="ValidateKeySequenceNumber">Callback used to implement prepare phase of the consistent read protocol</param>
     /// <param name="UpdateKeySequenceNumber">Callback used to implement update phase of the consistent read protocol</param>
-    /// <param name="GetSnapshotAddress">When non-null, Read() uses IterateKeyVersions bounded by this address instead of BasicContext.Read(). Pass null for the Timestamp path.</param>
+    /// <param name="GetSnapshotAddress">When non-null, use the snapshot read protocol; when null, use the timestamp (prefix-consistent) read protocol.</param>
     public class ConsistentReadContextCallbacks(Action<PinnedSpanByte> ValidateKeySequenceNumber, Action UpdateKeySequenceNumber, Func<long> GetSnapshotAddress = null)
     {
         public readonly Action<PinnedSpanByte> validateKeySequenceNumber = ValidateKeySequenceNumber;
         public readonly Action updateKeySequenceNumber = UpdateKeySequenceNumber;
-        // When non-null, Read() uses IterateKeyVersions bounded by this address instead of BasicContext.Read().
         public readonly Func<long> getSnapshotAddress = GetSnapshotAddress;
+        /// <summary>When true, use timestamp-based read protocol; when false, use snapshot-based read protocol.</summary>
+        public readonly bool useTimestamp = GetSnapshotAddress is null;
     }
 
     /// <summary>
@@ -85,9 +86,15 @@ namespace Tsavorite.core
         public Status Read(ReadOnlySpan<byte> key, ref TInput input, ref TOutput output, TContext userContext = default)
         {
             var callbacks = Session.functions.GetContextCallbacks();
-            callbacks.validateKeySequenceNumber.Invoke(PinnedSpanByte.FromPinnedSpan(key));
             Status status;
-            if (callbacks.getSnapshotAddress != null)
+            if (callbacks.useTimestamp)
+            {
+                callbacks.validateKeySequenceNumber.Invoke(PinnedSpanByte.FromPinnedSpan(key));
+                status = BasicContext.Read(key, ref input, ref output, userContext);
+                if (status.Found)
+                    callbacks.updateKeySequenceNumber.Invoke();
+            }
+            else
             {
                 var scanFn = new SnapshotVersionScanFunctions(callbacks.getSnapshotAddress());
                 Session.store.Log.IterateKeyVersions(ref scanFn, key);
@@ -101,12 +108,6 @@ namespace Tsavorite.core
                     status = new Status(StatusCode.NotFound);
                 }
             }
-            else
-            {
-                status = BasicContext.Read(key, ref input, ref output, userContext);
-            }
-            if (status.Found)
-                callbacks.updateKeySequenceNumber.Invoke();
             return status;
         }
 
@@ -154,9 +155,15 @@ namespace Tsavorite.core
         public Status Read(ReadOnlySpan<byte> key, ref TInput input, ref TOutput output, ref ReadOptions readOptions, out RecordMetadata recordMetadata, TContext userContext = default)
         {
             var callbacks = Session.functions.GetContextCallbacks();
-            callbacks.validateKeySequenceNumber.Invoke(PinnedSpanByte.FromPinnedSpan(key));
             Status status;
-            if (callbacks.getSnapshotAddress != null)
+            if (callbacks.useTimestamp)
+            {
+                callbacks.validateKeySequenceNumber.Invoke(PinnedSpanByte.FromPinnedSpan(key));
+                status = BasicContext.Read(key, ref input, ref output, ref readOptions, out recordMetadata, userContext);
+                if (status.Found)
+                    callbacks.updateKeySequenceNumber.Invoke();
+            }
+            else
             {
                 var scanFn = new SnapshotVersionScanFunctions(callbacks.getSnapshotAddress());
                 Session.store.Log.IterateKeyVersions(ref scanFn, key);
@@ -170,12 +177,6 @@ namespace Tsavorite.core
                     status = new Status(StatusCode.NotFound);
                 }
             }
-            else
-            {
-                status = BasicContext.Read(key, ref input, ref output, ref readOptions, out recordMetadata, userContext);
-            }
-            if (status.Found)
-                callbacks.updateKeySequenceNumber.Invoke();
             return status;
         }
 
@@ -210,7 +211,8 @@ namespace Tsavorite.core
         {
             var callbacks = Session.functions.GetContextCallbacks();
             var status = BasicContext.CompletePending(wait, spinWaitForCommit);
-            callbacks.updateKeySequenceNumber.Invoke();
+            if (callbacks.useTimestamp)
+                callbacks.updateKeySequenceNumber.Invoke();
             return status;
         }
 
@@ -219,7 +221,8 @@ namespace Tsavorite.core
         {
             var callbacks = Session.functions.GetContextCallbacks();
             var status = BasicContext.CompletePendingWithOutputs(out completedOutputs, wait, spinWaitForCommit);
-            callbacks.updateKeySequenceNumber.Invoke();
+            if (callbacks.useTimestamp)
+                callbacks.updateKeySequenceNumber.Invoke();
             return status;
         }
 
@@ -228,7 +231,8 @@ namespace Tsavorite.core
         {
             var callbacks = Session.functions.GetContextCallbacks();
             await BasicContext.CompletePendingAsync(waitForCommit, token);
-            callbacks.updateKeySequenceNumber.Invoke();
+            if (callbacks.useTimestamp)
+                callbacks.updateKeySequenceNumber.Invoke();
         }
 
         /// <inheritdoc/>
@@ -236,7 +240,8 @@ namespace Tsavorite.core
         {
             var callbacks = Session.functions.GetContextCallbacks();
             var status = BasicContext.CompletePendingWithOutputsAsync(waitForCommit, token);
-            callbacks.updateKeySequenceNumber.Invoke();
+            if (callbacks.useTimestamp)
+                callbacks.updateKeySequenceNumber.Invoke();
             return await status;
         }
 

@@ -1566,10 +1566,12 @@ namespace Garnet.server
                 sessionMetrics,
                 LatencyMetrics,
                 dbId: dbId, // NOTE: only for cluster need to retrieve default database
-                consistentReadContextCallbacks: storeWrapper.serverOptions.AofReadWithTimestamp
-                    ? new(ValidateKeySequenceNumber, UpdateKeySequenceNumber)
-                    : new(ValidateKeySequenceNumber, UpdateKeySequenceNumber,
-                          () => storeWrapper.appendOnlyFile.readSnapshotManager.GetSnapshotAddress()),
+                consistentReadContextCallbacks: new(
+                    ValidateKeySequenceNumber,
+                    UpdateKeySequenceNumber,
+                    storeWrapper.serverOptions.AofReadWithTimestamp
+                        ? null
+                        : () => storeWrapper.appendOnlyFile.readSnapshotManager.GetSnapshotAddress()),
                 logger,
                 respProtocolVersion);
 

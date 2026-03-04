@@ -70,7 +70,7 @@ namespace Garnet.server
         /// <param name="key"></param>
         public void ValidateKeySequenceNumber(PinnedSpanByte key)
         {
-            if (!storeWrapper.serverOptions.AofReadWithTimestamp) return;
+            Debug.Assert(storeWrapper.serverOptions.AofReadWithTimestamp, "ValidateKeySequenceNumber must only be called in the timestamp read protocol");
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(consistentReadCts.Token);
             timeoutCts.CancelAfter(storeWrapper.serverOptions.ReplicaSyncTimeout);
             storeWrapper.appendOnlyFile.readConsistencyManager.ConsistentReadKeyPrepare(key, ref replicaReadContext, timeoutCts.Token);
@@ -81,7 +81,7 @@ namespace Garnet.server
         /// </summary>
         public void UpdateKeySequenceNumber()
         {
-            if (!storeWrapper.serverOptions.AofReadWithTimestamp) return;
+            Debug.Assert(storeWrapper.serverOptions.AofReadWithTimestamp, "UpdateKeySequenceNumber must only be called in the timestamp read protocol");
             storeWrapper.appendOnlyFile.readConsistencyManager.ConsistentReadSequenceNumberUpdate(ref replicaReadContext);
         }
     }
