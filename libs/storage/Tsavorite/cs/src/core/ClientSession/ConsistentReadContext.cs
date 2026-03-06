@@ -14,7 +14,7 @@ namespace Tsavorite.core
     /// <param name="ValidateKeySequenceNumber">Callback used to implement prepare phase of the consistent read protocol</param>
     /// <param name="UpdateKeySequenceNumber">Callback used to implement update phase of the consistent read protocol</param>
     /// <param name="GetSnapshotAddress">When non-null, use the snapshot read protocol; when null, use the timestamp (prefix-consistent) read protocol.</param>
-    public class ConsistentReadContextCallbacks(Action<PinnedSpanByte> ValidateKeySequenceNumber, Action UpdateKeySequenceNumber, Func<long> GetSnapshotAddress = null)
+    public class ConsistentReadContextCallbacks(Action<PinnedSpanByte> ValidateKeySequenceNumber, Action UpdateKeySequenceNumber, Func<long> GetSnapshotAddress)
     {
         public readonly Action<PinnedSpanByte> validateKeySequenceNumber = ValidateKeySequenceNumber;
         public readonly Action updateKeySequenceNumber = UpdateKeySequenceNumber;
