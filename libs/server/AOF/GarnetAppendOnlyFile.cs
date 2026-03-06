@@ -83,7 +83,11 @@ namespace Garnet.server
         /// <summary>
         /// Dispose append only file
         /// </summary>
-        public void Dispose() => Log.Dispose();
+        public void Dispose()
+        {
+            readSnapshotManager?.Dispose();
+            Log.Dispose();
+        }
 
         /// <summary>
         /// Get a sequence number that is larger than maximum sequence number already assigned.
@@ -102,7 +106,7 @@ namespace Garnet.server
         /// Create or update existing timestamp manager
         /// NOTE: We need to create a new version for consistency manager in order for running sessions to update their context on the next read
         /// </summary>
-        public void CreateOrUpdateKeySequenceManager()
+        public void CreateOrUpdateKeySequenceManager(StoreWrapper storeWrapper = null)
         {
             // Create manager only if sharded log is enabled
             if (!serverOptions.MultiLogEnabled) return;
@@ -114,8 +118,9 @@ namespace Garnet.server
             }
             else
             {
-                var _readSnapshotManager = new ReadSnapshotManager(this, serverOptions);
-                _ = Interlocked.CompareExchange(ref readSnapshotManager, _readSnapshotManager, readSnapshotManager);
+                var _readSnapshotManager = new ReadSnapshotManager(serverOptions, storeWrapper);
+                var old = Interlocked.CompareExchange(ref readSnapshotManager, _readSnapshotManager, readSnapshotManager);
+                old?.Dispose();
             }
         }
 

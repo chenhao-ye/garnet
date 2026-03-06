@@ -42,7 +42,7 @@ namespace Garnet.cluster
                     return false;
 
                 // Create or update timestamp manager for sharded log if needed
-                storeWrapper.appendOnlyFile.CreateOrUpdateKeySequenceManager();
+                storeWrapper.appendOnlyFile.CreateOrUpdateKeySequenceManager(storeWrapper);
 
                 // Wait for threads to agree
                 session?.UnsafeBumpAndWaitForEpochTransition();
