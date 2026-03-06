@@ -53,6 +53,8 @@ namespace Garnet.server
 
         public readonly ILogger logger;
 
+        internal StoreWrapper storeWrapper;
+
         /// <summary>
         /// Calculate virtual sublog index provided physical sublog index and replay task index
         /// </summary>
@@ -106,7 +108,7 @@ namespace Garnet.server
         /// Create or update existing timestamp manager
         /// NOTE: We need to create a new version for consistency manager in order for running sessions to update their context on the next read
         /// </summary>
-        public void CreateOrUpdateKeySequenceManager(StoreWrapper storeWrapper = null)
+        public void CreateOrUpdateKeySequenceManager()
         {
             // Create manager only if sharded log is enabled
             if (!serverOptions.MultiLogEnabled) return;

@@ -27,7 +27,7 @@ namespace Garnet.server
             var total_number_of_replayed_records = 0L;
             try
             {
-                storeWrapper.appendOnlyFile.CreateOrUpdateKeySequenceManager(storeWrapper);
+                storeWrapper.appendOnlyFile.CreateOrUpdateKeySequenceManager();
                 logger?.LogInformation("Begin AOF recovery for DB ID: {id}", db.Id);
                 return RecoverReplay(db, untilAddress);
             }

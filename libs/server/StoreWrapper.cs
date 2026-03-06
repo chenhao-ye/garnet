@@ -204,6 +204,8 @@ namespace Garnet.server
             this.customCommandManager = customCommandManager;
             this.loggerFactory = loggerFactory;
             this.databaseManager = databaseManager ?? DatabaseManagerFactory.CreateDatabaseManager(serverOptions, createDatabaseDelegate, this);
+            if (this.appendOnlyFile != null)
+                this.appendOnlyFile.storeWrapper = this;
             this.monitor = serverOptions.MetricsSamplingFrequency > 0
                 ? new GarnetServerMonitor(this, serverOptions, servers,
                     loggerFactory?.CreateLogger("GarnetServerMonitor"))
