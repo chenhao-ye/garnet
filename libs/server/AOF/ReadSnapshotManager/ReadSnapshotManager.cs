@@ -17,18 +17,22 @@ namespace Garnet.server
         readonly GarnetServerOptions serverOptions;
         readonly StoreWrapper storeWrapper;
         readonly CancellationTokenSource cts = new();
-        readonly Task backgroundTask;
+        Task backgroundTask;
 
         private long snapshotAddress = long.MaxValue;
-        private long lastSnapshotTail = long.MinValue;
 
         /// <param name="serverOptions">Server configuration options.</param>
-        /// <param name="storeWrapper">When non-null, the background snapshot task is started immediately.</param>
-        public ReadSnapshotManager(GarnetServerOptions serverOptions, StoreWrapper storeWrapper = null)
+        /// <param name="storeWrapper">Store wrapper used by the background snapshot task.</param>
+        public ReadSnapshotManager(GarnetServerOptions serverOptions, StoreWrapper storeWrapper)
         {
             this.serverOptions = serverOptions;
             this.storeWrapper = storeWrapper;
-            if (storeWrapper != null)
+        }
+
+        /// <summary>Starts the background snapshot task. No-op if already started.</summary>
+        internal void Start()
+        {
+            if (backgroundTask == null)
                 backgroundTask = Task.Run(RunAsync);
         }
 
@@ -38,7 +42,7 @@ namespace Garnet.server
         /// <summary>Updates the snapshot address boundary used for snapshot reads.</summary>
         internal void UpdateSnapshotAddress(long newAddress) => Interlocked.Exchange(ref snapshotAddress, newAddress);
 
-        async Task RunAsync()
+        private async Task RunAsync()
         {
             while (!cts.IsCancellationRequested)
             {
@@ -49,15 +53,12 @@ namespace Garnet.server
                 catch (OperationCanceledException) { break; }
 
                 var currentTail = storeWrapper.store.Log.TailAddress;
-                if (currentTail == lastSnapshotTail)
+                if (currentTail == Interlocked.Read(ref snapshotAddress))
                     continue;
 
                 var (success, _) = await storeWrapper.store.TakeHybridLogCheckpointAsync(CheckpointType.FoldOver, cancellationToken: cts.Token);
                 if (success)
-                {
                     UpdateSnapshotAddress(currentTail);
-                    lastSnapshotTail = currentTail;
-                }
             }
         }
 

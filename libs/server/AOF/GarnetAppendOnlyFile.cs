@@ -104,10 +104,16 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Create or update existing timestamp manager
-        /// NOTE: We need to create a new version for consistency manager in order for running sessions to update their context on the next read
+        /// Create or update the key sequence manager (<see cref="ReadConsistencyManager"/> or <see cref="ReadSnapshotManager"/>
+        /// depending on <see cref="GarnetServerOptions.AofReadWithTimestamp"/>).
+        /// A new instance is always created so that running sessions reset their context on the next read.
         /// </summary>
-        public void CreateOrUpdateKeySequenceManager()
+        /// <param name="startNow">
+        /// When <c>true</c> (default), the new manager is activated immediately after installation.
+        /// Pass <c>false</c> during <see cref="StoreWrapper"/> construction to defer activation until
+        /// <see cref="StoreWrapper.Start"/> is called and the server is fully initialized.
+        /// </param>
+        public void CreateOrUpdateKeySequenceManager(bool startNow = true)
         {
             // Create manager only if sharded log is enabled
             if (!serverOptions.MultiLogEnabled) return;
@@ -122,6 +128,7 @@ namespace Garnet.server
                 var _readSnapshotManager = new ReadSnapshotManager(serverOptions, storeWrapper);
                 var old = Interlocked.CompareExchange(ref readSnapshotManager, _readSnapshotManager, readSnapshotManager);
                 old?.Dispose();
+                if (startNow) _readSnapshotManager.Start();
             }
         }
 
