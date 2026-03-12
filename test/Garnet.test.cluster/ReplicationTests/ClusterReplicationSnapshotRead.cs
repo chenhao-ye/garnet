@@ -14,7 +14,7 @@ namespace Garnet.test.cluster
     [NonParallelizable]
     public class ClusterReplicationSnapshotRead : AllureTestBase
     {
-        const int TestSublogCount = 2;
+        const int TestReplayTaskCount = 2;
 
         ClusterTestContext context;
 
@@ -45,7 +45,8 @@ namespace Garnet.test.cluster
             context.CreateInstances(2,
                 disableObjects: true,
                 enableAOF: true,
-                sublogCount: TestSublogCount,
+                sublogCount: 1,
+                replayTaskCount: TestReplayTaskCount,
                 aofReadWithTimestamp: false,
                 aofSnapshotFreq: 5);
             context.CreateConnection();
@@ -80,7 +81,8 @@ namespace Garnet.test.cluster
             context.CreateInstances(2,
                 disableObjects: true,
                 enableAOF: true,
-                sublogCount: TestSublogCount,
+                sublogCount: 1,
+                replayTaskCount: TestReplayTaskCount,
                 aofReadWithTimestamp: false,
                 aofSnapshotFreq: snapshotFreqMs);
             context.CreateConnection();
