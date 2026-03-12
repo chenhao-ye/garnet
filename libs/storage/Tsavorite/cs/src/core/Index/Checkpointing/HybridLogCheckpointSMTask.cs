@@ -62,6 +62,7 @@ namespace Tsavorite.core
                     break;
 
                 case Phase.REST:
+                    store._lastHybridLogFinalLogicalAddress = store._hybridLogCheckpoint.info.finalLogicalAddress;
                     store.CleanupLogCheckpoint();
                     store._hybridLogCheckpoint.Dispose();
                     var nextTcs = new TaskCompletionSource<LinkedCheckpointInfo>(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -355,6 +355,13 @@ namespace Tsavorite.core
         }
 
         /// <summary>
+        /// Final logical address of the last completed hybrid log checkpoint.
+        /// This is the tail address captured atomically under epoch during the checkpoint's WAIT_FLUSH phase.
+        /// Returns 0 if no checkpoint has completed yet.
+        /// </summary>
+        public long LastHybridLogFinalLogicalAddress => Interlocked.Read(ref _lastHybridLogFinalLogicalAddress);
+
+        /// <summary>
         /// Recover from the latest valid checkpoint (blocking operation)
         /// </summary>
         /// <param name="numPagesToPreload">Number of pages to preload into memory (beyond what needs to be read for recovery)</param>

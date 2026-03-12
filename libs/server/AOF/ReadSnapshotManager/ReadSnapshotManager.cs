@@ -58,7 +58,7 @@ namespace Garnet.server
 
                 var (success, _) = await storeWrapper.store.TakeHybridLogCheckpointAsync(CheckpointType.FoldOver, cancellationToken: cts.Token);
                 if (success)
-                    UpdateSnapshotAddress(currentTail);
+                    UpdateSnapshotAddress(storeWrapper.store.LastHybridLogFinalLogicalAddress);
             }
         }
 

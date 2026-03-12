@@ -37,6 +37,7 @@ namespace Tsavorite.core
         internal Guid _hybridLogCheckpointToken;
         internal HybridLogCheckpointInfo _hybridLogCheckpoint;
         internal HybridLogCheckpointInfo _lastSnapshotCheckpoint;
+        internal long _lastHybridLogFinalLogicalAddress;
 
         internal Task<LinkedCheckpointInfo> CheckpointTask => checkpointTcs.Task;
 
