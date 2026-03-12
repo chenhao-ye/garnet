@@ -110,6 +110,9 @@ namespace Garnet.cluster
 
                 // Advertise new replicaton offset after replay completes
                 replicationManager.SetSublogReplicationOffset(physicalSublogIdx, nextAddress);
+
+                // Periodically try to take a new snapshot (will skip if snapshot read not enabled)
+                appendOnlyFile.TryAdvanceSnapshotAfterReplay();
             }
         }
 
@@ -167,6 +170,8 @@ namespace Garnet.cluster
                 logger?.LogError("ReplicaReplayTask.Consume NextAddress Mismatch sublogIdx: {sublogIdx}; recordLength:{recordLength}; currentAddress:{currentAddress}; nextAddress:{nextAddress}; replicationOffset:{ReplicationOffset}", physicalSublogIdx, recordLength, currentAddress, nextAddress, replicationManager.ReplicationOffset[physicalSublogIdx]);
                 throw new GarnetException("Failed validating integrity of replay", LogLevel.Warning, clientResponse: false);
             }
+
+            appendOnlyFile.TryAdvanceSnapshotAfterReplay();
         }
 
         public void Throttle() { }
@@ -189,6 +194,12 @@ namespace Garnet.cluster
             {
                 replayIterator = appendOnlyFile.Log.ScanSingle(physicalSublogIdx, startAddress, long.MaxValue, scanUncommitted: true, recover: false, logger: logger);
                 _ = Task.Run(BackgroundReplayTask);
+
+                // One background snapshot ticker per replica (sublog 0 is elected).
+                // Ensures snapshotAddress advances even when no new AOF data arrives,
+                // so writes that do not trigger a consume-path snapshot are still captured.
+                if (physicalSublogIdx == 0)
+                    _ = Task.Run(BackgroundSnapshotTask);
             }
 
             async Task BackgroundReplayTask()
@@ -216,6 +227,23 @@ namespace Garnet.cluster
                 {
                     if (readLock)
                         SuspendReplay();
+                }
+            }
+
+            async Task BackgroundSnapshotTask()
+            {
+                try
+                {
+                    while (!cts.IsCancellationRequested)
+                    {
+                        await Task.Delay(serverOptions.AofSnapshotFreq, cts.Token);
+                        appendOnlyFile.TryAdvanceSnapshotAfterReplay();
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning(ex, "An exception occurred at ReplicaReplayDriver.BackgroundSnapshotTask - terminating");
                 }
             }
         }

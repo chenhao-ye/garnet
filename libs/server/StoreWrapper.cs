@@ -207,7 +207,7 @@ namespace Garnet.server
             if (this.appendOnlyFile != null)
             {
                 this.appendOnlyFile.storeWrapper = this;
-                this.appendOnlyFile.CreateOrUpdateKeySequenceManager(startNow: false);
+                this.appendOnlyFile.CreateOrUpdateKeySequenceManager();
             }
             this.monitor = serverOptions.MetricsSamplingFrequency > 0
                 ? new GarnetServerMonitor(this, serverOptions, servers,
@@ -817,8 +817,6 @@ namespace Garnet.server
             monitor?.Start();
             clusterProvider?.Start();
             luaTimeoutManager?.Start();
-            appendOnlyFile?.readSnapshotManager?.Start();
-
             // Start background maintenance tasks that should run only on the primary
             if (clusterProvider == null || clusterProvider.IsPrimary())
             {

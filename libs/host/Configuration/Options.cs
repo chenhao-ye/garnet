@@ -216,7 +216,7 @@ namespace Garnet
         [Option("aof-tail-witness-freq", Required = false, HelpText = "Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).")]
         public int AofTailWitnessFreq { get; set; }
 
-        [Option("aof-read-protocol", Required = false, HelpText = "Read consistency protocol used on replicas when MultiLog AOF is enabled. Value options: \"timestamp\" (default), \"snapshot\".")]
+        [Option("aof-read-protocol", Required = false, HelpText = "Read consistency protocol used on replicas when MultiLog AOF is enabled (only 1 physical log is supported!). Value options: \"timestamp\" (default), \"snapshot\".")]
         public string AofReadProtocol { get; set; }
 
         [IntRangeValidation(0, int.MaxValue)]
@@ -792,6 +792,9 @@ namespace Garnet
 
             if (AofPhysicalSublogCount > 1 && !EnableFastCommit.GetValueOrDefault())
                 throw new Exception("Cannot use sharded-log without FastCommit!");
+
+            if (!string.IsNullOrEmpty(AofReadProtocol) && AofReadProtocol.Equals("snapshot", StringComparison.OrdinalIgnoreCase) && AofPhysicalSublogCount > 1)
+                throw new Exception("Cannot use snapshot read protocol with multiple physical AOF sublogs (AofPhysicalSublogCount must be 1 when AofReadProtocol is snapshot).");
 
             Func<INamedDeviceFactoryCreator> azureFactoryCreator = () =>
             {
