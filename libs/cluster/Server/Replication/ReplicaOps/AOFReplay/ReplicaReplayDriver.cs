@@ -172,8 +172,6 @@ namespace Garnet.cluster
                 logger?.LogError("ReplicaReplayTask.Consume NextAddress Mismatch sublogIdx: {sublogIdx}; recordLength:{recordLength}; currentAddress:{currentAddress}; nextAddress:{nextAddress}; replicationOffset:{ReplicationOffset}", physicalSublogIdx, recordLength, currentAddress, nextAddress, replicationManager.ReplicationOffset[physicalSublogIdx]);
                 throw new GarnetException("Failed validating integrity of replay", LogLevel.Warning, clientResponse: false);
             }
-
-            storeWrapper.TryAdvanceSnapshotAfterReplay();
         }
 
         public void Throttle() { }
