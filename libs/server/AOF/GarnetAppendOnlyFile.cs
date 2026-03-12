@@ -68,6 +68,7 @@ namespace Garnet.server
             this.serverOptions = serverOptions;
             InvalidAofAddress = AofAddress.Create(length: serverOptions.AofPhysicalSublogCount, value: -1);
             MaxAofAddress = AofAddress.Create(length: serverOptions.AofPhysicalSublogCount, value: long.MaxValue);
+            CreateOrUpdateKeySequenceManager();
             if (serverOptions.MultiLogEnabled)
                 seqNumGen = new SequenceNumberGenerator(0);
             this.logger = logger;
@@ -76,10 +77,7 @@ namespace Garnet.server
         /// <summary>
         /// Dispose append only file
         /// </summary>
-        public void Dispose()
-        {
-            Log.Dispose();
-        }
+        public void Dispose() => Log.Dispose();
 
         /// <summary>
         /// Get a sequence number that is larger than maximum sequence number already assigned.
@@ -95,12 +93,12 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Creates or replaces the <see cref="ReadConsistencyManager"/>, bumping its version so
-        /// in-flight sessions reset on their next read.
+        /// Create or update existing timestamp manager
+        /// NOTE: We need to create a new version for consistency manager in order for running sessions to update their context on the next read
         /// Only active when <see cref="GarnetServerOptions.AofReadWithTimestamp"/> is <c>true</c>
         /// and <see cref="GarnetServerOptions.MultiLogEnabled"/> is <c>true</c>.
         /// </summary>
-        public void CreateOrUpdateReadConsistencyManager()
+        public void CreateOrUpdateKeySequenceManager()
         {
             if (!serverOptions.MultiLogEnabled || !serverOptions.AofReadWithTimestamp) return;
             var currentVersion = readConsistencyManager?.CurrentVersion ?? 0L;
