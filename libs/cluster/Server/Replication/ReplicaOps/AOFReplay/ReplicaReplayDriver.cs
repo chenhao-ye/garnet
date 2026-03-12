@@ -22,6 +22,7 @@ namespace Garnet.cluster
         internal readonly int physicalSublogIdx;
         readonly GarnetServerOptions serverOptions;
         readonly GarnetAppendOnlyFile appendOnlyFile;
+        readonly StoreWrapper storeWrapper;
         readonly ReplicationManager replicationManager;
         readonly CancellationTokenSource cts;
         readonly INetworkSender respSessionNetworkSender;
@@ -46,7 +47,8 @@ namespace Garnet.cluster
             this.physicalSublogIdx = physicalSublogIdx;
             this.respSessionNetworkSender = respSessionNetworkSender;
             serverOptions = clusterProvider.serverOptions;
-            appendOnlyFile = clusterProvider.storeWrapper.appendOnlyFile;
+            storeWrapper = clusterProvider.storeWrapper;
+            appendOnlyFile = storeWrapper.appendOnlyFile;
             replicationManager = clusterProvider.replicationManager;
             replayIterator = null;
             physicalSublog = appendOnlyFile.Log.GetSubLog(physicalSublogIdx);
@@ -112,7 +114,7 @@ namespace Garnet.cluster
                 replicationManager.SetSublogReplicationOffset(physicalSublogIdx, nextAddress);
 
                 // Periodically try to take a new snapshot (will skip if snapshot read not enabled)
-                appendOnlyFile.TryAdvanceSnapshotAfterReplay();
+                storeWrapper.TryAdvanceSnapshotAfterReplay();
             }
         }
 
@@ -171,7 +173,7 @@ namespace Garnet.cluster
                 throw new GarnetException("Failed validating integrity of replay", LogLevel.Warning, clientResponse: false);
             }
 
-            appendOnlyFile.TryAdvanceSnapshotAfterReplay();
+            storeWrapper.TryAdvanceSnapshotAfterReplay();
         }
 
         public void Throttle() { }
@@ -237,7 +239,7 @@ namespace Garnet.cluster
                     while (!cts.IsCancellationRequested)
                     {
                         await Task.Delay(serverOptions.AofSnapshotFreq, cts.Token);
-                        appendOnlyFile.TryAdvanceSnapshotAfterReplay();
+                        storeWrapper.TryAdvanceSnapshotAfterReplay();
                     }
                 }
                 catch (OperationCanceledException) { }

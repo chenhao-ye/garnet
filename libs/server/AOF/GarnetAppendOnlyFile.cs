@@ -26,12 +26,6 @@ namespace Garnet.server
         /// </summary>
         public ReadConsistencyManager readConsistencyManager = null;
 
-        // snapshotAddress: read by ConsistentReadContext; long.MaxValue = read latest (initial state)
-        private long snapshotAddress = long.MaxValue;
-        private long lastSnapshotTickMs = 0;
-        // Ensures only one checkpoint runs at a time (replay thread + background snapshot task).
-        private readonly SemaphoreSlim snapshotMutex = new(1, 1);
-
         /// <summary>
         /// Used to generate monotonically increasing sequence numbers for each enqueue operation
         /// when the Garnet instance operates with multiple physical sublogs.
@@ -52,8 +46,6 @@ namespace Garnet.server
         public readonly AofAddress MaxAofAddress;
 
         public readonly ILogger logger;
-
-        internal StoreWrapper storeWrapper;
 
         /// <summary>
         /// Calculate virtual sublog index provided physical sublog index and replay task index
@@ -81,51 +73,11 @@ namespace Garnet.server
             this.logger = logger;
         }
 
-        /// <summary>Returns the max log address at which snapshot reads are bounded. long.MaxValue = read latest.</summary>
-        public long GetSnapshotAddress() => Interlocked.Read(ref snapshotAddress);
-
-        /// <summary>
-        /// Time-gated: takes a FoldOver checkpoint and advances snapshotAddress.
-        /// Called by replica replay threads and the background snapshot task in the cluster layer.
-        /// No-op if the interval has not elapsed or a
-        /// checkpoint is already in progress (<see cref="snapshotMutex"/> not acquired).
-        /// </summary>
-        public void TryAdvanceSnapshotAfterReplay()
-        {
-            if (!serverOptions.MultiLogEnabled || serverOptions.AofReadWithTimestamp) return;
-
-            // Quick pre-check without taking the lock.
-            var now = Environment.TickCount64;
-            if (now - Interlocked.Read(ref lastSnapshotTickMs) < serverOptions.AofSnapshotFreq) return;
-
-            // Non-blocking: if another thread (replay or background) is already checkpointing, skip.
-            if (!snapshotMutex.Wait(0)) return;
-            try
-            {
-                // Re-check inside the lock; another thread may have just finished a checkpoint.
-                now = Environment.TickCount64;
-                if (now - Interlocked.Read(ref lastSnapshotTickMs) < serverOptions.AofSnapshotFreq) return;
-                Interlocked.Exchange(ref lastSnapshotTickMs, now);
-
-                var currentTail = storeWrapper.store.Log.TailAddress;
-                if (currentTail == Interlocked.Read(ref snapshotAddress)) return;
-
-                var (success, _) = storeWrapper.store.TakeHybridLogCheckpointAsync(CheckpointType.FoldOver).GetAwaiter().GetResult();
-                if (success)
-                    Interlocked.Exchange(ref snapshotAddress, storeWrapper.store.LastHybridLogFinalLogicalAddress);
-            }
-            finally
-            {
-                snapshotMutex.Release();
-            }
-        }
-
         /// <summary>
         /// Dispose append only file
         /// </summary>
         public void Dispose()
         {
-            snapshotMutex.Dispose();
             Log.Dispose();
         }
 
@@ -143,28 +95,17 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Prepares the read-consistency mechanism for a new primary attachment or recovery.
-        /// When <see cref="GarnetServerOptions.AofReadWithTimestamp"/> is <c>true</c>, creates a new
-        /// <see cref="ReadConsistencyManager"/> (bumping its version so in-flight sessions reset on their
-        /// next read). Otherwise, resets <c>snapshotAddress</c> and <c>lastSnapshotTickMs</c> so that
-        /// sessions immediately see the latest data until the first replay-driven snapshot fires.
+        /// Creates or replaces the <see cref="ReadConsistencyManager"/>, bumping its version so
+        /// in-flight sessions reset on their next read.
+        /// Only active when <see cref="GarnetServerOptions.AofReadWithTimestamp"/> is <c>true</c>
+        /// and <see cref="GarnetServerOptions.MultiLogEnabled"/> is <c>true</c>.
         /// </summary>
-        public void CreateOrUpdateKeySequenceManager()
+        public void CreateOrUpdateReadConsistencyManager()
         {
-            // Create manager only if sharded log is enabled
-            if (!serverOptions.MultiLogEnabled) return;
-            if (serverOptions.AofReadWithTimestamp)
-            {
-                var currentVersion = readConsistencyManager?.CurrentVersion ?? 0L;
-                var _readConsistencyManager = new ReadConsistencyManager(currentVersion + 1, this, serverOptions);
-                _ = Interlocked.CompareExchange(ref readConsistencyManager, _readConsistencyManager, readConsistencyManager);
-            }
-            else
-            {
-                // Reset snapshot state so sessions see latest until first snapshot fires after failover/reconnect
-                Interlocked.Exchange(ref snapshotAddress, long.MaxValue);
-                Interlocked.Exchange(ref lastSnapshotTickMs, 0);
-            }
+            if (!serverOptions.MultiLogEnabled || !serverOptions.AofReadWithTimestamp) return;
+            var currentVersion = readConsistencyManager?.CurrentVersion ?? 0L;
+            var _readConsistencyManager = new ReadConsistencyManager(currentVersion + 1, this, serverOptions);
+            _ = Interlocked.CompareExchange(ref readConsistencyManager, _readConsistencyManager, readConsistencyManager);
         }
 
         /// <summary>

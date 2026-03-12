@@ -61,6 +61,56 @@ namespace Garnet.server
         /// </summary>
         public AofAddress TailAddress => appendOnlyFile.Log.TailAddress;
 
+        /// <summary>Returns the KV store log address at which snapshot reads are bounded. long.MaxValue = read latest.</summary>
+        public long GetSnapshotAddress() => Interlocked.Read(ref snapshotAddress);
+
+        /// <summary>
+        /// Time-gated: takes a FoldOver checkpoint of the main KV store and advances <c>snapshotAddress</c>.
+        /// Called by replica replay threads and the background snapshot task in the cluster layer.
+        /// No-op if <see cref="GarnetServerOptions.MultiLogEnabled"/> is false, if the timestamp-based read
+        /// protocol is active (<see cref="GarnetServerOptions.AofReadWithTimestamp"/> is true), if the interval
+        /// has not elapsed, or if a checkpoint is already in progress.
+        /// </summary>
+        public void TryAdvanceSnapshotAfterReplay()
+        {
+            if (!serverOptions.MultiLogEnabled || serverOptions.AofReadWithTimestamp) return;
+
+            // Quick pre-check without taking the lock.
+            var now = Environment.TickCount64;
+            if (now - Interlocked.Read(ref lastSnapshotTickMs) < serverOptions.AofSnapshotFreq) return;
+
+            // Non-blocking: if another thread (replay or background) is already checkpointing, skip.
+            if (!snapshotMutex.Wait(0)) return;
+            try
+            {
+                // Re-check inside the lock; another thread may have just finished a checkpoint.
+                now = Environment.TickCount64;
+                if (now - Interlocked.Read(ref lastSnapshotTickMs) < serverOptions.AofSnapshotFreq) return;
+                Interlocked.Exchange(ref lastSnapshotTickMs, now);
+
+                var currentTail = store.Log.TailAddress;
+                if (currentTail == Interlocked.Read(ref snapshotAddress)) return;
+
+                var (success, _) = store.TakeHybridLogCheckpointAsync(CheckpointType.FoldOver).GetAwaiter().GetResult();
+                if (success)
+                    Interlocked.Exchange(ref snapshotAddress, store.LastHybridLogFinalLogicalAddress);
+            }
+            finally
+            {
+                snapshotMutex.Release();
+            }
+        }
+
+        /// <summary>
+        /// Resets snapshot state so sessions see the latest data until the first replay-driven snapshot fires.
+        /// Called on primary attachment or recovery when the snapshot-based read protocol is active.
+        /// </summary>
+        internal void ResetSnapshotState()
+        {
+            Interlocked.Exchange(ref snapshotAddress, long.MaxValue);
+            Interlocked.Exchange(ref lastSnapshotTickMs, 0);
+        }
+
         /// <summary>
         /// Last save time (of DB 0)
         /// </summary>
@@ -154,6 +204,13 @@ namespace Garnet.server
         internal readonly ILogger sessionLogger;
         internal long safeAofAddress = -1;
 
+        // snapshotAddress: read by ConsistentReadContext; long.MaxValue = read latest (initial state)
+        // NOTE: this is the address of the KV store, not the address in AOF
+        private long snapshotAddress = long.MaxValue;
+        private long lastSnapshotTickMs = 0;
+        // Ensures only one checkpoint runs at a time (replay thread + background snapshot task).
+        private readonly SemaphoreSlim snapshotMutex = new(1, 1);
+
         // Standalone instance node_id
         internal readonly string runId;
 
@@ -204,11 +261,6 @@ namespace Garnet.server
             this.customCommandManager = customCommandManager;
             this.loggerFactory = loggerFactory;
             this.databaseManager = databaseManager ?? DatabaseManagerFactory.CreateDatabaseManager(serverOptions, createDatabaseDelegate, this);
-            if (this.appendOnlyFile != null)
-            {
-                this.appendOnlyFile.storeWrapper = this;
-                this.appendOnlyFile.CreateOrUpdateKeySequenceManager();
-            }
             this.monitor = serverOptions.MetricsSamplingFrequency > 0
                 ? new GarnetServerMonitor(this, serverOptions, servers,
                     loggerFactory?.CreateLogger("GarnetServerMonitor"))
@@ -916,6 +968,7 @@ namespace Garnet.server
             luaTimeoutManager?.Dispose();
             ctsCommit?.Cancel();
             taskManager.Dispose();
+            snapshotMutex.Dispose();
             databaseManager.Dispose();
 
             ctsCommit?.Dispose();

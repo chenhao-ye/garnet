@@ -1571,7 +1571,7 @@ namespace Garnet.server
                     UpdateKeySequenceNumber,
                     storeWrapper.serverOptions.AofReadWithTimestamp
                         ? null
-                        : () => storeWrapper.appendOnlyFile.GetSnapshotAddress()),
+                        : () => storeWrapper.GetSnapshotAddress()),
                 logger,
                 respProtocolVersion);
 
