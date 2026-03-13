@@ -65,11 +65,12 @@ namespace Garnet.server
         public long GetSnapshotAddress() => Interlocked.Read(ref snapshotAddress);
 
         /// <summary>
-        /// Time-gated: takes a FoldOver checkpoint of the main KV store and advances <c>snapshotAddress</c>.
+        /// Time-gated: flushes the main KV log to advance the immutable read boundary and then updates
+        /// <c>snapshotAddress</c> to the latest safe read-only address.
         /// Called by replica replay threads and the background snapshot task in the cluster layer.
         /// No-op if <see cref="GarnetServerOptions.MultiLogEnabled"/> is false, if the timestamp-based read
         /// protocol is active (<see cref="GarnetServerOptions.AofReadWithTimestamp"/> is true), if the interval
-        /// has not elapsed, or if a checkpoint is already in progress.
+        /// has not elapsed, or if another snapshot advancement is already in progress.
         /// </summary>
         public void TryAdvanceSnapshotAfterReplay()
         {
@@ -91,9 +92,9 @@ namespace Garnet.server
                 var currentTail = store.Log.TailAddress;
                 if (currentTail == Interlocked.Read(ref snapshotAddress)) return;
 
-                var (success, _) = store.TakeHybridLogCheckpointAsync(CheckpointType.FoldOver).GetAwaiter().GetResult();
-                if (success)
-                    Interlocked.Exchange(ref snapshotAddress, store.LastHybridLogFinalLogicalAddress);
+                // Shift read-only address to tail
+                store.Log.Flush(wait: true);
+                Interlocked.Exchange(ref snapshotAddress, store.Log.SafeReadOnlyAddress);
             }
             finally
             {
