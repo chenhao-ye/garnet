@@ -62,7 +62,20 @@ namespace Garnet.server
         public AofAddress TailAddress => appendOnlyFile.Log.TailAddress;
 
         /// <summary>Returns the KV store log address at which snapshot reads are bounded. long.MaxValue = read latest.</summary>
-        public long GetSnapshotAddress() => Interlocked.Read(ref snapshotAddress);
+        public long GetSnapshotAddress()
+        {
+            var addr = Interlocked.Read(ref snapshotAddress);
+            if (addr == long.MaxValue && serverOptions.MultiLogEnabled && !serverOptions.AofReadWithTimestamp)
+            {
+                if (snapshotMutex.Wait(0))
+                {
+                    try { TakeSnapshot(); }
+                    finally { snapshotMutex.Release(); }
+                    addr = Interlocked.Read(ref snapshotAddress);
+                }
+            }
+            return addr;
+        }
 
         /// <summary>
         /// Time-gated: flushes the main KV log to advance the immutable read boundary and then updates
@@ -88,18 +101,20 @@ namespace Garnet.server
                 now = Environment.TickCount64;
                 if (now - Interlocked.Read(ref lastSnapshotTickMs) < serverOptions.AofSnapshotFreq) return;
                 Interlocked.Exchange(ref lastSnapshotTickMs, now);
-
-                var currentTail = store.Log.TailAddress;
-                if (currentTail == Interlocked.Read(ref snapshotAddress)) return;
-
-                // Shift read-only address to tail
-                store.Log.Flush(wait: true);
-                Interlocked.Exchange(ref snapshotAddress, store.Log.SafeReadOnlyAddress);
+                if (store.Log.TailAddress == Interlocked.Read(ref snapshotAddress)) return;
+                TakeSnapshot();
             }
             finally
             {
                 snapshotMutex.Release();
             }
+        }
+
+        /// <summary>Flushes the main KV log and updates <c>snapshotAddress</c>. Caller must hold <c>snapshotMutex</c>.</summary>
+        private void TakeSnapshot()
+        {
+            store.Log.Flush(wait: true);
+            Interlocked.Exchange(ref snapshotAddress, store.Log.SafeReadOnlyAddress);
         }
 
         /// <summary>
