@@ -118,6 +118,24 @@ namespace Garnet.server
         }
 
         /// <summary>
+        /// Forces an immediate snapshot regardless of the time-gate in <see cref="TryAdvanceSnapshotAfterReplay"/>.
+        /// Acquires the snapshot mutex, flushes the KV log, and advances <c>snapshotAddress</c>.
+        /// Intended for use in tests via <see cref="StoreApi.ForceTakeSnapshot"/>.
+        /// </summary>
+        internal void ForceTakeSnapshot()
+        {
+            snapshotMutex.Wait();
+            try
+            {
+                // Reset the time-gate so TryAdvanceSnapshotAfterReplay won't immediately
+                // override this snapshot for another AofSnapshotFreq ms.
+                Interlocked.Exchange(ref lastSnapshotTickMs, Environment.TickCount64);
+                TakeSnapshot();
+            }
+            finally { snapshotMutex.Release(); }
+        }
+
+        /// <summary>
         /// Resets snapshot state so sessions see the latest data until the first replay-driven snapshot fires.
         /// Called on primary attachment or recovery when the snapshot-based read protocol is active.
         /// </summary>

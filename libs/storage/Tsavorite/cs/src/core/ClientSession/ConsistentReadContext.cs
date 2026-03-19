@@ -67,8 +67,8 @@ namespace Tsavorite.core
                 where TSourceLogRecord : ISourceLogRecord
             {
                 cursorRecordResult = CursorRecordResult.Accept;
-                if (recordMetadata.Address > snapshotMaxAddress)
-                    return true;  // version is newer than snapshot; keep iterating backwards
+                if (recordMetadata.Address >= snapshotMaxAddress)
+                    return true;  // version is at or newer than snapshot boundary; keep iterating backwards
                 // must explicitly handle tombstone here because BasicContext.ReadAtAddress does not handle tombstone
                 if (!logRecord.Info.Tombstone)
                     foundAddress = recordMetadata.Address;
