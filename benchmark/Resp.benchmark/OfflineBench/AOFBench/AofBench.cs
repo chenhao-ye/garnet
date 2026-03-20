@@ -19,7 +19,7 @@ namespace Resp.benchmark
             {
                 ClusterAnnounceEndpoint = new IPEndPoint(IPAddress.Loopback, 6379),
                 QuietMode = true,
-                EnableAOF = options.EnableAOF,
+                EnableAOF = options.EnableAOF || options.AofBench,
                 EnableCluster = options.EnableCluster,
                 IndexSize = options.IndexSize,
                 ClusterConfigFlushFrequencyMs = -1,

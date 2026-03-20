@@ -21,6 +21,7 @@ namespace Resp.benchmark
         string primaryId;
         readonly long startAddress;
         long previousAddress;
+        bool initialized;
         readonly ILogger logger = null;
 
         public long Size => previousAddress - startAddress;
@@ -36,6 +37,7 @@ namespace Resp.benchmark
             garnetClient = null;
             this.startAddress = startAddress;
             previousAddress = startAddress;
+            initialized = false;
 
             if (options.Client == ClientType.InProc)
             {
@@ -153,6 +155,12 @@ namespace Resp.benchmark
         {
             try
             {
+                if (!initialized)
+                {
+                    InitializeReplayStream();
+                    initialized = true;
+                }
+
                 if (options.Client == ClientType.InProc)
                 {
                     fixed (byte* ptr = buffer)
@@ -188,6 +196,39 @@ namespace Resp.benchmark
             {
                 logger?.LogWarning(ex, "An exception occurred at ReplicationManager.AofSyncTaskInfo.Consume");
                 throw;
+            }
+        }
+
+        unsafe void InitializeReplayStream()
+        {
+            if (options.Client == ClientType.InProc)
+            {
+                fixed (byte* ptr = buffer)
+                {
+                    var respMessageSize = WriterClusterAppendLog(
+                        ptr,
+                        buffer.Length,
+                        nodeId: primaryId,
+                        physicalSublogIdx: threadId,
+                        previousAddress: -1,
+                        currentAddress: -1,
+                        nextAddress: -1,
+                        payloadPtr: -1,
+                        payloadLength: 0);
+                    _ = aofBench.sessions[threadId].TryConsumeMessages(ptr, respMessageSize);
+                }
+            }
+            else
+            {
+                garnetClient.ExecuteClusterAppendLog(
+                    primaryId,
+                    physicalSublogIdx: threadId,
+                    previousAddress: -1,
+                    currentAddress: -1,
+                    nextAddress: -1,
+                    payloadPtr: -1,
+                    payloadLength: 0);
+                garnetClient.CompletePending(false);
             }
         }
 
