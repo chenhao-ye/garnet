@@ -1,0 +1,25 @@
+# Experiment: aof_bench_sublog
+# Sweep the number of AOF physical sublogs (1, 2, 4, 8) using the offline AofBench
+# in Replay mode with main-memory replication (--aof-null-device, InProc client).
+# No external Garnet server is needed — AofBench creates an embedded server.
+
+name: aof_bench_sublog
+description: "Scale AOF physical sublog count (1-8) with main-memory replication (null device, InProc)"
+benchmark_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
+no_server: true
+
+base_params:
+  aof_bench: true
+  aof_bench_type: Replay
+  cluster: true
+  aof_null_device: true
+  client: InProc
+  runtime: 30
+  aof_commit_freq: -1
+  aof_memory_size: "256m"
+  aof_page_size: "4m"
+  index: "1g"
+
+sweep:
+  param: aof_physical_sublog_count
+  values: [1, 2, 4, 8]

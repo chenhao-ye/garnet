@@ -55,6 +55,7 @@ BOOL_PARAMS = {
     "cluster",
     "aof_null_device",
     "client_hist",
+    "aof_bench",
 }
 
 PARAM_TO_FLAG = {
@@ -89,6 +90,9 @@ PARAM_TO_FLAG = {
     "cluster": "--cluster",
     "totalops": "--totalops",
     "client_hist": "--client-hist",
+    "aof_bench": "--aof-bench",
+    "aof_bench_type": "--aof-bench-type",
+    "index": "--index",
 }
 
 # Server-specific flag mapping (GarnetServer CLI)
@@ -444,6 +448,7 @@ def main():
     server_params = dict(cfg.get("server_params", {}))
     sweep = cfg.get("sweep", {})
     setup = cfg.get("setup", {})
+    no_server = args.no_server or cfg.get("no_server", False)
 
     exp_dir = RESULT_ROOT / exp_name
 
@@ -494,7 +499,7 @@ def main():
             print(f"\n[{exp_name}] === Setup: {setup_name} ===")
             server_proc = None
             try:
-                if not args.no_server:
+                if not no_server:
                     server_log = setup_dir / "_server.log"
                     server_proc = launch_server(
                         server_project, cur_server_params, server_log, args.dry_run
@@ -527,7 +532,7 @@ def main():
                     },
                 )
             finally:
-                if not args.no_server:
+                if not no_server:
                     shutdown_server(server_proc, args.dry_run)
     else:
         # No setup: original single-server flow
@@ -536,7 +541,7 @@ def main():
 
         server_proc = None
         try:
-            if not args.no_server:
+            if not no_server:
                 server_log = exp_dir / "_server.log"
                 server_proc = launch_server(
                     server_project, server_params, server_log, args.dry_run
@@ -565,7 +570,7 @@ def main():
                 server_proc=server_proc,
             )
         finally:
-            if not args.no_server:
+            if not no_server:
                 shutdown_server(server_proc, args.dry_run)
 
     print(f"\nAll runs complete. Results in: {exp_dir}")
