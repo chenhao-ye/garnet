@@ -1,7 +1,14 @@
 #!/usr/bin/env -S uv run
-
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "matplotlib",
+#   "numpy",
+#   "pyyaml",
+# ]
+# ///
 """
-Plot experiment results from result.json.
+Plot experiment results from result.yaml.
 
 Usage:
     uv run experiment/plot.py <experiment_name>
@@ -10,7 +17,7 @@ Usage:
 """
 
 import argparse
-import json
+import yaml
 from pathlib import Path
 
 import matplotlib
@@ -23,28 +30,40 @@ RESULT_ROOT = REPO_ROOT / "result"
 
 
 def load_result(experiment: str) -> dict:
-    path = RESULT_ROOT / experiment / "result.json"
+    path = RESULT_ROOT / experiment / "result.yaml"
     if not path.exists():
-        raise FileNotFoundError(f"result.json not found: {path}\n"
+        raise FileNotFoundError(f"result.yaml not found: {path}\n"
                                 f"Run parse.py first.")
     with open(path) as f:
-        return json.load(f)
+        return yaml.safe_load(f)
 
 
-def sorted_runs(result: dict):
-    """Return runs sorted by sweep_value (numeric if possible, else lexicographic)."""
+def load_exp_config(experiment: str) -> dict:
+    path = RESULT_ROOT / experiment / "config.yaml"
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def sorted_runs(result: dict, sweep_values: list | None = None):
+    """Return runs ordered by sweep_values list, or numerically/lexicographically."""
     runs = result["runs"]
     items = list(runs.items())
-    try:
-        items.sort(key=lambda kv: float(kv[1]["sweep_value"])
-                   if kv[1]["sweep_value"] is not None else kv[0])
-    except (TypeError, ValueError):
-        items.sort(key=lambda kv: kv[0])
+    if sweep_values is not None:
+        order = {str(v): i for i, v in enumerate(sweep_values)}
+        items.sort(key=lambda kv: order.get(str(kv[1]["sweep_value"]), len(order)))
+    else:
+        try:
+            items.sort(key=lambda kv: float(kv[1]["sweep_value"])
+                       if kv[1]["sweep_value"] is not None else kv[0])
+        except (TypeError, ValueError):
+            items.sort(key=lambda kv: kv[0])
     return items
 
 
-def _x_label(result: dict) -> str:
-    param = result.get("sweep_param") or "run"
+def _x_label(sweep: dict) -> str:
+    param = sweep.get("param") or "run"
     return param.replace("_", " ")
 
 
@@ -56,10 +75,11 @@ def _use_log_scale(values: list) -> bool:
         return False
 
 
-def plot_throughput(result: dict, out_dir: Path) -> Path:
-    items = sorted_runs(result)
-    x_labels = [str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0])
-                for kv in items]
+def plot_throughput(result: dict, sweep: dict, out_dir: Path) -> Path:
+    sweep_values = sweep.get("values")
+    items = sorted_runs(result, sweep_values)
+    x_labels = [str(v) for v in sweep_values] if sweep_values else \
+               [str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0]) for kv in items]
     x = np.arange(len(items))
     means = [kv[1]["stats"]["tpt_kops"]["mean"] or 0 for kv in items]
     stds  = [kv[1]["stats"]["tpt_kops"]["std"]  or 0 for kv in items]
@@ -69,7 +89,7 @@ def plot_throughput(result: dict, out_dir: Path) -> Path:
            error_kw={"elinewidth": 1.5, "ecolor": "black"})
     ax.set_xticks(x)
     ax.set_xticklabels(x_labels)
-    ax.set_xlabel(_x_label(result))
+    ax.set_xlabel(_x_label(sweep))
     ax.set_ylabel("Throughput (Kops/sec)")
     ax.set_title(f"{result['experiment_name']} - Throughput")
     ax.yaxis.grid(True, linestyle="--", alpha=0.6)
@@ -83,10 +103,11 @@ def plot_throughput(result: dict, out_dir: Path) -> Path:
     return out_path
 
 
-def plot_latency(result: dict, out_dir: Path) -> Path:
-    items = sorted_runs(result)
-    x_labels = [str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0])
-                for kv in items]
+def plot_latency(result: dict, sweep: dict, out_dir: Path) -> Path:
+    sweep_values = sweep.get("values")
+    items = sorted_runs(result, sweep_values)
+    x_labels = [str(v) for v in sweep_values] if sweep_values else \
+               [str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0]) for kv in items]
     x = np.arange(len(items))
 
     percentiles = [
@@ -110,7 +131,7 @@ def plot_latency(result: dict, out_dir: Path) -> Path:
 
     ax.set_xticks(x)
     ax.set_xticklabels(x_labels)
-    ax.set_xlabel(_x_label(result))
+    ax.set_xlabel(_x_label(sweep))
     ax.set_ylabel("Latency (us)")
     ax.set_title(f"{result['experiment_name']} - Latency Percentiles")
     ax.legend()
@@ -125,10 +146,12 @@ def plot_latency(result: dict, out_dir: Path) -> Path:
     return out_path
 
 
-def plot_latency_line(result: dict, out_dir: Path) -> Path:
+def plot_latency_line(result: dict, sweep: dict, out_dir: Path) -> Path:
     """Line chart of latency percentiles vs sweep param (good for many x values)."""
-    items = sorted_runs(result)
-    x_vals = [kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else i
+    sweep_values = sweep.get("values")
+    items = sorted_runs(result, sweep_values)
+    x_vals = sweep_values if sweep_values else \
+             [kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else i
               for i, kv in enumerate(items)]
     x_labels = [str(v) for v in x_vals]
 
@@ -151,11 +174,11 @@ def plot_latency_line(result: dict, out_dir: Path) -> Path:
 
     if use_log:
         ax.set_xscale("log")
-        ax.set_xlabel(_x_label(result))
+        ax.set_xlabel(_x_label(sweep))
     else:
         ax.set_xticks(x)
         ax.set_xticklabels(x_labels)
-        ax.set_xlabel(_x_label(result))
+        ax.set_xlabel(_x_label(sweep))
 
     ax.set_ylabel("Latency (us)")
     ax.set_title(f"{result['experiment_name']} - Latency Percentiles")
@@ -171,10 +194,12 @@ def plot_latency_line(result: dict, out_dir: Path) -> Path:
     return out_path
 
 
-def plot_throughput_line(result: dict, out_dir: Path) -> Path:
+def plot_throughput_line(result: dict, sweep: dict, out_dir: Path) -> Path:
     """Line chart of throughput vs sweep param."""
-    items = sorted_runs(result)
-    x_vals = [kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else i
+    sweep_values = sweep.get("values")
+    items = sorted_runs(result, sweep_values)
+    x_vals = sweep_values if sweep_values else \
+             [kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else i
               for i, kv in enumerate(items)]
     x_labels = [str(v) for v in x_vals]
     means = np.array([kv[1]["stats"]["tpt_kops"]["mean"] or 0 for kv in items])
@@ -189,11 +214,11 @@ def plot_throughput_line(result: dict, out_dir: Path) -> Path:
 
     if use_log:
         ax.set_xscale("log")
-        ax.set_xlabel(_x_label(result))
+        ax.set_xlabel(_x_label(sweep))
     else:
         ax.set_xticks(x)
         ax.set_xticklabels(x_labels)
-        ax.set_xlabel(_x_label(result))
+        ax.set_xlabel(_x_label(sweep))
 
     ax.set_ylabel("Throughput (Kops/sec)")
     ax.set_title(f"{result['experiment_name']} - Throughput")
@@ -218,6 +243,8 @@ def main():
     args = parser.parse_args()
 
     result = load_result(args.experiment)
+    exp_cfg = load_exp_config(args.experiment)
+    sweep = exp_cfg.get("sweep", {})
 
     if args.output_dir:
         out_dir = Path(args.output_dir)
@@ -230,10 +257,10 @@ def main():
 
     # Use bar charts for small sweep sizes, line charts for large ones
     if n_runs <= 8:
-        plot_throughput(result, out_dir)
-        plot_latency(result, out_dir)
-    plot_throughput_line(result, out_dir)
-    plot_latency_line(result, out_dir)
+        plot_throughput(result, sweep, out_dir)
+        plot_latency(result, sweep, out_dir)
+    plot_throughput_line(result, sweep, out_dir)
+    plot_latency_line(result, sweep, out_dir)
 
     print("Done.")
 

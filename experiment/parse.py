@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run
 
 """
-Parse benchmark output files and produce a summary result.json per experiment.
+Parse benchmark output files and produce a summary result.yaml per experiment.
 
 Usage:
     uv run experiment/parse.py <experiment_name>
@@ -10,7 +10,6 @@ Usage:
 """
 
 import argparse
-import json
 import math
 import yaml
 import re
@@ -101,7 +100,7 @@ def main():
         print(f"Error: experiment directory not found: {exp_dir}")
         raise SystemExit(1)
 
-    run_dirs = sorted(d for d in exp_dir.iterdir() if d.is_dir())
+    run_dirs = sorted(d for d in exp_dir.iterdir() if d.is_dir() and d.name != "_load")
     if not run_dirs:
         print(f"Error: no run directories found in {exp_dir}")
         raise SystemExit(1)
@@ -152,9 +151,9 @@ def main():
         "runs": runs,
     }
 
-    out_path = exp_dir / "result.json"
+    out_path = exp_dir / "result.yaml"
     with open(out_path, "w") as f:
-        json.dump(result, f, indent=2)
+        yaml.dump(result, f)
     print(f"\nResult written to: {out_path}")
 
 

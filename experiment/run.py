@@ -12,9 +12,10 @@ Lifecycle per invocation:
   6. Shut down the server (always, even on error).
 
 Usage:
-    uv run experiment/run.py experiment/configs/scale_clients.yaml
-    uv run experiment/run.py experiment/configs/scale_clients.yaml --dry-run
-    uv run experiment/run.py experiment/configs/scale_clients.yaml --no-server
+    uv run experiment/run.py scale_clients
+    uv run experiment/run.py scale_clients --dry-run
+    uv run experiment/run.py scale_clients --no-server
+    uv run experiment/run.py scale_clients --config path/to/custom.yaml
 """
 
 import argparse
@@ -357,7 +358,8 @@ def load_config(path: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Run Garnet YCSB experiments")
-    parser.add_argument("config", help="Path to experiment YAML config")
+    parser.add_argument("experiment", help="Experiment name (looks up experiment/configs/<name>.yaml)")
+    parser.add_argument("--config", help="Override config path (default: experiment/configs/<name>.yaml)")
     parser.add_argument(
         "--dry-run", action="store_true", help="Print commands without executing"
     )
@@ -368,8 +370,9 @@ def main():
     )
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
-    exp_name = cfg["name"]
+    config_path = args.config or str(REPO_ROOT / "experiment" / "configs" / f"{args.experiment}.yaml")
+    cfg = load_config(config_path)
+    exp_name = cfg.get("name", args.experiment)
     benchmark_project = cfg.get(
         "benchmark_project", "benchmark/Resp.benchmark/Resp.benchmark.csproj"
     )
@@ -395,6 +398,9 @@ def main():
     # ------------------------------------------------------------------
     print(f"[{exp_name}] Cleaning result directory...")
     cleanup_result_dir(exp_dir, args.dry_run)
+    if not args.dry_run:
+        with open(exp_dir / "config.yaml", "w") as f:
+            yaml.dump(cfg, f)
 
     # ------------------------------------------------------------------
     # Step 3: launch server, run everything, shut server down
