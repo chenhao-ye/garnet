@@ -1,13 +1,5 @@
 #!/usr/bin/env -S uv run
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT license.
-# /// script
-# requires-python = ">=3.11"
-# dependencies = [
-#   "matplotlib",
-#   "numpy",
-# ]
-# ///
+
 """
 Plot experiment results from result.json.
 

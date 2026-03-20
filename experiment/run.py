@@ -1,12 +1,5 @@
 #!/usr/bin/env -S uv run
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT license.
-# /// script
-# requires-python = ">=3.11"
-# dependencies = [
-#   "pyyaml",
-# ]
-# ///
+
 """
 Run a YCSB-style experiment against the Garnet online benchmark.
 
@@ -25,7 +18,6 @@ Usage:
 """
 
 import argparse
-import json
 import shutil
 import socket
 import subprocess
@@ -39,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULT_ROOT = REPO_ROOT / "result"
 
 DEFAULT_SERVER_PROJECT = "main/GarnetServer/GarnetServer.csproj"
-SERVER_READY_TIMEOUT = 60   # seconds to wait for server TCP port
+SERVER_READY_TIMEOUT = 60  # seconds to wait for server TCP port
 SERVER_READY_INTERVAL = 0.5
 
 
@@ -49,8 +41,20 @@ SERVER_READY_INTERVAL = 0.5
 
 LIST_PARAMS = {"op_workload", "op_percent", "batchsize", "threads"}
 
-BOOL_PARAMS = {"online", "disable_console_logger", "skipload", "burst", "zipf",
-               "lset", "pool", "tls", "aof", "cluster", "aof_null_device", "client_hist"}
+BOOL_PARAMS = {
+    "online",
+    "disable_console_logger",
+    "skipload",
+    "burst",
+    "zipf",
+    "lset",
+    "pool",
+    "tls",
+    "aof",
+    "cluster",
+    "aof_null_device",
+    "client_hist",
+}
 
 PARAM_TO_FLAG = {
     "host": "--host",
@@ -140,7 +144,17 @@ def server_params_to_args(params: dict) -> list[str]:
 
 def build_command(benchmark_project: str, params: dict) -> list[str]:
     project_path = REPO_ROOT / benchmark_project
-    cmd = ["dotnet", "run", "-c", "Release", "--project", str(project_path), "--"]
+    cmd = [
+        "dotnet",
+        "run",
+        "-c",
+        "Release",
+        "--framework",
+        "net10.0",
+        "--project",
+        str(project_path),
+        "--",
+    ]
     cmd += params_to_args(params)
     return cmd
 
@@ -149,8 +163,10 @@ def build_command(benchmark_project: str, params: dict) -> list[str]:
 # Process / directory cleanup
 # ---------------------------------------------------------------------------
 
-def killall_leftover(server_project: str, benchmark_project: str,
-                     dry_run: bool) -> None:
+
+def killall_leftover(
+    server_project: str, benchmark_project: str, dry_run: bool
+) -> None:
     """Kill any leftover server or benchmark dotnet processes from a prior run."""
     patterns = [
         Path(server_project).stem,
@@ -179,11 +195,23 @@ def cleanup_result_dir(exp_dir: Path, dry_run: bool) -> None:
 # Server lifecycle
 # ---------------------------------------------------------------------------
 
-def launch_server(server_project: str, server_params: dict,
-                  log_path: Path, dry_run: bool):
+
+def launch_server(
+    server_project: str, server_params: dict, log_path: Path, dry_run: bool
+):
     """Start the Garnet server in the background. Returns the Popen handle."""
     project_path = REPO_ROOT / server_project
-    cmd = ["dotnet", "run", "-c", "Release", "--project", str(project_path), "--"]
+    cmd = [
+        "dotnet",
+        "run",
+        "-c",
+        "Release",
+        "--framework",
+        "net10.0",
+        "--project",
+        str(project_path),
+        "--",
+    ]
     cmd += server_params_to_args(server_params)
 
     print(f"\n  [server] launching: {' '.join(cmd)}")
@@ -197,18 +225,24 @@ def launch_server(server_project: str, server_params: dict,
         cmd,
         stdout=log_f,
         stderr=subprocess.STDOUT,
-        cwd=str(REPO_ROOT),
+        cwd=str(log_path.parent),
     )
     return proc
 
 
-def wait_for_server(host: str, port: int, dry_run: bool) -> None:
+def wait_for_server(host: str, port: int, dry_run: bool, proc=None) -> None:
     """Poll until the server accepts TCP connections or timeout expires."""
     if dry_run:
         return
     deadline = time.time() + SERVER_READY_TIMEOUT
     print(f"  [server] waiting for {host}:{port} ...", end="", flush=True)
     while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            print()
+            raise RuntimeError(
+                f"Server process exited unexpectedly (code {proc.returncode}) "
+                f"before becoming ready on {host}:{port}"
+            )
         try:
             with socket.create_connection((host, port), timeout=1):
                 print(" ready.")
@@ -218,8 +252,7 @@ def wait_for_server(host: str, port: int, dry_run: bool) -> None:
             time.sleep(SERVER_READY_INTERVAL)
     print()
     raise TimeoutError(
-        f"Server did not become ready on {host}:{port} "
-        f"within {SERVER_READY_TIMEOUT}s"
+        f"Server did not become ready on {host}:{port} within {SERVER_READY_TIMEOUT}s"
     )
 
 
@@ -241,17 +274,24 @@ def shutdown_server(proc, dry_run: bool) -> None:
 # Benchmark runs
 # ---------------------------------------------------------------------------
 
-def run_single(run_name: str, run_dir: Path, cmd: list[str], config: dict,
-               dry_run: bool) -> None:
-    run_dir.mkdir(parents=True, exist_ok=True)
-    with open(run_dir / "config.json", "w") as f:
-        json.dump(config, f, indent=2)
 
-    print(f"\n{'='*60}")
+def run_single(
+    run_name: str,
+    run_dir: Path,
+    cmd: list[str],
+    config: dict,
+    dry_run: bool,
+    server_proc=None,
+) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with open(run_dir / "config.yaml", "w") as f:
+        yaml.dump(config, f)
+
+    print(f"\n{'=' * 60}")
     print(f"  Run: {run_name}")
     print(f"  Dir: {run_dir}")
     print(f"  Cmd: {' '.join(cmd)}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     if dry_run:
         print("  [dry-run] skipping execution")
@@ -269,17 +309,30 @@ def run_single(run_name: str, run_dir: Path, cmd: list[str], config: dict,
         for line in proc.stdout:
             sys.stdout.write(line)
             out_f.write(line)
+            if server_proc is not None and server_proc.poll() is not None:
+                proc.kill()
+                proc.wait()
+                raise RuntimeError(
+                    f"Server exited unexpectedly (code {server_proc.returncode}) "
+                    f"during run '{run_name}'"
+                )
         proc.wait()
 
     elapsed = time.time() - start
     rc = proc.returncode
     print(f"\n  Finished in {elapsed:.1f}s (exit code {rc})")
     if rc != 0:
-        print(f"  [warn] non-zero exit code; results may be incomplete")
+        raise RuntimeError(f"Run '{run_name}' failed with exit code {rc}")
 
 
-def run_load(benchmark_project: str, base_params: dict, load_cfg: dict,
-             exp_dir: Path, dry_run: bool) -> None:
+def run_load(
+    benchmark_project: str,
+    base_params: dict,
+    load_cfg: dict,
+    exp_dir: Path,
+    dry_run: bool,
+    server_proc=None,
+) -> None:
     """Run a one-time server load step before the sweep (optional)."""
     load_params = dict(base_params)
     load_params.update(load_cfg)
@@ -289,12 +342,13 @@ def run_load(benchmark_project: str, base_params: dict, load_cfg: dict,
     load_dir = exp_dir / "_load"
     config_record = {"run_name": "_load", "params": load_params}
     cmd = build_command(benchmark_project, load_params)
-    run_single("_load", load_dir, cmd, config_record, dry_run)
+    run_single("_load", load_dir, cmd, config_record, dry_run, server_proc=server_proc)
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def load_config(path: str) -> dict:
     with open(path) as f:
@@ -304,16 +358,21 @@ def load_config(path: str) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Run Garnet YCSB experiments")
     parser.add_argument("config", help="Path to experiment YAML config")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print commands without executing")
-    parser.add_argument("--no-server", action="store_true",
-                        help="Skip server launch/shutdown (use an already-running server)")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print commands without executing"
+    )
+    parser.add_argument(
+        "--no-server",
+        action="store_true",
+        help="Skip server launch/shutdown (use an already-running server)",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     exp_name = cfg["name"]
-    benchmark_project = cfg.get("benchmark_project",
-                                "benchmark/Resp.benchmark/Resp.benchmark.csproj")
+    benchmark_project = cfg.get(
+        "benchmark_project", "benchmark/Resp.benchmark/Resp.benchmark.csproj"
+    )
     server_project = cfg.get("server_project", DEFAULT_SERVER_PROJECT)
     base_params = dict(cfg.get("base_params", {}))
     server_params = dict(cfg.get("server_params", {}))
@@ -344,14 +403,22 @@ def main():
     try:
         if not args.no_server:
             server_log = exp_dir / "_server.log"
-            server_proc = launch_server(server_project, server_params,
-                                        server_log, args.dry_run)
-            wait_for_server(host, port, args.dry_run)
+            server_proc = launch_server(
+                server_project, server_params, server_log, args.dry_run
+            )
+            wait_for_server(host, port, args.dry_run, server_proc)
 
         load_cfg = cfg.get("load")
         if load_cfg is not None:
             print(f"\n[{exp_name}] Running load step...")
-            run_load(benchmark_project, base_params, load_cfg, exp_dir, args.dry_run)
+            run_load(
+                benchmark_project,
+                base_params,
+                load_cfg,
+                exp_dir,
+                args.dry_run,
+                server_proc=server_proc,
+            )
 
         if sweep:
             sweep_param = sweep["param"]
@@ -369,8 +436,14 @@ def main():
                     "params": run_params,
                 }
                 cmd = build_command(benchmark_project, run_params)
-                run_single(run_name, exp_dir / run_name, cmd, config_record,
-                           args.dry_run)
+                run_single(
+                    run_name,
+                    exp_dir / run_name,
+                    cmd,
+                    config_record,
+                    args.dry_run,
+                    server_proc=server_proc,
+                )
         else:
             run_name = "default"
             config_record = {
@@ -379,8 +452,14 @@ def main():
                 "params": base_params,
             }
             cmd = build_command(benchmark_project, base_params)
-            run_single(run_name, exp_dir / run_name, cmd, config_record,
-                       args.dry_run)
+            run_single(
+                run_name,
+                exp_dir / run_name,
+                cmd,
+                config_record,
+                args.dry_run,
+                server_proc=server_proc,
+            )
 
     finally:
         if not args.no_server:

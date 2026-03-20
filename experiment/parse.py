@@ -1,10 +1,5 @@
 #!/usr/bin/env -S uv run
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT license.
-# /// script
-# requires-python = ">=3.11"
-# dependencies = []
-# ///
+
 """
 Parse benchmark output files and produce a summary result.json per experiment.
 
@@ -17,6 +12,7 @@ Usage:
 import argparse
 import json
 import math
+import yaml
 import re
 from pathlib import Path
 
@@ -116,7 +112,7 @@ def main():
 
     for run_dir in run_dirs:
         output_path = run_dir / "output.txt"
-        config_path = run_dir / "config.json"
+        config_path = run_dir / "config.yaml"
 
         if not output_path.exists():
             print(f"  [skip] {run_dir.name}: no output.txt")
@@ -125,7 +121,7 @@ def main():
         config = {}
         if config_path.exists():
             with open(config_path) as f:
-                config = json.load(f)
+                config = yaml.safe_load(f)
 
         samples = parse_output(output_path, warmup_rows=args.warmup)
         stats = summarize_samples(samples)
