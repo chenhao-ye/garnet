@@ -102,7 +102,7 @@ SERVER_PARAM_TO_FLAG = {
     "index": "--index",
     "aof": "--aof",
     "aof_commit_freq": "--aof-commit-freq",
-    "aof_memory_size": "--aof-memory-size",
+    "aof_memory_size": "--aof-memory",
     "aof_page_size": "--aof-page-size",
     "aof_physical_sublog_count": "--aof-physical-sublog-count",
     "cluster": "--cluster",
