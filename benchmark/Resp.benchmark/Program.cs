@@ -293,7 +293,7 @@ namespace Resp.benchmark
                     bench.Run(
                         opts.Op,
                         opts.TotalOps,
-                        threadBench, runTime: TimeSpan.FromSeconds(opts.RunTime),
+                        threadBench, runTime: opts.RunTime == -1 ? int.MaxValue : TimeSpan.FromSeconds(opts.RunTime),
                         keyLen: keyLen,
                         valueLen: valueLen,
                         BatchSize: BatchSize,
