@@ -1,0 +1,22 @@
+# Experiment: scale_batchsize
+# Sweep the batch size (pipeline depth) while holding threads=8 constant.
+# Larger batch sizes amortize round-trip latency but increase individual op latency.
+
+name: scale_batchsize
+description: "Sweep batch size (pipeline depth) from 1 to 4096 at 8 threads"
+benchmark_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
+
+base_params:
+  host: 127.0.0.1
+  port: 6379
+  online: true
+  op_workload: [GET, SET]
+  op_percent: [70, 30]
+  dbsize: 100000
+  threads: 8
+  runtime: 30
+  disable_console_logger: true
+
+sweep:
+  param: batchsize
+  values: [1, 4, 16, 64, 256, 1024, 4096]
