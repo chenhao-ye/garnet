@@ -7,21 +7,17 @@ Garnet online benchmark, parsing the output, and plotting the results.
 
 - [uv](https://docs.astral.sh/uv/) (handles Python and package dependencies automatically)
 - .NET SDK (to build and run the benchmark)
-- A running Garnet server (see below)
 
 ## Quick Start
 
 ```bash
-# 1. Start a Garnet server
-dotnet run -c Release --project main/GarnetServer/ -- --port 6379
-
-# 2. Run an experiment
+# Run an experiment (server is launched and shut down automatically)
 uv run experiment/run.py experiment/configs/scale_clients.yaml
 
-# 3. Parse results
+# Parse results
 uv run experiment/parse.py scale_clients
 
-# 4. Plot
+# Plot
 uv run experiment/plot.py scale_clients
 ```
 
@@ -37,14 +33,17 @@ experiment/
   configs/
     scale_clients.yaml    # example: sweep threads 1-32
     scale_batchsize.yaml  # example: sweep batchsize 1-4096
+    readonly.yaml         # example: pre-load then 100% GET sweep
 
 result/
   <experiment_name>/
+    _server.log         # Garnet server stdout/stderr
+    _load/              # output of the load step (if configured)
     <param>_<value>/
-      config.json   # resolved parameters for this run
-      output.txt    # raw benchmark stdout
-    result.json     # aggregated stats (written by parse.py)
-    plots/          # PNG files (written by plot.py)
+      config.json       # resolved parameters for this run
+      output.txt        # raw benchmark stdout
+    result.json         # aggregated stats (written by parse.py)
+    plots/              # PDF files (written by plot.py)
 ```
 
 ## Experiment Config
@@ -79,6 +78,15 @@ sweep:
   `<param>_<value>`. Omit `sweep` entirely for a single run.
 - **`benchmark_project`**: path to the `.csproj` relative to the repo root.
   Defaults to `benchmark/Resp.benchmark/Resp.benchmark.csproj`.
+- **`load`** *(optional)*: one-time server pre-load step run before the sweep
+  (see [Pre-loading the server](#pre-loading-the-server) below).
+- **`server_project`** *(optional)*: path to the GarnetServer `.csproj` relative
+  to the repo root. Defaults to `main/GarnetServer/GarnetServer.csproj`.
+- **`server_params`** *(optional)*: flags forwarded to the Garnet server process.
+  Supported keys: `port`, `host`, `index`, `aof`, `aof_commit_freq`,
+  `aof_memory_size`, `aof_page_size`, `aof_physical_sublog_count`,
+  `cluster`, `tls`, `auth`. Defaults to whatever the server project uses
+  when no flags are provided.
 
 ### Supported Parameters
 
@@ -110,15 +118,71 @@ sweep:
 | `totalops` | `--totalops` | |
 | `client_hist` | `--client-hist` | bool |
 
+## Pre-loading the server
+
+The `--online` benchmark mode does not support `--skipload` — it has no
+built-in load phase. For mixed GET/SET workloads this is fine (SET operations
+create keys on the fly). For read-heavy or pure-GET workloads the keys must
+exist before measuring, so a separate load step is required.
+
+Add a `load` section to the config. Its fields override `base_params` for the
+load run only. `run.py` automatically strips `online`, `skipload`, and
+`disable_console_logger` from the load params (they are not meaningful for a
+plain write run). The load step runs once, before any sweep iteration, and its
+output is saved to `result/<name>/_load/`.
+
+```yaml
+base_params:
+  host: 127.0.0.1
+  port: 6379
+  online: true
+  op_workload: [GET]
+  op_percent: [100]
+  dbsize: 100000
+  keylength: 8
+  valuelength: 64
+  batchsize: 128
+  runtime: 30
+  disable_console_logger: true
+
+load:
+  op: MSET
+  threads: 8
+  batchsize: 4096
+  runtime: -1
+  totalops: 100000   # should cover dbsize
+
+sweep:
+  param: threads
+  values: [1, 2, 4, 8, 16, 32]
+```
+
+See `configs/readonly.yaml` for a complete example.
+
 ## run.py
 
 ```
-uv run experiment/run.py <config.yaml> [--dry-run]
+uv run experiment/run.py <config.yaml> [--dry-run] [--no-server]
 ```
 
-Iterates over sweep values, builds the `dotnet run` command for each, streams
-output to the terminal and saves it to `result/<name>/<run>/output.txt`.
-`--dry-run` prints the commands without executing them.
+Full lifecycle per invocation:
+
+1. **Kill leftovers** — `pkill -f GarnetServer` and `pkill -f Resp.benchmark`
+   to eliminate processes left over from any prior run.
+2. **Clean result dir** — deletes and recreates `result/<name>/` so no stale
+   output files remain.
+3. **Launch server** — starts `dotnet run -c Release --project
+   main/GarnetServer/GarnetServer.csproj` in the background and polls the TCP
+   port (default 60 s timeout) until the server accepts connections. Server
+   stdout/stderr is captured to `result/<name>/_server.log`.
+4. **Load step** *(if `load` section present)* — runs once before the sweep.
+5. **Sweep** — runs each configuration in order, streaming output to the
+   terminal and saving it to `result/<name>/<run>/output.txt`.
+6. **Shutdown server** — terminates the server process (always, even on error).
+
+Flags:
+- `--dry-run` — print all commands without executing anything.
+- `--no-server` — skip server launch/shutdown (use an already-running server).
 
 ## parse.py
 
@@ -179,7 +243,8 @@ range spans more than 10x.
 
 ## Included Configs
 
-| Config | Sweep | Workload |
-|---|---|---|
-| `configs/scale_clients.yaml` | `threads`: 1, 2, 4, 8, 16, 32 | 70% GET / 30% SET |
-| `configs/scale_batchsize.yaml` | `batchsize`: 1, 4, 16, 64, 256, 1024, 4096 | 70% GET / 30% SET, 8 threads |
+| Config | Sweep | Workload | Load step |
+|---|---|---|---|
+| `configs/scale_clients.yaml` | `threads`: 1, 2, 4, 8, 16, 32 | 70% GET / 30% SET | no |
+| `configs/scale_batchsize.yaml` | `batchsize`: 1, 4, 16, 64, 256, 1024, 4096 | 70% GET / 30% SET, 8 threads | no |
+| `configs/readonly.yaml` | `threads`: 1, 2, 4, 8, 16, 32 | 100% GET | yes (MSET 100k keys) |
