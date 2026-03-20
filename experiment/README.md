@@ -34,6 +34,7 @@ experiment/
     scale_clients.yaml    # example: sweep threads 1-32
     scale_batchsize.yaml  # example: sweep batchsize 1-4096
     readonly.yaml         # example: pre-load then 100% GET sweep
+    aof_bench_clients.yaml  # example: vary sublog setup, sweep threads
 
 result/
   <experiment_name>/
@@ -76,6 +77,10 @@ sweep:
   values (e.g. `op_workload`, `op_percent`) are joined with commas.
 - **`sweep`**: one parameter to vary. Each value produces one run named
   `<param>_<value>`. Omit `sweep` entirely for a single run.
+- **`setup`** *(optional)*: outer parameter sweep. Each setup value gets its own
+  subdirectory `<param>_<value>/`, and the inner `sweep` runs beneath it. If
+  the parameter matches a supported server flag it is applied to
+  `server_params`; otherwise it is applied to `base_params`.
 - **`benchmark_project`**: path to the `.csproj` relative to the repo root.
   Defaults to `benchmark/Resp.benchmark/Resp.benchmark.csproj`.
 - **`load`** *(optional)*: one-time server pre-load step run before the sweep
@@ -248,3 +253,4 @@ range spans more than 10x.
 | `configs/scale_clients.yaml` | `threads`: 1, 2, 4, 8, 16, 32 | 70% GET / 30% SET | no |
 | `configs/scale_batchsize.yaml` | `batchsize`: 1, 4, 16, 64, 256, 1024, 4096 | 70% GET / 30% SET, 8 threads | no |
 | `configs/readonly.yaml` | `threads`: 1, 2, 4, 8, 16, 32 | 100% GET | yes (MSET 100k keys) |
+| `configs/aof_bench_clients.yaml` | setup `aof_physical_sublog_count`: 1, 2, 4, 8; sweep `threads`: 1, 2, 4, 8, 16, 32 | AofBench Replay, InProc, null device | no server |
