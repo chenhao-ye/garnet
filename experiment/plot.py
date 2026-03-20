@@ -28,6 +28,13 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULT_ROOT = REPO_ROOT / "result"
 
+AOF_METRICS = [
+    ("bandwidth", "Bandwidth", "GiB/s", "steelblue"),
+    ("records", "Records", "count", "tomato"),
+    ("pages", "Pages", "count", "seagreen"),
+    ("bytes", "Bytes", "bytes", "darkorange"),
+]
+
 
 def load_result(experiment: str) -> dict:
     path = RESULT_ROOT / experiment / "result.yaml"
@@ -75,6 +82,25 @@ def _use_log_scale(values: list) -> bool:
         return False
 
 
+def _first_run_entry(result: dict) -> dict | None:
+    if "runs" in result and result["runs"]:
+        return next(iter(result["runs"].values()))
+    if "setups" in result:
+        for setup in result["setups"].values():
+            if setup.get("runs"):
+                return next(iter(setup["runs"].values()))
+    return None
+
+
+def _benchmark_type(result: dict) -> str:
+    entry = _first_run_entry(result)
+    return entry.get("benchmark", "online") if entry else "online"
+
+
+def _metric_stat(entry: dict, metric: str, field: str = "mean") -> float:
+    return entry["stats"].get(metric, {}).get(field) or 0
+
+
 def plot_throughput(result: dict, sweep: dict, out_dir: Path) -> Path:
     sweep_values = sweep.get("values")
     items = sorted_runs(result, sweep_values)
@@ -92,6 +118,34 @@ def plot_throughput(result: dict, sweep: dict, out_dir: Path) -> Path:
     ax.set_xlabel(_x_label(sweep))
     ax.set_ylabel("Throughput (Kops/sec)")
     ax.set_title(f"{result['experiment_name']} - Throughput")
+    ax.yaxis.grid(True, linestyle="--", alpha=0.6)
+    ax.set_axisbelow(True)
+    fig.tight_layout()
+
+    out_path = out_dir / "throughput.pdf"
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"  Saved: {out_path}")
+    return out_path
+
+
+def plot_aof_throughput(result: dict, sweep: dict, out_dir: Path) -> Path:
+    sweep_values = sweep.get("values")
+    items = sorted_runs(result, sweep_values)
+    x_labels = [str(v) for v in sweep_values] if sweep_values else \
+               [str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0]) for kv in items]
+    x = np.arange(len(items))
+    means = [_metric_stat(kv[1], "throughput") for kv in items]
+    stds = [_metric_stat(kv[1], "throughput", "std") for kv in items]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.bar(x, means, yerr=stds, capsize=5, color="steelblue", alpha=0.85,
+           error_kw={"elinewidth": 1.5, "ecolor": "black"})
+    ax.set_xticks(x)
+    ax.set_xticklabels(x_labels)
+    ax.set_xlabel(_x_label(sweep))
+    ax.set_ylabel("Throughput (Krecords/s)")
+    ax.set_title(f"{result['experiment_name']} - AOF Throughput")
     ax.yaxis.grid(True, linestyle="--", alpha=0.6)
     ax.set_axisbelow(True)
     fig.tight_layout()
@@ -146,6 +200,40 @@ def plot_latency(result: dict, sweep: dict, out_dir: Path) -> Path:
     return out_path
 
 
+def plot_aof_metrics(result: dict, sweep: dict, out_dir: Path) -> Path:
+    sweep_values = sweep.get("values")
+    items = sorted_runs(result, sweep_values)
+    x_labels = [str(v) for v in sweep_values] if sweep_values else \
+               [str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0]) for kv in items]
+    x = np.arange(len(items))
+
+    fig, axes = plt.subplots(1, len(AOF_METRICS), figsize=(5 * len(AOF_METRICS), 5))
+    if len(AOF_METRICS) == 1:
+        axes = [axes]
+
+    for ax, (metric, title, unit, color) in zip(axes, AOF_METRICS):
+        means = [_metric_stat(kv[1], metric) for kv in items]
+        stds = [_metric_stat(kv[1], metric, "std") for kv in items]
+        ax.bar(x, means, yerr=stds, capsize=4, color=color, alpha=0.85,
+               error_kw={"elinewidth": 1.0, "ecolor": "black"})
+        ax.set_xticks(x)
+        ax.set_xticklabels(x_labels)
+        ax.set_xlabel(_x_label(sweep))
+        ax.set_ylabel(unit)
+        ax.set_title(title)
+        ax.yaxis.grid(True, linestyle="--", alpha=0.6)
+        ax.set_axisbelow(True)
+
+    fig.suptitle(f"{result['experiment_name']} - AOF Metrics")
+    fig.tight_layout()
+
+    out_path = out_dir / "aof_metrics.pdf"
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"  Saved: {out_path}")
+    return out_path
+
+
 def plot_latency_line(result: dict, sweep: dict, out_dir: Path) -> Path:
     """Line chart of latency percentiles vs sweep param (good for many x values)."""
     sweep_values = sweep.get("values")
@@ -194,6 +282,45 @@ def plot_latency_line(result: dict, sweep: dict, out_dir: Path) -> Path:
     return out_path
 
 
+def plot_aof_throughput_line(result: dict, sweep: dict, out_dir: Path) -> Path:
+    sweep_values = sweep.get("values")
+    items = sorted_runs(result, sweep_values)
+    x_vals = sweep_values if sweep_values else \
+             [kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else i
+              for i, kv in enumerate(items)]
+    x_labels = [str(v) for v in x_vals]
+    means = np.array([_metric_stat(kv[1], "throughput") for kv in items])
+    stds = np.array([_metric_stat(kv[1], "throughput", "std") for kv in items])
+
+    use_log = _use_log_scale(x_vals)
+    x = np.array([float(v) for v in x_vals]) if use_log else np.arange(len(items))
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(x, means, marker="o", color="steelblue", label="throughput")
+    ax.fill_between(x, means - stds, means + stds, alpha=0.2, color="steelblue")
+
+    if use_log:
+        ax.set_xscale("log")
+        ax.set_xlabel(_x_label(sweep))
+    else:
+        ax.set_xticks(x)
+        ax.set_xticklabels(x_labels)
+        ax.set_xlabel(_x_label(sweep))
+
+    ax.set_ylabel("Throughput (Krecords/s)")
+    ax.set_title(f"{result['experiment_name']} - AOF Throughput")
+    ax.legend()
+    ax.yaxis.grid(True, linestyle="--", alpha=0.6)
+    ax.set_axisbelow(True)
+    fig.tight_layout()
+
+    out_path = out_dir / "throughput_line.pdf"
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"  Saved: {out_path}")
+    return out_path
+
+
 def plot_throughput_line(result: dict, sweep: dict, out_dir: Path) -> Path:
     """Line chart of throughput vs sweep param."""
     sweep_values = sweep.get("values")
@@ -228,6 +355,47 @@ def plot_throughput_line(result: dict, sweep: dict, out_dir: Path) -> Path:
     fig.tight_layout()
 
     out_path = out_dir / "throughput_line.pdf"
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"  Saved: {out_path}")
+    return out_path
+
+
+def plot_aof_metrics_line(result: dict, sweep: dict, out_dir: Path) -> Path:
+    sweep_values = sweep.get("values")
+    items = sorted_runs(result, sweep_values)
+    x_vals = sweep_values if sweep_values else \
+             [kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else i
+              for i, kv in enumerate(items)]
+    x_labels = [str(v) for v in x_vals]
+    use_log = _use_log_scale(x_vals)
+    x = np.array([float(v) for v in x_vals]) if use_log else np.arange(len(items))
+
+    fig, axes = plt.subplots(1, len(AOF_METRICS), figsize=(5 * len(AOF_METRICS), 5))
+    if len(AOF_METRICS) == 1:
+        axes = [axes]
+
+    for ax, (metric, title, unit, color) in zip(axes, AOF_METRICS):
+        means = np.array([_metric_stat(kv[1], metric) for kv in items])
+        stds = np.array([_metric_stat(kv[1], metric, "std") for kv in items])
+        ax.plot(x, means, marker="o", color=color)
+        ax.fill_between(x, means - stds, means + stds, alpha=0.15, color=color)
+        if use_log:
+            ax.set_xscale("log")
+            ax.set_xlabel(_x_label(sweep))
+        else:
+            ax.set_xticks(x)
+            ax.set_xticklabels(x_labels)
+            ax.set_xlabel(_x_label(sweep))
+        ax.set_ylabel(unit)
+        ax.set_title(title)
+        ax.yaxis.grid(True, linestyle="--", alpha=0.6)
+        ax.set_axisbelow(True)
+
+    fig.suptitle(f"{result['experiment_name']} - AOF Metrics")
+    fig.tight_layout()
+
+    out_path = out_dir / "aof_metrics_line.pdf"
     fig.savefig(out_path)
     plt.close(fig)
     print(f"  Saved: {out_path}")
@@ -418,13 +586,21 @@ def main():
             plot_throughput_bar_setups(result, sweep, out_dir)
     else:
         n_runs = len(result["runs"])
+        benchmark = _benchmark_type(result)
         print(f"Plotting {args.experiment} ({n_runs} runs) -> {out_dir}")
-        # Use bar charts for small sweep sizes, line charts for large ones
-        if n_runs <= 8:
-            plot_throughput(result, sweep, out_dir)
-            plot_latency(result, sweep, out_dir)
-        plot_throughput_line(result, sweep, out_dir)
-        plot_latency_line(result, sweep, out_dir)
+        if benchmark == "aof_bench":
+            if n_runs <= 8:
+                plot_aof_throughput(result, sweep, out_dir)
+                plot_aof_metrics(result, sweep, out_dir)
+            plot_aof_throughput_line(result, sweep, out_dir)
+            plot_aof_metrics_line(result, sweep, out_dir)
+        else:
+            # Use bar charts for small sweep sizes, line charts for large ones
+            if n_runs <= 8:
+                plot_throughput(result, sweep, out_dir)
+                plot_latency(result, sweep, out_dir)
+            plot_throughput_line(result, sweep, out_dir)
+            plot_latency_line(result, sweep, out_dir)
 
     print("Done.")
 
