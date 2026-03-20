@@ -18,7 +18,6 @@ base_params:
   aof_commit_freq: -1
   aof_memory_size: "256m"
   aof_page_size: "4m"
-  index: "1g"
 
 sweep:
   param: aof_physical_sublog_count
