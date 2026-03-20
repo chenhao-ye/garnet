@@ -105,12 +105,13 @@ SERVER_PARAM_TO_FLAG = {
     "aof_memory_size": "--aof-memory",
     "aof_page_size": "--aof-page-size",
     "aof_physical_sublog_count": "--aof-physical-sublog-count",
+    "aof_null_device": "--aof-null-device",
     "cluster": "--cluster",
     "tls": "--tls",
     "auth": "--auth",
 }
 
-SERVER_BOOL_FLAGS = {"aof", "cluster", "tls"}
+SERVER_BOOL_FLAGS = {"aof", "aof_null_device", "cluster", "tls"}
 
 
 def params_to_args(params: dict) -> list[str]:
