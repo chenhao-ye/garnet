@@ -356,6 +356,69 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def _resolve_setup_target(setup_param: str, explicit_target: str | None) -> str:
+    """Return 'server_params' or 'base_params' for this setup parameter."""
+    if explicit_target:
+        return explicit_target
+    return "server_params" if setup_param in SERVER_PARAM_TO_FLAG else "base_params"
+
+
+def run_sweep(
+    exp_name: str,
+    benchmark_project: str,
+    base_params: dict,
+    sweep: dict,
+    run_dir_root: Path,
+    dry_run: bool,
+    server_proc=None,
+    extra_config: dict | None = None,
+) -> None:
+    """Run the sweep (or single default run) under run_dir_root."""
+    extra = extra_config or {}
+    if sweep:
+        sweep_param = sweep["param"]
+        sweep_values = sweep["values"]
+        print(f"\n[{exp_name}] Sweep {sweep_param} over {sweep_values}")
+        for value in sweep_values:
+            run_params = dict(base_params)
+            run_params[sweep_param] = value
+            run_name = f"{sweep_param}_{value}"
+            config_record = {
+                "experiment": exp_name,
+                "run_name": run_name,
+                "sweep_param": sweep_param,
+                "sweep_value": value,
+                "params": run_params,
+                **extra,
+            }
+            cmd = build_command(benchmark_project, run_params)
+            run_single(
+                run_name,
+                run_dir_root / run_name,
+                cmd,
+                config_record,
+                dry_run,
+                server_proc=server_proc,
+            )
+    else:
+        run_name = "default"
+        config_record = {
+            "experiment": exp_name,
+            "run_name": run_name,
+            "params": base_params,
+            **extra,
+        }
+        cmd = build_command(benchmark_project, base_params)
+        run_single(
+            run_name,
+            run_dir_root / run_name,
+            cmd,
+            config_record,
+            dry_run,
+            server_proc=server_proc,
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run Garnet YCSB experiments")
     parser.add_argument("experiment", help="Experiment name (looks up experiment/configs/<name>.yaml)")
@@ -380,10 +443,7 @@ def main():
     base_params = dict(cfg.get("base_params", {}))
     server_params = dict(cfg.get("server_params", {}))
     sweep = cfg.get("sweep", {})
-
-    # Derive connection info for readiness check from config, with fallbacks.
-    host = server_params.get("host") or base_params.get("host", "127.0.0.1")
-    port = int(server_params.get("port") or base_params.get("port", 6379))
+    setup = cfg.get("setup", {})
 
     exp_dir = RESULT_ROOT / exp_name
 
@@ -405,71 +465,108 @@ def main():
     # ------------------------------------------------------------------
     # Step 3: launch server, run everything, shut server down
     # ------------------------------------------------------------------
-    server_proc = None
-    try:
-        if not args.no_server:
-            server_log = exp_dir / "_server.log"
-            server_proc = launch_server(
-                server_project, server_params, server_log, args.dry_run
-            )
-            wait_for_server(host, port, args.dry_run, server_proc)
+    if setup:
+        setup_param = setup["param"]
+        setup_values = setup["values"]
+        setup_target = _resolve_setup_target(setup_param, setup.get("target"))
 
-        load_cfg = cfg.get("load")
-        if load_cfg is not None:
-            print(f"\n[{exp_name}] Running load step...")
-            run_load(
+        # Derive host/port for readiness check (setup may override these)
+        def _host_port(sp: dict, bp: dict):
+            h = sp.get("host") or bp.get("host", "127.0.0.1")
+            p = int(sp.get("port") or bp.get("port", 6379))
+            return h, p
+
+        print(f"\n[{exp_name}] Setup {setup_param} over {setup_values} (target: {setup_target})")
+        for setup_value in setup_values:
+            setup_name = f"{setup_param}_{setup_value}"
+            setup_dir = exp_dir / setup_name
+
+            # Build per-setup params
+            cur_server_params = dict(server_params)
+            cur_base_params = dict(base_params)
+            if setup_target == "server_params":
+                cur_server_params[setup_param] = setup_value
+            else:
+                cur_base_params[setup_param] = setup_value
+
+            host, port = _host_port(cur_server_params, cur_base_params)
+
+            print(f"\n[{exp_name}] === Setup: {setup_name} ===")
+            server_proc = None
+            try:
+                if not args.no_server:
+                    server_log = setup_dir / "_server.log"
+                    server_proc = launch_server(
+                        server_project, cur_server_params, server_log, args.dry_run
+                    )
+                    wait_for_server(host, port, args.dry_run, server_proc)
+
+                load_cfg = cfg.get("load")
+                if load_cfg is not None:
+                    print(f"\n[{exp_name}] Running load step for {setup_name}...")
+                    run_load(
+                        benchmark_project,
+                        cur_base_params,
+                        load_cfg,
+                        setup_dir,
+                        args.dry_run,
+                        server_proc=server_proc,
+                    )
+
+                run_sweep(
+                    exp_name,
+                    benchmark_project,
+                    cur_base_params,
+                    sweep,
+                    setup_dir,
+                    args.dry_run,
+                    server_proc=server_proc,
+                    extra_config={
+                        "setup_param": setup_param,
+                        "setup_value": setup_value,
+                    },
+                )
+            finally:
+                if not args.no_server:
+                    shutdown_server(server_proc, args.dry_run)
+    else:
+        # No setup: original single-server flow
+        host = server_params.get("host") or base_params.get("host", "127.0.0.1")
+        port = int(server_params.get("port") or base_params.get("port", 6379))
+
+        server_proc = None
+        try:
+            if not args.no_server:
+                server_log = exp_dir / "_server.log"
+                server_proc = launch_server(
+                    server_project, server_params, server_log, args.dry_run
+                )
+                wait_for_server(host, port, args.dry_run, server_proc)
+
+            load_cfg = cfg.get("load")
+            if load_cfg is not None:
+                print(f"\n[{exp_name}] Running load step...")
+                run_load(
+                    benchmark_project,
+                    base_params,
+                    load_cfg,
+                    exp_dir,
+                    args.dry_run,
+                    server_proc=server_proc,
+                )
+
+            run_sweep(
+                exp_name,
                 benchmark_project,
                 base_params,
-                load_cfg,
+                sweep,
                 exp_dir,
                 args.dry_run,
                 server_proc=server_proc,
             )
-
-        if sweep:
-            sweep_param = sweep["param"]
-            sweep_values = sweep["values"]
-            print(f"\n[{exp_name}] Sweep {sweep_param} over {sweep_values}")
-            for value in sweep_values:
-                run_params = dict(base_params)
-                run_params[sweep_param] = value
-                run_name = f"{sweep_param}_{value}"
-                config_record = {
-                    "experiment": exp_name,
-                    "run_name": run_name,
-                    "sweep_param": sweep_param,
-                    "sweep_value": value,
-                    "params": run_params,
-                }
-                cmd = build_command(benchmark_project, run_params)
-                run_single(
-                    run_name,
-                    exp_dir / run_name,
-                    cmd,
-                    config_record,
-                    args.dry_run,
-                    server_proc=server_proc,
-                )
-        else:
-            run_name = "default"
-            config_record = {
-                "experiment": exp_name,
-                "run_name": run_name,
-                "params": base_params,
-            }
-            cmd = build_command(benchmark_project, base_params)
-            run_single(
-                run_name,
-                exp_dir / run_name,
-                cmd,
-                config_record,
-                args.dry_run,
-                server_proc=server_proc,
-            )
-
-    finally:
-        if not args.no_server:
-            shutdown_server(server_proc, args.dry_run)
+        finally:
+            if not args.no_server:
+                shutdown_server(server_proc, args.dry_run)
 
     print(f"\nAll runs complete. Results in: {exp_dir}")
 
