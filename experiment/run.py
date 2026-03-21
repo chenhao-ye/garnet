@@ -84,6 +84,7 @@ PARAM_TO_FLAG = {
     "aof": "--aof",
     "aof_commit_freq": "--aof-commit-freq",
     "aof_physical_sublog_count": "--aof-physical-sublog-count",
+    "aof_replay_task_count": "--aof-replay-task-count",
     "aof_memory_size": "--aof-memory-size",
     "aof_page_size": "--aof-page-size",
     "aof_null_device": "--aof-null-device",

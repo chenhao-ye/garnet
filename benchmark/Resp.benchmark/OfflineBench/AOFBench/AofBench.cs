@@ -29,6 +29,7 @@ namespace Resp.benchmark
                 AofPageSize = options.AofPageSize,
                 CommitFrequencyMs = options.CommitFrequencyMs,
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
+                AofReplayTaskCount = options.AofReplayTaskCount,
                 ReplicationOffsetMaxLag = 0,
                 CheckpointDir = OperatingSystem.IsLinux() ? "/tmp" : null
             };
