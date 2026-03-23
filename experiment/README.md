@@ -28,8 +28,8 @@ Outputs land in `result/scale_clients/`.
 ```
 experiment/
   run.py          # run benchmark sweeps
-  parse.py        # parse output.txt -> result.json
-  plot.py         # plot from result.json
+  parse.py        # parse benchmark output -> result.yaml
+  plot.py         # plot from result.yaml
   configs/
     scale_clients.yaml    # example: sweep threads 1-32
     scale_batchsize.yaml  # example: sweep batchsize 1-4096
@@ -38,12 +38,15 @@ experiment/
 
 result/
   <experiment_name>/
-    _server.log         # Garnet server stdout/stderr
-    _load/              # output of the load step (if configured)
-    <param>_<value>/
-      config.json       # resolved parameters for this run
-      output.txt        # raw benchmark stdout
-    result.json         # aggregated stats (written by parse.py)
+    config.yaml         # original experiment config snapshot
+    <run_name>/
+      _server.log       # Garnet server stdout/stderr for this run
+      config.yaml       # resolved parameters for this run
+      prepare/
+        output.txt      # raw prepare-step stdout (if configured)
+      benchmark/
+        output.txt      # raw benchmark stdout
+    result.yaml         # aggregated stats (written by parse.py)
     plots/              # PDF files (written by plot.py)
 ```
 
@@ -54,112 +57,95 @@ Each experiment is described by a YAML file:
 ```yaml
 name: scale_clients
 description: "Vary number of client threads (1-32) with 70/30 GET/SET workload"
+benchmark: online
 benchmark_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
 
-base_params:
-  host: 127.0.0.1
-  port: 6379
-  online: true
-  op_workload: [GET, SET]
-  op_percent: [70, 30]
-  dbsize: 100000
-  batchsize: 128
-  runtime: 30
-  disable_console_logger: true
+base:
+  client_params:
+    client: GarnetClientSession
+    host: 127.0.0.1
+    port: 6379
+    online: true
+    op_workload: [GET, SET]
+    op_percent: [70, 30]
+    dbsize: 100000
+    batchsize: 128
+    runtime: 30
+    disable_console_logger: true
+  server_params:
+    bind: 127.0.0.1
+    port: 6379
 
 sweep:
-  param: threads
-  values: [1, 2, 4, 8, 16, 32]
+  client_params:
+    threads: [1, 2, 4, 8, 16, 32]
 ```
 
-- **`base_params`**: parameters shared by every run. Boolean flags (e.g. `online`,
-  `zipf`) are emitted as bare flags when `true` and omitted when `false`. List
-  values (e.g. `op_workload`, `op_percent`) are joined with commas.
-- **`sweep`**: one parameter to vary. Each value produces one run named
-  `<param>_<value>`. Omit `sweep` entirely for a single run.
-- **`setup`** *(optional)*: outer parameter sweep. Each setup value gets its own
-  subdirectory `<param>_<value>/`, and the inner `sweep` runs beneath it. If
-  the parameter matches a supported server flag it is applied to
-  `server_params`; otherwise it is applied to `base_params`.
+- **`prepare`** *(optional)*: one benchmark-client-only step run after server
+  startup and before the benchmark step for every run. It supports only
+  `client_params` and is merged on top of the resolved client params for that
+  run.
+- **`base`**: shared defaults for each run. It may contain `client_params` and
+  `server_params`.
+- **`sweep`** *(optional)*: parameter lists to vary. It may contain
+  `client_params` and `server_params`, and the runner executes the Cartesian
+  product across all listed values. Omit `sweep` or leave both subsections
+  empty to execute a single run.
 - **`benchmark_project`**: path to the `.csproj` relative to the repo root.
   Defaults to `benchmark/Resp.benchmark/Resp.benchmark.csproj`.
-- **`load`** *(optional)*: one-time server pre-load step run before the sweep
-  (see [Pre-loading the server](#pre-loading-the-server) below).
 - **`server_project`** *(optional)*: path to the GarnetServer `.csproj` relative
   to the repo root. Defaults to `main/GarnetServer/GarnetServer.csproj`.
-- **`server_params`** *(optional)*: flags forwarded to the Garnet server process.
-  Supported keys: `port`, `host`, `index`, `aof`, `aof_commit_freq`,
-  `aof_memory_size`, `aof_page_size`, `aof_physical_sublog_count`,
-  `cluster`, `tls`, `auth`. Defaults to whatever the server project uses
-  when no flags are provided.
+- **`no_server`** *(optional)*: skip external server launch/shutdown for embedded
+  benchmark modes such as AOF `InProc`.
 
-### Supported Parameters
+Boolean flags (e.g. `online`, `zipf`) are emitted as bare flags when `true` and
+omitted when `false`. List-valued client parameters such as `op_workload` and
+`op_percent` are joined with commas before invoking the benchmark client.
 
-| YAML key | CLI flag | Notes |
-|---|---|---|
-| `host` | `--host` | |
-| `port` | `--port` | |
-| `online` | `--online` | bool |
-| `op_workload` | `--op-workload` | list, e.g. `[GET, SET, DEL]` |
-| `op_percent` | `--op-percent` | list, must sum to 100 |
-| `dbsize` | `--dbsize` | number of keys |
-| `batchsize` | `--batchsize` | pipeline depth |
-| `threads` | `--threads` | client thread count |
-| `runtime` | `--runtime` | seconds per run |
-| `disable_console_logger` | `--disable-console-logger` | bool; required for clean stdout parsing |
-| `skipload` | `--skipload` | bool |
-| `zipf` | `--zipf` | bool; Zipf(0.99) key distribution |
-| `client` | `--client` | `LightClient`, `SERedis`, `GarnetClientSession`, etc. |
-| `keylength` | `--keylength` | |
-| `valuelength` | `--valuelength` | |
-| `ttl` | `--ttl` | |
-| `itp` | `--itp` | intra-thread parallelism |
-| `aof` | `--aof` | bool |
-| `aof_commit_freq` | `--aof-commit-freq` | |
-| `aof_physical_sublog_count` | `--aof-physical-sublog-count` | |
-| `aof_memory_size` | `--aof-memory-size` | |
-| `aof_page_size` | `--aof-page-size` | |
-| `cluster` | `--cluster` | bool |
-| `totalops` | `--totalops` | |
-| `client_hist` | `--client-hist` | bool |
+The runner no longer relies on Resp.benchmark’s own sweep behavior to create
+multiple runs. Each experiment run is resolved explicitly in Python from the
+`sweep` Cartesian product.
 
-## Pre-loading the server
+## Prepare Step
 
-The `--online` benchmark mode does not support `--skipload` — it has no
-built-in load phase. For mixed GET/SET workloads this is fine (SET operations
-create keys on the fly). For read-heavy or pure-GET workloads the keys must
-exist before measuring, so a separate load step is required.
+The `--online` benchmark mode does not support `--skipload`, so read-heavy
+workloads still need a write phase before measurement. Use `prepare` for that.
 
-Add a `load` section to the config. Its fields override `base_params` for the
-load run only. `run.py` automatically strips `online`, `skipload`, and
-`disable_console_logger` from the load params (they are not meaningful for a
-plain write run). The load step runs once, before any sweep iteration, and its
-output is saved to `result/<name>/_load/`.
+`prepare.client_params` is merged on top of the resolved run client params, then
+`run.py` automatically strips `online`, `skipload`, and
+`disable_console_logger` because they are not meaningful for the prepare write
+step. The prepare step runs once per run, and its output is saved to
+`result/<name>/<run_name>/prepare/output.txt`.
 
 ```yaml
-base_params:
-  host: 127.0.0.1
-  port: 6379
-  online: true
-  op_workload: [GET]
-  op_percent: [100]
-  dbsize: 100000
-  keylength: 8
-  valuelength: 64
-  batchsize: 128
-  runtime: 30
-  disable_console_logger: true
+prepare:
+  client_params:
+    op: MSET
+    threads: 8
+    batchsize: 4096
+    runtime: -1
+    totalops: 100000
 
-load:
-  op: MSET
-  threads: 8
-  batchsize: 4096
-  runtime: -1
-  totalops: 100000   # should cover dbsize
+base:
+  client_params:
+    host: 127.0.0.1
+    port: 6379
+    online: true
+    op_workload: [GET]
+    op_percent: [100]
+    dbsize: 100000
+    keylength: 8
+    valuelength: 64
+    batchsize: 128
+    runtime: 30
+    disable_console_logger: true
+  server_params:
+    bind: 127.0.0.1
+    port: 6379
 
 sweep:
-  param: threads
-  values: [1, 2, 4, 8, 16, 32]
+  client_params:
+    threads: [1, 2, 4, 8, 16, 32]
 ```
 
 See `configs/readonly.yaml` for a complete example.
@@ -167,7 +153,7 @@ See `configs/readonly.yaml` for a complete example.
 ## run.py
 
 ```
-uv run experiment/run.py <config.yaml> [--dry-run] [--no-server]
+uv run experiment/run.py <config.yaml> [--dry-run]
 ```
 
 Full lifecycle per invocation:
@@ -176,18 +162,16 @@ Full lifecycle per invocation:
    to eliminate processes left over from any prior run.
 2. **Clean result dir** — deletes and recreates `result/<name>/` so no stale
    output files remain.
-3. **Launch server** — starts `dotnet run -c Release --project
-   main/GarnetServer/GarnetServer.csproj` in the background and polls the TCP
-   port (default 60 s timeout) until the server accepts connections. Server
-   stdout/stderr is captured to `result/<name>/_server.log`.
-4. **Load step** *(if `load` section present)* — runs once before the sweep.
-5. **Sweep** — runs each configuration in order, streaming output to the
-   terminal and saving it to `result/<name>/<run>/output.txt`.
-6. **Shutdown server** — terminates the server process (always, even on error).
+3. **Expand sweep** — compute the Cartesian product across all
+   `sweep.client_params.*` and `sweep.server_params.*` value lists.
+4. **Per run**:
+   launch the server, wait for readiness, run `prepare` if configured, run the
+   benchmark, then shut the server down.
+5. **Store outputs** — each run gets its own resolved `config.yaml`,
+   `prepare/output.txt`, `benchmark/output.txt`, and `_server.log`.
 
 Flags:
 - `--dry-run` — print all commands without executing anything.
-- `--no-server` — skip server launch/shutdown (use an already-running server).
 
 ## parse.py
 
@@ -195,34 +179,30 @@ Flags:
 uv run experiment/parse.py <experiment_name> [--warmup N]
 ```
 
-Reads every `output.txt` under `result/<experiment_name>/`, locates the stats
-header line (`min (us); 5th (us); ...`), and parses the 10-column data rows
-printed every 2 seconds by the benchmark. The first `N` rows (default 2) are
-discarded as warmup. Per-run statistics (mean, std, min, max) are computed for
-each column and written to `result/<experiment_name>/result.json`.
+Reads every `benchmark/output.txt` under `result/<experiment_name>/`, locates
+the stats header line (`min (us); 5th (us); ...`), and parses the benchmark
+rows. The first `N` rows (default 2) are discarded as warmup. Per-run
+statistics (mean, std, min, max) are computed for each column and written to
+`result/<experiment_name>/result.yaml`.
 
-### result.json schema
+### result.yaml schema
 
-```json
-{
-  "experiment_name": "scale_clients",
-  "sweep_param": "threads",
-  "sweep_values": [1, 2, 4, 8, 16, 32],
-  "warmup_rows_discarded": 2,
-  "runs": {
-    "threads_8": {
-      "config": { ... },
-      "sweep_value": 8,
-      "num_samples": 13,
-      "samples": [ { "tpt_kops": 512.3, "median_us": 45.1, ... }, ... ],
-      "stats": {
-        "tpt_kops":  { "mean": 510.2, "std": 4.1, "min": 502.0, "max": 518.5 },
-        "median_us": { "mean": 45.8,  "std": 1.2, "min": 44.0,  "max": 48.3 },
-        ...
-      }
-    }
-  }
-}
+```yaml
+experiment_name: scale_clients
+sweep_param: threads
+sweep_values: [1, 2, 4, 8, 16, 32]
+warmup_rows_discarded: 2
+runs:
+  threads_8:
+    config: {...}
+    sweep_value: 8
+    num_samples: 13
+    samples:
+      - {tpt_kops: 512.3, median_us: 45.1, ...}
+    stats:
+      tpt_kops: {mean: 510.2, std: 4.1, min: 502.0, max: 518.5}
+      median_us: {mean: 45.8, std: 1.2, min: 44.0, max: 48.3}
+      ...
 ```
 
 Columns: `min_us`, `p5_us`, `median_us`, `avg_us`, `p95_us`, `p99_us`,
@@ -234,7 +214,7 @@ Columns: `min_us`, `p5_us`, `median_us`, `avg_us`, `p95_us`, `p99_us`,
 uv run experiment/plot.py <experiment_name> [--output-dir DIR]
 ```
 
-Reads `result/<experiment_name>/result.json` and writes PNG files to
+Reads `result/<experiment_name>/result.yaml` and writes PNG files to
 `result/<experiment_name>/plots/` (or `--output-dir`).
 
 - **throughput.pdf** / **throughput_line.pdf** -- throughput (Kops/sec) vs
@@ -250,7 +230,8 @@ range spans more than 10x.
 
 | Config | Sweep | Workload | Load step |
 |---|---|---|---|
-| `configs/scale_clients.yaml` | `threads`: 1, 2, 4, 8, 16, 32 | 70% GET / 30% SET | no |
-| `configs/scale_batchsize.yaml` | `batchsize`: 1, 4, 16, 64, 256, 1024, 4096 | 70% GET / 30% SET, 8 threads | no |
-| `configs/readonly.yaml` | `threads`: 1, 2, 4, 8, 16, 32 | 100% GET | yes (MSET 100k keys) |
-| `configs/aof_bench_clients.yaml` | setup `aof_physical_sublog_count`: 1, 2, 4, 8; sweep `threads`: 1, 2, 4, 8, 16, 32 | AofBench Replay, InProc, null device | no server |
+| `configs/scale_clients.yaml` | `client_params.threads`: 1, 2, 4, 8, 16, 32 | 70% GET / 30% SET | no |
+| `configs/scale_batchsize.yaml` | `client_params.batchsize`: 1, 4, 16, 64, 256, 1024, 4096 | 70% GET / 30% SET, 8 threads | no |
+| `configs/readonly.yaml` | `client_params.threads`: 1, 2, 4, 8, 16, 32 | 100% GET | yes, per-run `prepare` with MSET |
+| `configs/aof_bench_clients.yaml` | `server_params.aof_physical_sublog_count`: 1, 8 and `client_params.threads`: 1, 2, 4, 8, 16, 32 | online SET workload, null-device AOF | launches server |
+| `configs/aof_bench_sublog.yaml` | `client_params.aof_replay_task_count`: 1, 2, 4, 8 | AofBench Replay, InProc, null device | no server |

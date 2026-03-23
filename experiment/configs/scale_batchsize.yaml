@@ -4,19 +4,25 @@
 
 name: scale_batchsize
 description: "Sweep batch size (pipeline depth) from 1 to 4096 at 8 threads"
+benchmark: online
 benchmark_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
 
-base_params:
-  host: 127.0.0.1
-  port: 6379
-  online: true
-  op_workload: [GET, SET]
-  op_percent: [70, 30]
-  dbsize: 100000
-  threads: 8
-  runtime: 30
-  disable_console_logger: true
+base:
+  client_params:
+    client: GarnetClientSession
+    host: 127.0.0.1
+    port: 6379
+    online: true
+    op_workload: [GET, SET]
+    op_percent: [70, 30]
+    dbsize: 100000
+    threads: 8
+    runtime: 30
+    disable_console_logger: true
+  server_params:
+    bind: 127.0.0.1
+    port: 6379
 
 sweep:
-  param: batchsize
-  values: [1, 4, 16, 64, 256, 1024, 4096]
+  client_params:
+    batchsize: [1, 4, 16, 64, 256, 1024, 4096]

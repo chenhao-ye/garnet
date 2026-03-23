@@ -1,36 +1,37 @@
 # Experiment: aof_bench_clients
 # Sweep the number of client threads from 1 to 32 for a regular online write
-# workload while varying the number of AOF physical sublogs as named setup
-# variants.
+# workload while varying the number of AOF physical sublogs.
 
 name: aof_bench_clients
 description: "Sweep client threads (1-32) for an online write workload across physical sublog setups"
+benchmark: online
 benchmark_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
 
-base_params:
-  host: 127.0.0.1
-  port: 6379
-  online: true
-  op_workload: [SET]
-  op_percent: [100]
-  dbsize: 100000
-  keylength: 8
-  valuelength: 64
-  batchsize: 128
-  runtime: 10
-  disable_console_logger: true
-
-server_params:
-  aof: true
-  aof_null_device: true
-  aof_commit_freq: -1
-  aof_memory_size: "256m"
-  aof_page_size: "4m"
-
-setup:
-  param: aof_physical_sublog_count
-  values: [1, 8]
+base:
+  client_params:
+    client: GarnetClientSession
+    host: 127.0.0.1
+    port: 6379
+    online: true
+    op_workload: [SET]
+    op_percent: [100]
+    dbsize: 100000
+    keylength: 8
+    valuelength: 64
+    batchsize: 128
+    runtime: 10
+    disable_console_logger: true
+  server_params:
+    bind: 127.0.0.1
+    port: 6379
+    aof: true
+    aof_null_device: true
+    aof_commit_freq: -1
+    aof_memory: "256m"
+    aof_page_size: "4m"
 
 sweep:
-  param: threads
-  values: [1, 2, 4, 8, 16, 32]
+  client_params:
+    threads: [1, 2, 4, 8, 16, 32]
+  server_params:
+    aof_physical_sublog_count: [1, 8]

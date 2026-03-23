@@ -9,3 +9,6 @@ dependencies = [
     "numpy>=2.4.3",
     "pyyaml>=6.0.3",
 ]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

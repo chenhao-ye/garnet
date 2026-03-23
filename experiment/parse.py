@@ -12,8 +12,9 @@ Usage:
 import argparse
 import math
 import re
-import yaml
 from pathlib import Path
+
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULT_ROOT = REPO_ROOT / "result"
@@ -48,6 +49,10 @@ AOF_METRIC_NAME_MAP = {
 HEADER_RE = re.compile(r"min\s*\(us\)")
 AOF_METRIC_RE = re.compile(r"^\[(?P<name>[^\]]+)\]:\s*(?P<value>.+)$")
 AOF_NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
+SUPPORTED_BENCHMARKS = {
+    "online",
+    "aof",
+}
 
 
 def _is_data_row(parts: list[str]) -> bool:
@@ -96,14 +101,22 @@ def _summarize_samples(samples: list[dict], columns: list[str]) -> dict:
     return {col: _stats([sample.get(col) for sample in samples]) for col in columns}
 
 
-def _detect_benchmark(config: dict) -> str:
+def _resolve_benchmark(config: dict) -> str:
+    benchmark = config.get("benchmark")
+    if benchmark == "aof_bench":
+        return "aof"
+    if benchmark in SUPPORTED_BENCHMARKS:
+        return benchmark
+
     params = config.get("params", {}) or {}
     if params.get("aof_bench"):
-        return "aof_bench"
+        return "aof"
     return "online"
 
 
-def _parse_online_output(path: Path, warmup_rows: int = 2) -> tuple[list[dict], list[str]]:
+def _parse_online_output(
+    path: Path, warmup_rows: int = 2
+) -> tuple[list[dict], list[str]]:
     """Parse the tabular RespOnlineBench output format."""
     samples = []
     past_header = False
@@ -150,7 +163,8 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
                 )
                 current["bytes"] = (
                     float(bytes_match.group(1).replace(",", ""))
-                    if bytes_match is not None else None
+                    if bytes_match is not None
+                    else None
                 )
             elif current is not None:
                 metric_key = AOF_METRIC_NAME_MAP.get(name, _snake_case(name))
@@ -173,34 +187,46 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
     return samples, columns
 
 
-def parse_output(path: Path, benchmark: str, warmup_rows: int = 2) -> tuple[list[dict], list[str]]:
+def parse_output(
+    path: Path, benchmark: str, warmup_rows: int = 2
+) -> tuple[list[dict], list[str]]:
     """Return parsed samples and the benchmark-specific metric columns."""
-    if benchmark == "aof_bench":
+    if benchmark == "aof":
         return _parse_aof_output(path)
     if benchmark == "online":
         return _parse_online_output(path, warmup_rows=warmup_rows)
-    raise ValueError(f"Unsupported benchmark type: {benchmark}")
+    raise ValueError(f"Unsupported benchmark: {benchmark}")
 
 
-def _format_summary(benchmark: str, stats: dict, num_samples: int, run_name: str) -> str:
-    if benchmark == "aof_bench":
-        return ", ".join([
+def _format_summary(
+    benchmark: str, stats: dict, num_samples: int, run_name: str
+) -> str:
+    if benchmark == "aof":
+        return ", ".join(
+            [
+                f"  Parsed {run_name}: {num_samples} samples",
+                f"mean throughput={stats['throughput']['mean']} Krecords/s",
+                f"bandwidth={stats['bandwidth']['mean']} GiB/s",
+            ]
+        )
+
+    return ", ".join(
+        [
             f"  Parsed {run_name}: {num_samples} samples",
-            f"mean throughput={stats['throughput']['mean']} Krecords/s",
-            f"bandwidth={stats['bandwidth']['mean']} GiB/s",
-        ])
-
-    return ", ".join([
-        f"  Parsed {run_name}: {num_samples} samples",
-        f"mean tpt={stats['tpt_kops']['mean']} Kops/s",
-        f"median lat={stats['median_us']['mean']} us",
-    ])
+            f"mean tpt={stats['tpt_kops']['mean']} Kops/s",
+            f"median lat={stats['median_us']['mean']} us",
+        ]
+    )
 
 
 def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
     """Parse a single run directory. Returns None if output.txt is missing."""
-    output_path = run_dir / "output.txt"
+    output_path = run_dir / "benchmark" / "output.txt"
+    legacy_output_path = run_dir / "output.txt"
     config_path = run_dir / "config.yaml"
+
+    if not output_path.exists() and legacy_output_path.exists():
+        output_path = legacy_output_path
 
     if not output_path.exists():
         print(f"  [skip] {run_dir.name}: no output.txt")
@@ -211,8 +237,10 @@ def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
 
-    benchmark = _detect_benchmark(config)
-    samples, metric_columns = parse_output(output_path, benchmark=benchmark, warmup_rows=warmup)
+    benchmark = _resolve_benchmark(config)
+    samples, metric_columns = parse_output(
+        output_path, benchmark=benchmark, warmup_rows=warmup
+    )
     stats = _summarize_samples(samples, metric_columns)
     print(_format_summary(benchmark, stats, len(samples), run_dir.name))
     return {
@@ -245,10 +273,15 @@ def _collect_runs(run_dirs: list, warmup: int) -> tuple[dict, str | None, list]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Parse Garnet benchmark outputs into result.json")
+        description="Parse Garnet benchmark outputs into result.yaml"
+    )
     parser.add_argument("experiment", help="Experiment name (subdirectory of result/)")
-    parser.add_argument("--warmup", type=int, default=2,
-                        help="Number of initial samples to discard as warmup (default: 2)")
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=2,
+        help="Number of initial samples to discard as warmup (default: 2)",
+    )
     args = parser.parse_args()
 
     exp_dir = RESULT_ROOT / args.experiment
@@ -256,83 +289,20 @@ def main():
         print(f"Error: experiment directory not found: {exp_dir}")
         raise SystemExit(1)
 
-    # Detect whether this experiment used setup dirs by reading the top-level config.
-    exp_config = {}
-    exp_config_path = exp_dir / "config.yaml"
-    if exp_config_path.exists():
-        with open(exp_config_path) as f:
-            exp_config = yaml.safe_load(f) or {}
+    run_dirs = sorted(d for d in exp_dir.iterdir() if d.is_dir())
+    if not run_dirs:
+        print(f"Error: no run directories found in {exp_dir}")
+        raise SystemExit(1)
 
-    has_setup = bool(exp_config.get("setup"))
+    runs, sweep_param, sweep_values = _collect_runs(run_dirs, args.warmup)
 
-    if has_setup:
-        setup_cfg = exp_config["setup"]
-        setup_param = setup_cfg["param"]
-        setup_values = setup_cfg["values"]
-
-        # Each setup is a subdirectory named <param>_<value>
-        setup_dirs = sorted(
-            d for d in exp_dir.iterdir()
-            if d.is_dir() and d.name not in ("_load",)
-            and not (d / "output.txt").exists()  # skip plain run dirs if any
-        )
-        if not setup_dirs:
-            print(f"Error: no setup directories found in {exp_dir}")
-            raise SystemExit(1)
-
-        setups = {}
-        sweep_param = None
-        sweep_values_found: list = []
-
-        for setup_dir in setup_dirs:
-            print(f"\n[setup] {setup_dir.name}")
-            run_dirs = sorted(
-                d for d in setup_dir.iterdir()
-                if d.is_dir() and d.name != "_load"
-            )
-            runs, sp, svs = _collect_runs(run_dirs, args.warmup)
-            if sweep_param is None and sp is not None:
-                sweep_param = sp
-            for sv in svs:
-                if sv not in sweep_values_found:
-                    sweep_values_found.append(sv)
-
-            # Recover setup_value from the first run's config, or infer from dir name
-            setup_value = None
-            for entry in runs.values():
-                setup_value = entry["config"].get("setup_value")
-                if setup_value is not None:
-                    break
-
-            setups[setup_dir.name] = {
-                "setup_value": setup_value,
-                "runs": runs,
-            }
-
-        result = {
-            "experiment_name": args.experiment,
-            "setup_param": setup_param,
-            "setup_values": setup_values,
-            "sweep_param": sweep_param,
-            "sweep_values": sweep_values_found,
-            "warmup_rows_discarded": args.warmup,
-            "setups": setups,
-        }
-    else:
-        run_dirs = sorted(d for d in exp_dir.iterdir() if d.is_dir() and d.name != "_load")
-        if not run_dirs:
-            print(f"Error: no run directories found in {exp_dir}")
-            raise SystemExit(1)
-
-        runs, sweep_param, sweep_values = _collect_runs(run_dirs, args.warmup)
-
-        result = {
-            "experiment_name": args.experiment,
-            "sweep_param": sweep_param,
-            "sweep_values": sweep_values,
-            "warmup_rows_discarded": args.warmup,
-            "runs": runs,
-        }
+    result = {
+        "experiment_name": args.experiment,
+        "sweep_param": sweep_param,
+        "sweep_values": sweep_values,
+        "warmup_rows_discarded": args.warmup,
+        "runs": runs,
+    }
 
     out_path = exp_dir / "result.yaml"
     with open(out_path, "w") as f:

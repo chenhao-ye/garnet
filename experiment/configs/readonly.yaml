@@ -2,36 +2,40 @@
 # Pure read workload (100% GET). Keys must exist before measuring, so a load
 # step pre-populates the server with MSET before the sweep begins.
 #
-# The `load` section runs a separate non-online benchmark that writes all keys
-# once, then the sweep measures pure GET throughput across thread counts.
+# The `prepare` section runs a separate non-online benchmark for each run that
+# writes all keys once, then the benchmark step measures pure GET throughput.
 
 name: readonly
 description: "100% GET workload after server pre-load; sweep threads 1-32"
+benchmark: online
 benchmark_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
 
-base_params:
-  host: 127.0.0.1
-  port: 6379
-  online: true
-  op_workload: [GET]
-  op_percent: [100]
-  dbsize: 100000
-  keylength: 8
-  valuelength: 64
-  batchsize: 128
-  runtime: 30
-  disable_console_logger: true
+prepare:
+  client_params:
+    op: MSET
+    threads: 8
+    batchsize: 4096
+    runtime: -1
+    totalops: 100000
 
-# One-time load step: write all keys before any benchmark run.
-# Fields here override base_params for the load run only.
-# `online`, `skipload`, and `disable_console_logger` are stripped automatically.
-load:
-  op: MSET
-  threads: 8
-  batchsize: 4096
-  runtime: -1
-  totalops: 100000
+base:
+  client_params:
+    client: GarnetClientSession
+    host: 127.0.0.1
+    port: 6379
+    online: true
+    op_workload: [GET]
+    op_percent: [100]
+    dbsize: 100000
+    keylength: 8
+    valuelength: 64
+    batchsize: 128
+    runtime: 30
+    disable_console_logger: true
+  server_params:
+    bind: 127.0.0.1
+    port: 6379
 
 sweep:
-  param: threads
-  values: [1, 2, 4, 8, 16, 32]
+  client_params:
+    threads: [1, 2, 4, 8]
