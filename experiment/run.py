@@ -133,7 +133,7 @@ def resolve_server_endpoint(
     server_params: dict, client_params: dict
 ) -> tuple[str, int]:
     host = server_params.get("bind") or client_params.get("host") or "127.0.0.1"
-    port = int(server_params.get("port") or client_params.get("port")) or 6379
+    port = int(server_params.get("port") or client_params.get("port") or 6379)
     return host, port
 
 
