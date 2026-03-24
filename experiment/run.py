@@ -147,7 +147,7 @@ def get_benchmark(cfg: dict, config_path: str) -> str:
             f"Config '{config_path}' is missing required field 'benchmark'"
         )
     if benchmark not in SUPPORTED_BENCHMARKS:
-        supported = ", ".join(sorted(SUPPORTED_BENCHMARKS))
+        supported = ", ".join(SUPPORTED_BENCHMARKS)
         raise ValueError(
             f"Unsupported benchmark '{benchmark}' in '{config_path}'. "
             f"Expected one of: {supported}"
@@ -188,9 +188,8 @@ def sanitize_name_part(value) -> str:
 def run_name_for_combo(combo: dict) -> str:
     parts: list[str] = []
     for scope, prefix in (("client_params", "c"), ("server_params", "s")):
-        for key in sorted(combo[scope]):
-            value = combo[scope][key]
-            parts.append(f"{prefix}_{key}_{sanitize_name_part(value)}")
+        for key, value in combo[scope].items():
+            parts.append(f"{prefix}.{key}_{sanitize_name_part(value)}")
     return "__".join(parts) if parts else "default"
 
 
@@ -215,7 +214,8 @@ def dump_config(path: Path, payload: dict) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
-        yaml.dump(payload, f, sort_keys=False)
+        # set width to avoid break a simple string into multiple lines
+        yaml.dump(payload, f, sort_keys=False, width=10_000)
 
 
 def launch_server(
@@ -242,7 +242,7 @@ def wait_for_server(host: str, port: int, proc: subprocess.Popen | None = None) 
     if dry_run:
         return
     deadline = time.time() + SERVER_READY_TIMEOUT
-    logger.info(f"Waiting for server {host}:{port} ...")
+    logger.debug(f"Waiting for server {host}:{port} ...")
     while time.time() < deadline:
         if proc is not None and proc.poll() is not None:
             raise RuntimeError(
@@ -251,7 +251,7 @@ def wait_for_server(host: str, port: int, proc: subprocess.Popen | None = None) 
             )
         try:
             with socket.create_connection((host, port), timeout=1):
-                logger.info(f"[server] ready on {host}:{port}")
+                logger.debug(f"Server ready on {host}:{port}")
                 return
         except OSError:
             time.sleep(SERVER_READY_INTERVAL)
@@ -278,10 +278,7 @@ def run_command(
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # logger.info("-" * 60)
-    # logger.info(f"Dir: {run_dir}")
     logger.info(f"Cmd: {shlex.join(cmd)} @{run_dir}")
-    # logger.info("-" * 60)
 
     if dry_run:
         logger.info("[dry-run] skipping execution")
@@ -425,7 +422,9 @@ def main():
         server_params = dict(base_server_params)
         server_params.update(combo["server_params"])
 
-        logger.info(f"=== Run: [{exp_name}] @{run_name} ===")
+        logger.info(
+            f"==================== Run: [{exp_name}] @{run_name} ===================="
+        )
         execute_run(
             exp_name=exp_name,
             benchmark=benchmark,
