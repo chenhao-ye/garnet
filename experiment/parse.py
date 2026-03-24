@@ -32,12 +32,7 @@ ONLINE_COLUMNS = [
     "tpt_kops",
 ]
 
-AOF_BASE_COLUMNS = [
-    "time_ms",
-    "bytes",
-    "bandwidth",
-    "throughput",
-]
+AOF_BASE_COLUMNS = ["time_ms", "bytes", "bandwidth", "throughput"]
 
 AOF_METRIC_NAME_MAP = {
     "Bandwidth": "bandwidth",
@@ -49,10 +44,7 @@ AOF_METRIC_NAME_MAP = {
 HEADER_RE = re.compile(r"min\s*\(us\)")
 AOF_METRIC_RE = re.compile(r"^\[(?P<name>[^\]]+)\]:\s*(?P<value>.+)$")
 AOF_NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
-SUPPORTED_BENCHMARKS = {
-    "online",
-    "aof",
-}
+SUPPORTED_BENCHMARKS = {"online", "aof"}
 
 
 def _is_data_row(parts: list[str]) -> bool:
@@ -285,13 +277,11 @@ def main():
 
     exp_dir = RESULT_ROOT / args.experiment
     if not exp_dir.exists():
-        print(f"Error: experiment directory not found: {exp_dir}")
-        raise SystemExit(1)
+        raise FileNotFoundError(f"Experiment directory not found: {exp_dir}")
 
     run_dirs = sorted(d for d in exp_dir.iterdir() if d.is_dir())
     if not run_dirs:
-        print(f"Error: no run directories found in {exp_dir}")
-        raise SystemExit(1)
+        raise ValueError(f"No run directories found in {exp_dir}")
 
     runs, sweep_params = _collect_runs(run_dirs, args.warmup)
 
