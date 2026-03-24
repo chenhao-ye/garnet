@@ -28,7 +28,6 @@ base:
     dbsize: 100000
     keylength: 8
     valuelength: 64
-    batchsize: 128
     runtime: 30
     disable_console_logger: true
   server_params:

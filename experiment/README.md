@@ -11,6 +11,9 @@ Garnet online benchmark, parsing the output, and plotting the results.
 ## Quick Start
 
 ```bash
+# Validate config semantics before running
+uv run experiment/check.py scale_clients
+
 # Run an experiment (server is launched and shut down automatically)
 uv run experiment/run.py experiment/configs/scale_clients.yaml
 
@@ -27,6 +30,7 @@ Outputs land in `result/scale_clients/`.
 
 ```
 experiment/
+  check.py        # validate config semantics against Resp.benchmark
   run.py          # run benchmark sweeps
   parse.py        # parse benchmark output -> result.yaml
   plot.py         # plot from result.yaml
@@ -173,6 +177,23 @@ Full lifecycle per invocation:
 
 Flags:
 - `--dry-run` — print all commands without executing anything.
+
+## check.py
+
+```
+uv run experiment/check.py <experiment_name> [--config PATH]
+```
+
+Validates that an experiment config maps cleanly onto `Resp.benchmark`:
+
+- catches unknown client parameters that do not map to any benchmark option
+- catches benchmark-label mismatches such as `benchmark: online` without
+  `online: true` in `client_params`
+- warns when a parameter is accepted by `Resp.benchmark` but ignored or
+  overridden in the selected mode, such as `batchsize != 1` for online mode or
+  `threads` in AOF replay mode
+
+Exit code is `1` if any errors are found, otherwise `0`.
 
 ## parse.py
 

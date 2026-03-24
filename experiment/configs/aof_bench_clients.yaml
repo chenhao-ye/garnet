@@ -15,11 +15,9 @@ base:
     dbsize: 100000
     keylength: 8
     valuelength: 64
-    batchsize: 128
     runtime: 10
     disable_console_logger: true
   server_params:
-    port: 6379
     aof: true
     aof_null_device: true
     aof_commit_freq: -1

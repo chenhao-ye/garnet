@@ -13,7 +13,6 @@ base:
     op_workload: [GET, SET]
     op_percent: [70, 30]
     dbsize: 100000
-    batchsize: 128
     runtime: 30
     disable_console_logger: true
   server_params:
