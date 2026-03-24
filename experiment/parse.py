@@ -247,28 +247,27 @@ def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
         "benchmark": benchmark,
         "config": config,
         "metric_columns": metric_columns,
-        "sweep_value": config.get("sweep_value"),
+        "sweep_params": config.get("sweep_params", {}),
         "num_samples": len(samples),
         "samples": samples,
         "stats": stats,
     }
 
 
-def _collect_runs(run_dirs: list, warmup: int) -> tuple[dict, str | None, list]:
-    """Parse a list of run directories. Returns (runs, sweep_param, sweep_values)."""
+def _collect_runs(run_dirs: list, warmup: int) -> tuple[dict, dict[str, list]]:
+    """Parse a list of run directories. Returns (runs, sweep_params)."""
     runs = {}
-    sweep_param = None
-    sweep_values = []
+    sweep_params: dict[str, list] = {}
     for run_dir in run_dirs:
         entry = _parse_run_dir(run_dir, warmup)
         if entry is None:
             continue
-        if sweep_param is None and "sweep_param" in entry["config"]:
-            sweep_param = entry["config"]["sweep_param"]
-        if entry["sweep_value"] is not None:
-            sweep_values.append(entry["sweep_value"])
+        for key, value in entry["sweep_params"].items():
+            values = sweep_params.setdefault(key, [])
+            if value not in values:
+                values.append(value)
         runs[run_dir.name] = entry
-    return runs, sweep_param, sweep_values
+    return runs, sweep_params
 
 
 def main():
@@ -294,12 +293,11 @@ def main():
         print(f"Error: no run directories found in {exp_dir}")
         raise SystemExit(1)
 
-    runs, sweep_param, sweep_values = _collect_runs(run_dirs, args.warmup)
+    runs, sweep_params = _collect_runs(run_dirs, args.warmup)
 
     result = {
         "experiment_name": args.experiment,
-        "sweep_param": sweep_param,
-        "sweep_values": sweep_values,
+        "sweep_params": sweep_params,
         "warmup_rows_discarded": args.warmup,
         "runs": runs,
     }

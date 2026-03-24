@@ -7,21 +7,16 @@
 name: aof_bench_sublog
 description: "Scale AOF replay task count (1-8) with main-memory replication (null device, InProc)"
 benchmark: aof
-benchmark_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
 no_server: true
 
 base:
   client_params:
     aof_bench: true
-    aof_bench_type: Replay
     cluster: true
     aof_null_device: true
     client: InProc
-    runtime: 15
     aof_commit_freq: -1
-    aof_physical_sublog_count: 1
     aof_memory_size: "256m"
-    aof_page_size: "4m"
 
 sweep:
   client_params:

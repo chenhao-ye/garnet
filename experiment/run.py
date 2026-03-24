@@ -73,31 +73,20 @@ def check_client_params(params: dict) -> None:
         logger.warning(f"expected client={expected_client!r}, got {actual_client!r}")
 
 
-def client_params_to_args(params: dict) -> list[str]:
-    check_client_params(params)
+def params_to_args(
+    params: dict, *, bool_params: set[str], list_params: set[str]
+) -> list[str]:
     args: list[str] = []
     for key, value in params.items():
         flag = flag_for_param(key)
-        if key in CLIENT_BOOL_PARAMS:
+        if key in bool_params:
             if value:
                 args.append(flag)
-        elif key in CLIENT_LIST_PARAMS:
+        elif key in list_params:
             if isinstance(value, list):
                 args += [flag, ",".join(str(v) for v in value)]
             else:
                 args += [flag, str(value)]
-        else:
-            args += [flag, str(value)]
-    return args
-
-
-def server_params_to_args(params: dict) -> list[str]:
-    args: list[str] = []
-    for key, value in params.items():
-        flag = flag_for_param(key)
-        if key in SERVER_BOOL_PARAMS:
-            if value:
-                args.append(flag)
         else:
             args += [flag, str(value)]
     return args
@@ -116,19 +105,21 @@ def build_command(project: str, params: dict, is_server: bool = False) -> list[s
         str(project_path),
         "--",
     ]
-    cmd += server_params_to_args(params) if is_server else client_params_to_args(params)
+    if is_server:
+        cmd += params_to_args(params, bool_params=SERVER_BOOL_PARAMS, list_params=set())
+    else:
+        # check_client_params(params)
+        cmd += params_to_args(
+            params, bool_params=CLIENT_BOOL_PARAMS, list_params=CLIENT_LIST_PARAMS
+        )
     return cmd
-
-
-def format_command(cmd: list[str]) -> str:
-    return shlex.join(cmd)
 
 
 def killall_leftover(server_project: str, benchmark_project: str) -> None:
     patterns = [Path(server_project).stem, Path(benchmark_project).stem]
     for pat in patterns:
         cmd = ["pkill", "-f", pat]
-        logger.info(f"[cleanup] {' '.join(cmd)}")
+        logger.debug(f"[cleanup] {' '.join(cmd)}")
         if not dry_run:
             subprocess.run(cmd, check=False)
     if not dry_run:
@@ -137,7 +128,7 @@ def killall_leftover(server_project: str, benchmark_project: str) -> None:
 
 def cleanup_result_dir(exp_dir: Path) -> None:
     if exp_dir.exists():
-        logger.info(f"[cleanup] removing {exp_dir}")
+        logger.debug(f"[cleanup] removing {exp_dir}")
         if not dry_run:
             shutil.rmtree(exp_dir)
     if not dry_run:
@@ -164,22 +155,16 @@ def get_benchmark(cfg: dict, config_path: str) -> str:
     return benchmark
 
 
-def sweep_dimensions(sweep: dict) -> list[tuple[str, str, list]]:
+def expand_sweep(sweep: dict) -> list[dict]:
     dims: list[tuple[str, str, list]] = []
-    for scope in sorted(sweep):
-        param_map = sweep[scope]
-        for key in sorted(param_map):
-            values = param_map[key]
+    for scope, param_map in sweep.items():
+        for key, values in param_map.items():
             assert isinstance(values, list), (
-                f"sweep.{scope}.{key} must be a list of values, got {type(values).__name__}"
+                f"sweep.{scope}.{key} must be a list of values, "
+                f"got {type(values).__name__}"
             )
             assert values, f"sweep.{scope}.{key} must not be empty"
             dims.append((scope, key, values))
-    return dims
-
-
-def expand_sweep(sweep: dict) -> list[dict]:
-    dims = sweep_dimensions(sweep)
     if not dims:
         logger.warning("No sweep detected!")
         return [{"client_params": {}, "server_params": {}}]
@@ -202,33 +187,19 @@ def sanitize_name_part(value) -> str:
 
 def run_name_for_combo(combo: dict) -> str:
     parts: list[str] = []
-    for scope, prefix in (("client_params", "client"), ("server_params", "server")):
+    for scope, prefix in (("client_params", "c"), ("server_params", "s")):
         for key in sorted(combo[scope]):
             value = combo[scope][key]
             parts.append(f"{prefix}_{key}_{sanitize_name_part(value)}")
     return "__".join(parts) if parts else "default"
 
 
-def describe_sweep(combo: dict) -> tuple[str | None, object | None]:
-    entries: list[tuple[str, object]] = []
+def describe_sweep(combo: dict) -> dict[str, object]:
+    entries: dict[str, object] = {}
     for scope, prefix in (("client_params", "client"), ("server_params", "server")):
         for key in sorted(combo[scope]):
-            entries.append((f"{prefix}.{key}", combo[scope][key]))
-
-    if not entries:
-        return None, None
-    if len(entries) == 1:
-        return entries[0]
-    return "run", {key: value for key, value in entries}
-
-
-def merged_prepare_params(client_params: dict, prepare_params: dict) -> dict:
-    params = dict(client_params)
-    params.update(prepare_params)
-    # sanitize the keys for prepare
-    for key in ("online", "skipload", "disable_console_logger"):
-        params.pop(key, None)
-    return params
+            entries[f"{prefix}.{key}"] = combo[scope][key]
+    return entries
 
 
 def resolve_server_endpoint(
@@ -252,9 +223,9 @@ def launch_server(
 ) -> subprocess.Popen | None:
     cmd = build_command(server_project, server_params, is_server=True)
 
-    logger.info(f"[server] launching: {format_command(cmd)}")
+    logger.info(f"Launch server: {shlex.join(cmd)}")
     if dry_run:
-        logger.info("[server] [dry-run] skipping launch")
+        logger.info("[dry-run] skipping launch")
         return
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -271,7 +242,7 @@ def wait_for_server(host: str, port: int, proc: subprocess.Popen | None = None) 
     if dry_run:
         return
     deadline = time.time() + SERVER_READY_TIMEOUT
-    logger.info(f"[server] waiting for {host}:{port} ...")
+    logger.info(f"Waiting for server {host}:{port} ...")
     while time.time() < deadline:
         if proc is not None and proc.poll() is not None:
             raise RuntimeError(
@@ -292,31 +263,25 @@ def wait_for_server(host: str, port: int, proc: subprocess.Popen | None = None) 
 def shutdown_server(proc: subprocess.Popen | None) -> None:
     if dry_run or proc is None:
         return
-    logger.info("[server] shutting down...")
+    logger.info("Shutting down server...")
     proc.terminate()
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
-    logger.info("[server] stopped.")
+    logger.info("Server stopped")
 
 
 def run_command(
-    label: str,
-    run_name: str,
-    run_dir: Path,
-    cmd: list[str],
-    server_proc: subprocess.Popen | None = None,
+    run_dir: Path, cmd: list[str], server_proc: subprocess.Popen | None = None
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("=" * 60)
-    logger.info(f"Run: {run_name}")
-    logger.info(f"Step: {label}")
-    logger.info(f"Dir: {run_dir}")
-    logger.info(f"Cmd: {format_command(cmd)}")
-    logger.info("=" * 60)
+    # logger.info("-" * 60)
+    # logger.info(f"Dir: {run_dir}")
+    logger.info(f"Cmd: {shlex.join(cmd)} @{run_dir}")
+    # logger.info("-" * 60)
 
     if dry_run:
         logger.info("[dry-run] skipping execution")
@@ -336,7 +301,6 @@ def run_command(
                 proc.wait()
                 raise RuntimeError(
                     f"Server exited unexpectedly (code {server_proc.returncode}) "
-                    f"during {label} for run '{run_name}'"
                 )
             time.sleep(0.1)
 
@@ -344,7 +308,7 @@ def run_command(
     rc = proc.returncode
     logger.info(f"Finished in {elapsed:.1f}s (exit code {rc})")
     if rc != 0:
-        raise RuntimeError(f"{label} for run '{run_name}' failed with exit code {rc}")
+        raise RuntimeError(f"Server failed with exit code {rc}")
 
 
 def execute_run(
@@ -360,14 +324,11 @@ def execute_run(
     prepare_params: dict,
     no_server: bool,
 ) -> None:
-    sweep_param, sweep_value = describe_sweep(sweep_combo)
+    sweep_params = describe_sweep(sweep_combo)
     server_cmd = build_command(server_project, server_params, is_server=True)
-    prepare_cmd = None
-    if prepare_params:
-        prepared_client_params = merged_prepare_params(client_params, prepare_params)
-        prepare_cmd = build_command(benchmark_project, prepared_client_params)
-    else:
-        prepared_client_params = None
+    prepare_cmd = (
+        build_command(benchmark_project, prepare_params) if prepare_params else None
+    )
     benchmark_cmd = build_command(benchmark_project, client_params)
 
     config_record = {
@@ -377,11 +338,10 @@ def execute_run(
         "client_params": client_params,
         "server_params": server_params,
         "sweep": sweep_combo,
-        "sweep_param": sweep_param,
-        "sweep_value": sweep_value,
-        "server_cmd": format_command(server_cmd),
-        "prepare_cmd": format_command(prepare_cmd) if prepare_cmd is not None else "",
-        "client_cmd": format_command(benchmark_cmd),
+        "sweep_params": sweep_params,
+        "server_cmd": shlex.join(server_cmd),
+        "prepare_cmd": shlex.join(prepare_cmd) if prepare_cmd is not None else "",
+        "client_cmd": shlex.join(benchmark_cmd),
     }
     dump_config(run_dir / "config.yaml", config_record)
 
@@ -394,21 +354,9 @@ def execute_run(
             wait_for_server(host, port, server_proc)
 
         if prepare_params:
-            run_command(
-                "prepare",
-                run_name,
-                run_dir / "prepare",
-                prepare_cmd,
-                server_proc=server_proc,
-            )
+            run_command(run_dir / "prepare", prepare_cmd, server_proc=server_proc)
 
-        run_command(
-            "benchmark",
-            run_name,
-            run_dir / "benchmark",
-            benchmark_cmd,
-            server_proc=server_proc,
-        )
+        run_command(run_dir / "benchmark", benchmark_cmd, server_proc=server_proc)
     finally:
         if not no_server:
             shutdown_server(server_proc)
@@ -417,7 +365,7 @@ def execute_run(
 def main():
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s: [%(levelname)s] %(message)s",
+        format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
     parser = argparse.ArgumentParser(description="Run Garnet experiments")
@@ -459,15 +407,15 @@ def main():
 
     exp_dir = RESULT_ROOT / exp_name
 
-    logger.info(f"[{exp_name}] Killing leftover processes...")
+    logger.debug("Killing leftover processes...")
     killall_leftover(server_project, benchmark_project)
 
-    logger.info(f"[{exp_name}] Cleaning result directory...")
+    logger.debug("Cleaning result directory...")
     cleanup_result_dir(exp_dir)
     dump_config(exp_dir / "config.yaml", cfg)
 
     combos = expand_sweep(sweep)
-    logger.info(f"[{exp_name}] Expanded {len(combos)} run(s)")
+    logger.info(f"Expanded {len(combos)} runs")
 
     for combo in combos:
         run_name = run_name_for_combo(combo)
@@ -477,7 +425,7 @@ def main():
         server_params = dict(base_server_params)
         server_params.update(combo["server_params"])
 
-        logger.info(f"[{exp_name}] === Run: {run_name} ===")
+        logger.info(f"=== Run: [{exp_name}] @{run_name} ===")
         execute_run(
             exp_name=exp_name,
             benchmark=benchmark,

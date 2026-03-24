@@ -83,8 +83,7 @@ sweep:
 
 - **`prepare`** *(optional)*: one benchmark-client-only step run after server
   startup and before the benchmark step for every run. It supports only
-  `client_params` and is merged on top of the resolved client params for that
-  run.
+  `client_params` and is resolved independently from `base.client_params`.
 - **`base`**: shared defaults for each run. It may contain `client_params` and
   `server_params`.
 - **`sweep`** *(optional)*: parameter lists to vary. It may contain
@@ -111,25 +110,28 @@ multiple runs. Each experiment run is resolved explicitly in Python from the
 The `--online` benchmark mode does not support `--skipload`, so read-heavy
 workloads still need a write phase before measurement. Use `prepare` for that.
 
-`prepare.client_params` is merged on top of the resolved run client params, then
-`run.py` automatically strips `online`, `skipload`, and
+`prepare.client_params` is used as-is, then `run.py` automatically strips
+`online`, `skipload`, and
 `disable_console_logger` because they are not meaningful for the prepare write
-step. The prepare step runs once per run, and its output is saved to
+step. If the prepare phase needs non-default client settings such as `client`,
+`dbsize`, `keylength`, or `valuelength`, specify them explicitly. The prepare
+step runs once per run, and its output is saved to
 `result/<name>/<run_name>/prepare/output.txt`.
 
 ```yaml
 prepare:
   client_params:
+    client: GarnetClientSession
     op: MSET
     threads: 8
-    batchsize: 4096
     runtime: -1
     totalops: 100000
+    dbsize: 100000
+    keylength: 8
+    valuelength: 64
 
 base:
   client_params:
-    host: 127.0.0.1
-    port: 6379
     online: true
     op_workload: [GET]
     op_percent: [100]
@@ -140,7 +142,6 @@ base:
     runtime: 30
     disable_console_logger: true
   server_params:
-    bind: 127.0.0.1
     port: 6379
 
 sweep:
@@ -189,13 +190,14 @@ statistics (mean, std, min, max) are computed for each column and written to
 
 ```yaml
 experiment_name: scale_clients
-sweep_param: threads
-sweep_values: [1, 2, 4, 8, 16, 32]
+sweep_params:
+  client.threads: [1, 2, 4, 8, 16, 32]
 warmup_rows_discarded: 2
 runs:
   threads_8:
     config: {...}
-    sweep_value: 8
+    sweep_params:
+      client.threads: 8
     num_samples: 13
     samples:
       - {tpt_kops: 512.3, median_us: 45.1, ...}

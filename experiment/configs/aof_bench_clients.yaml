@@ -5,13 +5,10 @@
 name: aof_bench_clients
 description: "Sweep client threads (1-32) for an online write workload across physical sublog setups"
 benchmark: online
-benchmark_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
 
 base:
   client_params:
     client: GarnetClientSession
-    host: 127.0.0.1
-    port: 6379
     online: true
     op_workload: [SET]
     op_percent: [100]
@@ -22,7 +19,6 @@ base:
     runtime: 10
     disable_console_logger: true
   server_params:
-    bind: 127.0.0.1
     port: 6379
     aof: true
     aof_null_device: true

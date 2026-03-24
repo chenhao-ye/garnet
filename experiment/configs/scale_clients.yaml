@@ -5,13 +5,10 @@
 name: scale_clients
 description: "Scale number of client threads (1-32) with 70/30 GET/SET workload"
 benchmark: online
-benchmark_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
 
 base:
   client_params:
     client: GarnetClientSession
-    host: 127.0.0.1
-    port: 6379
     online: true
     op_workload: [GET, SET]
     op_percent: [70, 30]
@@ -20,7 +17,6 @@ base:
     runtime: 30
     disable_console_logger: true
   server_params:
-    bind: 127.0.0.1
     port: 6379
 
 sweep:

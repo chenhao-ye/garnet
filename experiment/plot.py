@@ -53,19 +53,36 @@ def load_exp_config(experiment: str) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _primary_sweep_key(result: dict) -> str | None:
+    sweep_params = result.get("sweep_params") or {}
+    if len(sweep_params) == 1:
+        return next(iter(sweep_params))
+    return None
+
+
+def _entry_sweep_value(entry: dict, sweep_key: str | None):
+    sweep_params = entry.get("sweep_params") or {}
+    if sweep_key is None:
+        return None
+    return sweep_params.get(sweep_key)
+
+
 def sorted_runs(result: dict, sweep_values: list | None = None):
     """Return runs ordered by sweep_values list, or numerically/lexicographically."""
     runs = result["runs"]
     items = list(runs.items())
+    sweep_key = _primary_sweep_key(result)
     if sweep_values is not None:
         order = {str(v): i for i, v in enumerate(sweep_values)}
-        items.sort(key=lambda kv: order.get(str(kv[1]["sweep_value"]), len(order)))
+        items.sort(
+            key=lambda kv: order.get(str(_entry_sweep_value(kv[1], sweep_key)), len(order))
+        )
     else:
         try:
             items.sort(
                 key=lambda kv: (
-                    float(kv[1]["sweep_value"])
-                    if kv[1]["sweep_value"] is not None
+                    float(_entry_sweep_value(kv[1], sweep_key))
+                    if _entry_sweep_value(kv[1], sweep_key) is not None
                     else kv[0]
                 )
             )
@@ -77,6 +94,15 @@ def sorted_runs(result: dict, sweep_values: list | None = None):
 def _x_label(sweep: dict) -> str:
     param = sweep.get("param") or "run"
     return param.replace("_", " ")
+
+
+def _x_values(items: list, sweep_values: list | None, sweep_key: str | None) -> list:
+    if sweep_values:
+        return sweep_values
+    return [
+        _entry_sweep_value(entry, sweep_key) if _entry_sweep_value(entry, sweep_key) is not None else name
+        for name, entry in items
+    ]
 
 
 def _use_log_scale(values: list) -> bool:
@@ -109,14 +135,8 @@ def _metric_stat(entry: dict, metric: str, field: str = "mean") -> float:
 def plot_throughput(result: dict, sweep: dict, out_dir: Path) -> Path:
     sweep_values = sweep.get("values")
     items = sorted_runs(result, sweep_values)
-    x_labels = (
-        [str(v) for v in sweep_values]
-        if sweep_values
-        else [
-            str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0])
-            for kv in items
-        ]
-    )
+    sweep_key = _primary_sweep_key(result)
+    x_labels = [str(v) for v in _x_values(items, sweep_values, sweep_key)]
     x = np.arange(len(items))
     means = [kv[1]["stats"]["tpt_kops"]["mean"] or 0 for kv in items]
     stds = [kv[1]["stats"]["tpt_kops"]["std"] or 0 for kv in items]
@@ -150,14 +170,8 @@ def plot_throughput(result: dict, sweep: dict, out_dir: Path) -> Path:
 def plot_aof_throughput(result: dict, sweep: dict, out_dir: Path) -> Path:
     sweep_values = sweep.get("values")
     items = sorted_runs(result, sweep_values)
-    x_labels = (
-        [str(v) for v in sweep_values]
-        if sweep_values
-        else [
-            str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0])
-            for kv in items
-        ]
-    )
+    sweep_key = _primary_sweep_key(result)
+    x_labels = [str(v) for v in _x_values(items, sweep_values, sweep_key)]
     x = np.arange(len(items))
     means = [_metric_stat(kv[1], "throughput") for kv in items]
     stds = [_metric_stat(kv[1], "throughput", "std") for kv in items]
@@ -191,14 +205,8 @@ def plot_aof_throughput(result: dict, sweep: dict, out_dir: Path) -> Path:
 def plot_latency(result: dict, sweep: dict, out_dir: Path) -> Path:
     sweep_values = sweep.get("values")
     items = sorted_runs(result, sweep_values)
-    x_labels = (
-        [str(v) for v in sweep_values]
-        if sweep_values
-        else [
-            str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0])
-            for kv in items
-        ]
-    )
+    sweep_key = _primary_sweep_key(result)
+    x_labels = [str(v) for v in _x_values(items, sweep_values, sweep_key)]
     x = np.arange(len(items))
 
     percentiles = [
@@ -248,14 +256,8 @@ def plot_latency(result: dict, sweep: dict, out_dir: Path) -> Path:
 def plot_aof_metrics(result: dict, sweep: dict, out_dir: Path) -> Path:
     sweep_values = sweep.get("values")
     items = sorted_runs(result, sweep_values)
-    x_labels = (
-        [str(v) for v in sweep_values]
-        if sweep_values
-        else [
-            str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0])
-            for kv in items
-        ]
-    )
+    sweep_key = _primary_sweep_key(result)
+    x_labels = [str(v) for v in _x_values(items, sweep_values, sweep_key)]
     x = np.arange(len(items))
 
     fig, axes = plt.subplots(1, len(AOF_METRICS), figsize=(5 * len(AOF_METRICS), 5))
@@ -296,14 +298,8 @@ def plot_latency_line(result: dict, sweep: dict, out_dir: Path) -> Path:
     """Line chart of latency percentiles vs sweep param (good for many x values)."""
     sweep_values = sweep.get("values")
     items = sorted_runs(result, sweep_values)
-    x_vals = (
-        sweep_values
-        if sweep_values
-        else [
-            kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else i
-            for i, kv in enumerate(items)
-        ]
-    )
+    sweep_key = _primary_sweep_key(result)
+    x_vals = _x_values(items, sweep_values, sweep_key)
     x_labels = [str(v) for v in x_vals]
 
     percentiles = [
@@ -348,14 +344,8 @@ def plot_latency_line(result: dict, sweep: dict, out_dir: Path) -> Path:
 def plot_aof_throughput_line(result: dict, sweep: dict, out_dir: Path) -> Path:
     sweep_values = sweep.get("values")
     items = sorted_runs(result, sweep_values)
-    x_vals = (
-        sweep_values
-        if sweep_values
-        else [
-            kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else i
-            for i, kv in enumerate(items)
-        ]
-    )
+    sweep_key = _primary_sweep_key(result)
+    x_vals = _x_values(items, sweep_values, sweep_key)
     x_labels = [str(v) for v in x_vals]
     means = np.array([_metric_stat(kv[1], "throughput") for kv in items])
     stds = np.array([_metric_stat(kv[1], "throughput", "std") for kv in items])
@@ -393,14 +383,8 @@ def plot_throughput_line(result: dict, sweep: dict, out_dir: Path) -> Path:
     """Line chart of throughput vs sweep param."""
     sweep_values = sweep.get("values")
     items = sorted_runs(result, sweep_values)
-    x_vals = (
-        sweep_values
-        if sweep_values
-        else [
-            kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else i
-            for i, kv in enumerate(items)
-        ]
-    )
+    sweep_key = _primary_sweep_key(result)
+    x_vals = _x_values(items, sweep_values, sweep_key)
     x_labels = [str(v) for v in x_vals]
     means = np.array([kv[1]["stats"]["tpt_kops"]["mean"] or 0 for kv in items])
     stds = np.array([kv[1]["stats"]["tpt_kops"]["std"] or 0 for kv in items])
@@ -437,14 +421,8 @@ def plot_throughput_line(result: dict, sweep: dict, out_dir: Path) -> Path:
 def plot_aof_metrics_line(result: dict, sweep: dict, out_dir: Path) -> Path:
     sweep_values = sweep.get("values")
     items = sorted_runs(result, sweep_values)
-    x_vals = (
-        sweep_values
-        if sweep_values
-        else [
-            kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else i
-            for i, kv in enumerate(items)
-        ]
-    )
+    sweep_key = _primary_sweep_key(result)
+    x_vals = _x_values(items, sweep_values, sweep_key)
     x_labels = [str(v) for v in x_vals]
     use_log = _use_log_scale(x_vals)
     x = np.array([float(v) for v in x_vals]) if use_log else np.arange(len(items))
@@ -504,14 +482,8 @@ def plot_throughput_setups(result: dict, sweep: dict, out_dir: Path) -> Path:
     fig, ax = plt.subplots(figsize=(8, 5))
     for i, (setup_name, setup_data) in enumerate(setups.items()):
         items = sorted_runs(setup_data["runs"], sweep_values)
-        x_vals = (
-            sweep_values
-            if sweep_values
-            else [
-                kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else j
-                for j, kv in enumerate(items)
-            ]
-        )
+        sweep_key = _primary_sweep_key(setup_data)
+        x_vals = _x_values(items, sweep_values, sweep_key)
         use_log = _use_log_scale(x_vals)
         x = np.array([float(v) for v in x_vals]) if use_log else np.arange(len(items))
         means = np.array([kv[1]["stats"]["tpt_kops"]["mean"] or 0 for kv in items])
@@ -565,14 +537,8 @@ def plot_latency_setups(result: dict, sweep: dict, out_dir: Path) -> Path:
 
     for i, (setup_name, setup_data) in enumerate(setups.items()):
         items = sorted_runs(setup_data["runs"], sweep_values)
-        x_vals = (
-            sweep_values
-            if sweep_values
-            else [
-                kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else j
-                for j, kv in enumerate(items)
-            ]
-        )
+        sweep_key = _primary_sweep_key(setup_data)
+        x_vals = _x_values(items, sweep_values, sweep_key)
         use_log = _use_log_scale(x_vals)
         x = np.array([float(v) for v in x_vals]) if use_log else np.arange(len(items))
         color = SETUP_COLORS[i % len(SETUP_COLORS)]
@@ -616,14 +582,8 @@ def plot_throughput_bar_setups(result: dict, sweep: dict, out_dir: Path) -> Path
     setup_items = list(setups.items())
 
     first_runs = sorted_runs(list(setups.values())[0]["runs"], sweep_values)
-    x_labels = (
-        [str(v) for v in sweep_values]
-        if sweep_values
-        else [
-            str(kv[1]["sweep_value"] if kv[1]["sweep_value"] is not None else kv[0])
-            for kv in first_runs
-        ]
-    )
+    first_sweep_key = _primary_sweep_key(list(setups.values())[0])
+    x_labels = [str(v) for v in _x_values(first_runs, sweep_values, first_sweep_key)]
     x = np.arange(len(x_labels))
     n = len(setup_items)
     width = 0.8 / n

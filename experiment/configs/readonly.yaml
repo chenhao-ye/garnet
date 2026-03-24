@@ -8,21 +8,20 @@
 name: readonly
 description: "100% GET workload after server pre-load; sweep threads 1-32"
 benchmark: online
-benchmark_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
 
 prepare:
   client_params:
     op: MSET
     threads: 8
-    batchsize: 4096
     runtime: -1
     totalops: 100000
+    dbsize: 100000
+    keylength: 8
+    valuelength: 64
 
 base:
   client_params:
     client: GarnetClientSession
-    host: 127.0.0.1
-    port: 6379
     online: true
     op_workload: [GET]
     op_percent: [100]
@@ -33,7 +32,6 @@ base:
     runtime: 30
     disable_console_logger: true
   server_params:
-    bind: 127.0.0.1
     port: 6379
 
 sweep:
