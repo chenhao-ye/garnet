@@ -20,9 +20,7 @@ Usage:
 """
 
 import argparse
-import itertools
 import logging
-import re
 import shlex
 import shutil
 import socket
@@ -31,14 +29,10 @@ import time
 from pathlib import Path
 
 import yaml
+from config import REPO_ROOT, RESULT_ROOT, load_experiment_spec, resolve_run_spec
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-RESULT_ROOT = REPO_ROOT / "result"
-
-DEFAULT_SERVER_PROJECT = "main/GarnetServer/GarnetServer.csproj"
 SERVER_READY_TIMEOUT = 60
 SERVER_READY_INTERVAL = 0.5
-SUPPORTED_BENCHMARKS = {"online", "aof"}
 
 CLIENT_LIST_PARAMS = {"op_workload", "op_percent", "batchsize", "threads"}
 CLIENT_BOOL_PARAMS = {
@@ -133,72 +127,6 @@ def cleanup_result_dir(exp_dir: Path) -> None:
             shutil.rmtree(exp_dir)
     if not dry_run:
         exp_dir.mkdir(parents=True, exist_ok=True)
-
-
-def load_config(path: str) -> dict:
-    with open(path) as f:
-        return yaml.safe_load(f)
-
-
-def get_benchmark(cfg: dict, config_path: str) -> str:
-    benchmark = cfg.get("benchmark")
-    if not benchmark:
-        raise ValueError(
-            f"Config '{config_path}' is missing required field 'benchmark'"
-        )
-    if benchmark not in SUPPORTED_BENCHMARKS:
-        supported = ", ".join(SUPPORTED_BENCHMARKS)
-        raise ValueError(
-            f"Unsupported benchmark '{benchmark}' in '{config_path}'. "
-            f"Expected one of: {supported}"
-        )
-    return benchmark
-
-
-def expand_sweep(sweep: dict) -> list[dict]:
-    dims: list[tuple[str, str, list]] = []
-    for scope, param_map in sweep.items():
-        for key, values in param_map.items():
-            assert isinstance(values, list), (
-                f"sweep.{scope}.{key} must be a list of values, "
-                f"got {type(values).__name__}"
-            )
-            assert values, f"sweep.{scope}.{key} must not be empty"
-            dims.append((scope, key, values))
-    if not dims:
-        logger.warning("No sweep detected!")
-        return [{"client_params": {}, "server_params": {}}]
-
-    combos: list[dict] = []
-    value_lists = [values for _, _, values in dims]
-    for picked_values in itertools.product(*value_lists):
-        combo = {"client_params": {}, "server_params": {}}
-        for (scope, key, _), value in zip(dims, picked_values):
-            combo[scope][key] = value
-        combos.append(combo)
-    return combos
-
-
-def sanitize_name_part(value) -> str:
-    text = str(value)
-    text = text.replace("/", "-")
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-") or "_"
-
-
-def run_name_for_combo(combo: dict) -> str:
-    parts: list[str] = []
-    for scope, prefix in (("client_params", "c"), ("server_params", "s")):
-        for key, value in combo[scope].items():
-            parts.append(f"{prefix}.{key}_{sanitize_name_part(value)}")
-    return "__".join(parts) if parts else "default"
-
-
-def describe_sweep(combo: dict) -> dict[str, object]:
-    entries: dict[str, object] = {}
-    for scope, prefix in (("client_params", "client"), ("server_params", "server")):
-        for key in sorted(combo[scope]):
-            entries[f"{prefix}.{key}"] = combo[scope][key]
-    return entries
 
 
 def resolve_server_endpoint(
@@ -318,10 +246,10 @@ def execute_run(
     client_params: dict,
     server_params: dict,
     sweep_combo: dict,
+    sweep_params: dict,
     prepare_params: dict,
     no_server: bool,
 ) -> None:
-    sweep_params = describe_sweep(sweep_combo)
     server_cmd = build_command(server_project, server_params, is_server=True)
     prepare_cmd = (
         build_command(benchmark_project, prepare_params) if prepare_params else None
@@ -381,62 +309,46 @@ def main():
     global dry_run
     dry_run = args.dry_run
 
-    config_path = args.config or str(
-        REPO_ROOT / "experiment" / "configs" / f"{args.experiment}.yaml"
+    spec = load_experiment_spec(
+        args.config
+        or str(REPO_ROOT / "experiment" / "configs" / f"{args.experiment}.yaml"),
+        default_name=args.experiment,
     )
-    cfg = load_config(config_path)
-    exp_name = cfg.get("name", args.experiment)
-    benchmark = get_benchmark(cfg, config_path)
-    benchmark_project = cfg.get(
-        "benchmark_project", "benchmark/Resp.benchmark/Resp.benchmark.csproj"
-    )
-    server_project = cfg.get("server_project", DEFAULT_SERVER_PROJECT)
-    prepare_params = cfg.get("prepare", {}).get("client_params", {})
-    if not prepare_params:
+    if not spec.prepare_params:
         logger.warning("empty prepare.client_params")
-    base_section = cfg["base"]
-    base_client_params = base_section["client_params"]
-    base_server_params = base_section.get("server_params", {})
-    if not base_server_params:
+    if not spec.base_server_params:
         logger.warning("empty base.server_params")
-    sweep = cfg["sweep"]
-    no_server = cfg.get("no_server", False)
 
-    exp_dir = RESULT_ROOT / exp_name
+    exp_dir = RESULT_ROOT / spec.name
 
     logger.debug("Killing leftover processes...")
-    killall_leftover(server_project, benchmark_project)
+    killall_leftover(spec.server_project, spec.benchmark_project)
 
     logger.debug("Cleaning result directory...")
     cleanup_result_dir(exp_dir)
-    dump_config(exp_dir / "config.yaml", cfg)
+    dump_config(exp_dir / "config.yaml", spec.config)
 
-    combos = expand_sweep(sweep)
-    logger.info(f"Expanded {len(combos)} runs")
+    logger.info(f"Expanded {len(spec.combos)} runs")
 
-    for combo in combos:
-        run_name = run_name_for_combo(combo)
-        run_dir = exp_dir / run_name
-        client_params = dict(base_client_params)
-        client_params.update(combo["client_params"])
-        server_params = dict(base_server_params)
-        server_params.update(combo["server_params"])
+    for combo in spec.combos:
+        run_spec = resolve_run_spec(spec, combo)
 
         logger.info(
-            f"==================== Run: [{exp_name}] @{run_name} ===================="
+            f"==================== Run: [{spec.name}] @{run_spec.run_name} ===================="
         )
         execute_run(
-            exp_name=exp_name,
-            benchmark=benchmark,
-            benchmark_project=benchmark_project,
-            server_project=server_project,
-            run_dir=run_dir,
-            run_name=run_name,
-            client_params=client_params,
-            server_params=server_params,
-            sweep_combo=combo,
-            prepare_params=prepare_params,
-            no_server=no_server,
+            exp_name=spec.name,
+            benchmark=spec.benchmark,
+            benchmark_project=spec.benchmark_project,
+            server_project=spec.server_project,
+            run_dir=exp_dir / run_spec.run_name,
+            run_name=run_spec.run_name,
+            client_params=run_spec.client_params,
+            server_params=run_spec.server_params,
+            sweep_combo=run_spec.combo,
+            sweep_params=run_spec.sweep_params,
+            prepare_params=spec.prepare_params,
+            no_server=spec.no_server,
         )
 
     logger.info(f"All runs complete. Results in: {exp_dir}")

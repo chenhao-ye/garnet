@@ -15,9 +15,7 @@ import re
 from pathlib import Path
 
 import yaml
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-RESULT_ROOT = REPO_ROOT / "result"
+from config import RESULT_ROOT, expected_run_dirs
 
 ONLINE_COLUMNS = [
     "min_us",
@@ -44,7 +42,6 @@ AOF_METRIC_NAME_MAP = {
 HEADER_RE = re.compile(r"min\s*\(us\)")
 AOF_METRIC_RE = re.compile(r"^\[(?P<name>[^\]]+)\]:\s*(?P<value>.+)$")
 AOF_NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
-SUPPORTED_BENCHMARKS = {"online", "aof"}
 
 
 def _is_data_row(parts: list[str]) -> bool:
@@ -91,19 +88,6 @@ def _summarize_samples(samples: list[dict], columns: list[str]) -> dict:
     if not samples:
         return {col: _stats([]) for col in columns}
     return {col: _stats([sample.get(col) for sample in samples]) for col in columns}
-
-
-def _resolve_benchmark(config: dict) -> str:
-    benchmark = config.get("benchmark")
-    if benchmark == "aof_bench":
-        return "aof"
-    if benchmark in SUPPORTED_BENCHMARKS:
-        return benchmark
-
-    params = config.get("params", {}) or {}
-    if params.get("aof_bench"):
-        return "aof"
-    return "online"
 
 
 def _parse_online_output(
@@ -229,7 +213,9 @@ def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
 
-    benchmark = _resolve_benchmark(config)
+    benchmark = config.get("benchmark")
+    if benchmark is None:
+        raise ValueError(f"Config '{config_path}' is missing required field 'benchmark'")
     samples, metric_columns = parse_output(
         output_path, benchmark=benchmark, warmup_rows=warmup
     )
@@ -279,7 +265,7 @@ def main():
     if not exp_dir.exists():
         raise FileNotFoundError(f"Experiment directory not found: {exp_dir}")
 
-    run_dirs = sorted(d for d in exp_dir.iterdir() if d.is_dir())
+    run_dirs = expected_run_dirs(exp_dir)
     if not run_dirs:
         raise ValueError(f"No run directories found in {exp_dir}")
 
