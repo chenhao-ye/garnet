@@ -217,8 +217,6 @@ warmup_rows_discarded: 2
 runs:
   threads_8:
     config: {...}
-    sweep_params:
-      client.threads: 8
     num_samples: 13
     samples:
       - {tpt_kops: 512.3, median_us: 45.1, ...}

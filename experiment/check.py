@@ -405,6 +405,23 @@ def validate_main_config(
         validate_aof_mode(issues, scope, base_params, sweep_client_params, specified_keys)
 
 
+def validate_config_name_matches_filename(
+    issues: list[Issue], *, config: dict[str, Any], config_path: Path
+) -> None:
+    configured_name = config.get("name")
+    if configured_name is None:
+        return
+
+    expected_name = config_path.stem
+    if str(configured_name) != expected_name:
+        add_issue(
+            issues,
+            "ERROR",
+            "config.name",
+            f"config name '{configured_name}' does not match filename '{expected_name}'",
+        )
+
+
 def print_issues(issues: list[Issue], config_path: Path) -> None:
     if not issues:
         print(f"OK: {config_path} is consistent with Resp.benchmark option handling")
@@ -438,6 +455,10 @@ def main() -> None:
     spec = load_experiment_spec(config_path, default_name=Path(args.experiment).stem)
     supported_client_params = option_names_from_options_cs(OPTIONS_CS_PATH)
     issues: list[Issue] = []
+
+    validate_config_name_matches_filename(
+        issues, config=spec.config, config_path=spec.config_path
+    )
 
     validate_param_keys(
         issues,

@@ -61,7 +61,9 @@ def _primary_sweep_key(result: dict) -> str | None:
 
 
 def _entry_sweep_value(entry: dict, sweep_key: str | None):
-    sweep_params = entry.get("sweep_params") or {}
+    sweep_params = entry.get("sweep_params")
+    if sweep_params is None:
+        sweep_params = entry.get("config", {}).get("sweep_params") or {}
     if sweep_key is None:
         return None
     return sweep_params.get(sweep_key)

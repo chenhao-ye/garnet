@@ -224,8 +224,6 @@ def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
     return {
         "benchmark": benchmark,
         "config": config,
-        "metric_columns": metric_columns,
-        "sweep_params": config.get("sweep_params", {}),
         "num_samples": len(samples),
         "samples": samples,
         "stats": stats,
@@ -240,7 +238,7 @@ def _collect_runs(run_dirs: list, warmup: int) -> tuple[dict, dict[str, list]]:
         entry = _parse_run_dir(run_dir, warmup)
         if entry is None:
             continue
-        for key, value in entry["sweep_params"].items():
+        for key, value in (entry.get("config", {}).get("sweep_params", {})).items():
             values = sweep_params.setdefault(key, [])
             if value not in values:
                 values.append(value)
