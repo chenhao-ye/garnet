@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Diagnostics;
 using Garnet.common;
 using Garnet.server;
 using Microsoft.Extensions.Logging;
@@ -26,6 +27,10 @@ namespace Garnet.cluster
         public unsafe void ProcessPrimaryStream(int physicalSublogIdx, byte* record, int recordLength, long previousAddress, long currentAddress, long nextAddress)
         {
             // logger?.LogInformation("Processing {recordLength} bytes; previousAddress {previousAddress}, currentAddress {currentAddress}, nextAddress {nextAddress}, current AOF tail {tail}", recordLength, previousAddress, currentAddress, nextAddress, storeWrapper.appendOnlyFile.TailAddress);
+            var timingStats = clusterProvider.serverOptions.AofReplayTimingContext?.GetSublogStats(physicalSublogIdx);
+            var primaryStreamStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
+            var primaryStreamPrechecksStart = primaryStreamStart;
+            var primaryStreamPrechecksRecorded = false;
             var currentConfig = clusterProvider.clusterManager.CurrentConfig;
             var syncReplay = clusterProvider.serverOptions.ReplicationOffsetMaxLag == 0;
 
@@ -95,8 +100,17 @@ namespace Garnet.cluster
                 // Initialize sublog ref if first time
                 physicalSublog ??= clusterProvider.storeWrapper.appendOnlyFile.Log.GetSubLog(physicalSublogIdx);
 
+                if (timingStats != null)
+                {
+                    timingStats.Add(AofReplayTimingPhase.PrimaryStreamPrechecks, Stopwatch.GetTimestamp() - primaryStreamPrechecksStart);
+                    primaryStreamPrechecksRecorded = true;
+                }
+
                 // Enqueue to AOF
+                var rawEnqueueStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                 _ = physicalSublog.UnsafeEnqueueRaw(new Span<byte>(record, recordLength), noCommit: clusterProvider.serverOptions.EnableFastCommit);
+                if (timingStats != null)
+                    timingStats.Add(AofReplayTimingPhase.RawEnqueue, Stopwatch.GetTimestamp() - rawEnqueueStart);
 
                 if (clusterProvider.storeWrapper.serverOptions.ReplicationOffsetMaxLag == 0)
                 {
@@ -119,6 +133,12 @@ namespace Garnet.cluster
             }
             finally
             {
+                if (timingStats != null)
+                {
+                    if (!primaryStreamPrechecksRecorded)
+                        timingStats.Add(AofReplayTimingPhase.PrimaryStreamPrechecks, Stopwatch.GetTimestamp() - primaryStreamPrechecksStart);
+                    timingStats.Add(AofReplayTimingPhase.PrimaryStreamTotal, Stopwatch.GetTimestamp() - primaryStreamStart);
+                }
                 if (syncReplay && !failReplay)
                     replicaReplayDriverStore.GetReplayDriver(physicalSublogIdx).SuspendReplay();
             }

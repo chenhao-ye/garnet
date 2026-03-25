@@ -92,6 +92,11 @@ namespace Garnet.server
         public int AofReplayTaskCount = 1;
 
         /// <summary>
+        /// Optional replay timing sink used by in-proc AOF benchmark instrumentation.
+        /// </summary>
+        public AofReplayTimingContext AofReplayTimingContext = null;
+
+        /// <summary>
         /// Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).
         /// </summary>
         public int AofTailWitnessFreq = 100;

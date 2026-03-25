@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Diagnostics;
 using System.Text;
 using Garnet.cluster.Server.Replication;
 using Garnet.common;
@@ -124,6 +125,7 @@ namespace Garnet.cluster
         private bool NetworkClusterAppendLog(out bool invalidParameters)
         {
             invalidParameters = false;
+            var parseValidateStart = clusterProvider.serverOptions.AofReplayTimingContext != null ? Stopwatch.GetTimestamp() : 0L;
 
             // Expecting exactly 6 arguments (6-th argument is AOF page parsed later)
             if (parseState.Count != 6)
@@ -154,6 +156,7 @@ namespace Garnet.cluster
             }
 
             var sbRecord = parseState.GetArgSliceByRef(5);
+            var timingStats = clusterProvider.serverOptions.AofReplayTimingContext?.GetSublogStats(physicalSublogIdx);
             var currentConfig = clusterProvider.clusterManager.CurrentConfig;
             var localRole = currentConfig.LocalNodeRole;
             var primaryId = currentConfig.LocalNodePrimaryId;
@@ -168,6 +171,8 @@ namespace Garnet.cluster
             else
             {
                 IsReplicating = true;
+                if (timingStats != null)
+                    timingStats.Add(AofReplayTimingPhase.ClusterAppendLogParseValidate, Stopwatch.GetTimestamp() - parseValidateStart);
 
                 ProcessPrimaryStream(physicalSublogIdx, sbRecord.ToPointer(), sbRecord.Length,
                     previousAddress, currentAddress, nextAddress);

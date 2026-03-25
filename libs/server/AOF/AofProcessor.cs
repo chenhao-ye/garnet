@@ -119,8 +119,9 @@ namespace Garnet.server
         /// <param name="length"></param>
         /// <param name="asReplica"></param>
         /// <param name="isCheckpointStart"></param>
-        public void ProcessAofRecordInternal(int virtualSublogIdx, byte* ptr, int length, bool asReplica, out bool isCheckpointStart)
+        public void ProcessAofRecordInternal(int virtualSublogIdx, byte* ptr, int length, bool asReplica, out bool isCheckpointStart, int replayTaskIdx = -1)
         {
+            var timingStats = GetReplayTimingStats(virtualSublogIdx, replayTaskIdx);
             var header = *(AofHeader*)ptr;
             var shardedHeader = default(AofShardedHeader);
             var replayContext = aofReplayCoordinator.GetReplayContext(virtualSublogIdx);
@@ -129,12 +130,20 @@ namespace Garnet.server
             var updateSequenceNumber = shardedLog && storeWrapper.serverOptions.AofReadWithTimestamp;
 
             // Handle transactions
+            var txnHandlingStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
             if (aofReplayCoordinator.AddOrReplayTransactionOperation(virtualSublogIdx, ptr, length, asReplica))
+            {
+                if (timingStats != null)
+                    timingStats.Add(AofReplayTimingPhase.ReplayTxnHandling, Stopwatch.GetTimestamp() - txnHandlingStart);
                 return;
+            }
+            if (timingStats != null)
+                timingStats.Add(AofReplayTimingPhase.ReplayTxnHandling, Stopwatch.GetTimestamp() - txnHandlingStart);
 
             switch (header.opType)
             {
                 case AofEntryType.CheckpointStartCommit:
+                    var controlOpsStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     // Inform caller that we processed a checkpoint start marker so that it can record ReplicationCheckpointStartOffset if this is a replica replay
                     isCheckpointStart = true;
                     if (header.aofHeaderVersion > 1)
@@ -153,8 +162,11 @@ namespace Garnet.server
                         shardedHeader = *(AofShardedHeader*)ptr;
                         storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, shardedHeader.sequenceNumber);
                     }
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
                     break;
                 case AofEntryType.CheckpointEndCommit:
+                    controlOpsStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (header.aofHeaderVersion > 1)
                     {
                         if (!replayContext.inFuzzyRegion)
@@ -187,9 +199,12 @@ namespace Garnet.server
                             aofReplayCoordinator.ClearFuzzyRegionBuffer(virtualSublogIdx);
                         }
                     }
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
                     break;
                 case AofEntryType.MainStoreStreamingCheckpointStartCommit:
                 case AofEntryType.ObjectStoreStreamingCheckpointStartCommit:
+                    controlOpsStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     Debug.Assert(storeWrapper.serverOptions.ReplicaDisklessSync);
                     if (asReplica && header.storeVersion > storeWrapper.store.CurrentVersion)
                     {
@@ -206,17 +221,23 @@ namespace Garnet.server
                                 () => storeWrapper.store.SetVersion(header.storeVersion));
                         }
                     }
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
                     break;
                 case AofEntryType.MainStoreStreamingCheckpointEndCommit:
                 case AofEntryType.ObjectStoreStreamingCheckpointEndCommit:
+                    controlOpsStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     Debug.Assert(storeWrapper.serverOptions.ReplicaDisklessSync);
                     if (updateSequenceNumber)
                     {
                         shardedHeader = *(AofShardedHeader*)ptr;
                         storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, shardedHeader.sequenceNumber);
                     }
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
                     break;
                 case AofEntryType.FlushAll:
+                    controlOpsStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (!shardedLog)
                     {
                         storeWrapper.FlushAllDatabases(unsafeTruncateLog: header.unsafeTruncateLog == 1);
@@ -229,8 +250,11 @@ namespace Garnet.server
                             (int)LeaderBarrierType.FLUSH_DB_ALL,
                             () => storeWrapper.FlushAllDatabases(unsafeTruncateLog: header.unsafeTruncateLog == 1));
                     }
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
                     break;
                 case AofEntryType.FlushDb:
+                    controlOpsStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (!shardedLog)
                     {
                         storeWrapper.FlushDatabase(unsafeTruncateLog: header.unsafeTruncateLog == 1, dbId: header.databaseId);
@@ -243,9 +267,14 @@ namespace Garnet.server
                             (int)LeaderBarrierType.FLUSH_DB,
                             () => storeWrapper.FlushDatabase(unsafeTruncateLog: header.unsafeTruncateLog == 1, dbId: header.databaseId));
                     }
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
                     break;
                 default:
-                    _ = ReplayOp(virtualSublogIdx, stringBasicContext, objectBasicContext, unifiedBasicContext, ptr, length, asReplica);
+                    var replayOpStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
+                    _ = ReplayOp(virtualSublogIdx, stringBasicContext, objectBasicContext, unifiedBasicContext, ptr, length, asReplica, timingStats);
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOpTotal, Stopwatch.GetTimestamp() - replayOpStart);
                     break;
             }
         }
@@ -253,7 +282,7 @@ namespace Garnet.server
         private unsafe bool ReplayOp<TStringContext, TObjectContext, TUnifiedContext>(
                 int sublogIdx,
                 TStringContext stringContext, TObjectContext objectContext, TUnifiedContext unifiedContext,
-                byte* entryPtr, int length, bool asReplica)
+                byte* entryPtr, int length, bool asReplica, AofReplayTimingStats timingStats = null)
             where TStringContext : ITsavoriteContext<StringInput, StringOutput, long, MainSessionFunctions, StoreFunctions, StoreAllocator>
             where TObjectContext : ITsavoriteContext<ObjectInput, ObjectOutput, long, ObjectSessionFunctions, StoreFunctions, StoreAllocator>
             where TUnifiedContext : ITsavoriteContext<UnifiedInput, UnifiedOutput, long, UnifiedSessionFunctions, StoreFunctions, StoreAllocator>
@@ -272,56 +301,104 @@ namespace Garnet.server
             switch (header.opType)
             {
                 case AofEntryType.StoreUpsert:
+                    var replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     StoreUpsert(stringContext, AofHeader.SkipHeader(entryPtr));
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayStoreUpsert, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.StoreRMW:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     StoreRMW(stringContext, AofHeader.SkipHeader(entryPtr));
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.StoreDelete:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     StoreDelete(stringContext, AofHeader.SkipHeader(entryPtr));
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.ObjectStoreRMW:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     ObjectStoreRMW(objectContext, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.ObjectStoreUpsert:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     ObjectStoreUpsert(objectContext, storeWrapper.GarnetObjectSerializer, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.ObjectStoreDelete:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     ObjectStoreDelete(objectContext, AofHeader.SkipHeader(entryPtr));
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.UnifiedStoreRMW:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     UnifiedStoreRMW(unifiedContext, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.UnifiedStoreStringUpsert:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     UnifiedStoreStringUpsert(unifiedContext, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.UnifiedStoreObjectUpsert:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     UnifiedStoreObjectUpsert(unifiedContext, storeWrapper.GarnetObjectSerializer, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.UnifiedStoreDelete:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
                     UnifiedStoreDelete(unifiedContext, AofHeader.SkipHeader(entryPtr));
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.StoredProcedure:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     aofReplayCoordinator.ReplayStoredProc(sublogIdx, header.procedureId, entryPtr);
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 case AofEntryType.TxnCommit:
+                    replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     aofReplayCoordinator.ProcessFuzzyRegionTransactionGroup(sublogIdx, entryPtr, asReplica);
+                    if (timingStats != null)
+                        timingStats.Add(AofReplayTimingPhase.ReplayOtherReplayOp, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
                 default:
                     throw new GarnetException($"Unknown AOF header operation type {header.opType}");
             }
 
             return true;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        AofReplayTimingStats GetReplayTimingStats(int virtualSublogIdx, int replayTaskIdx)
+        {
+            var timingContext = storeWrapper.serverOptions.AofReplayTimingContext;
+            if (timingContext == null || replayTaskIdx < 0)
+                return null;
+
+            var replayTaskCount = Math.Max(storeWrapper.serverOptions.AofReplayTaskCount, 1);
+            var physicalSublogIdx = virtualSublogIdx / replayTaskCount;
+            return timingContext.GetReplayTaskStats(physicalSublogIdx, replayTaskIdx);
         }
 
         private void UpdateKeySequenceNumber(int sublogIdx, byte* ptr)

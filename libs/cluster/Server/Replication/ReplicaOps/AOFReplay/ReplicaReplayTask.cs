@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Garnet.common;
@@ -36,6 +37,7 @@ namespace Garnet.cluster
         {
             var physicalSublogIdx = replayDriver.physicalSublogIdx;
             var virtualSublogIdx = appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, replayTaskIdx);
+            var taskTimingStats = clusterProvider.serverOptions.AofReplayTimingContext?.GetReplayTaskStats(physicalSublogIdx, replayTaskIdx);
 
             while (!cts.Token.IsCancellationRequested)
             {
@@ -73,7 +75,10 @@ namespace Garnet.cluster
                                 var entryPtr = ptr + entryLength;
                                 if (replicationManager.AofProcessor.CanReplay(entryPtr, replayTaskIdx, out var sequenceNumber))
                                 {
-                                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
+                                    var recordApplyStart = taskTimingStats != null ? Stopwatch.GetTimestamp() : 0L;
+                                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart, replayTaskIdx);
+                                    if (taskTimingStats != null)
+                                        taskTimingStats.Add(AofReplayTimingPhase.ReplayRecordApply, Stopwatch.GetTimestamp() - recordApplyStart);
                                     // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
                                     // point when we take a checkpoint at the checkpoint end marker
                                     if (isCheckpointStart)
@@ -87,6 +92,7 @@ namespace Garnet.cluster
                             }
                             else if (payloadLength < 0)
                             {
+                                var fastCommitMetadataStart = taskTimingStats != null ? Stopwatch.GetTimestamp() : 0L;
                                 if (!clusterProvider.serverOptions.EnableFastCommit)
                                     throw new GarnetException("Received FastCommit request at replica AOF processor, but FastCommit is not enabled", clientResponse: false);
 
@@ -97,6 +103,8 @@ namespace Garnet.cluster
                                     info.Initialize(new ReadOnlySpan<byte>(ptr + entryLength, -payloadLength));
                                     replaySublog.UnsafeCommitMetadataOnly(info, isProtected);
                                 }
+                                if (taskTimingStats != null)
+                                    taskTimingStats.Add(AofReplayTimingPhase.ReplayFastCommitMetadata, Stopwatch.GetTimestamp() - fastCommitMetadataStart);
                                 entryLength += TsavoriteLog.UnsafeAlign(-payloadLength);
                             }
                             ptr += entryLength;

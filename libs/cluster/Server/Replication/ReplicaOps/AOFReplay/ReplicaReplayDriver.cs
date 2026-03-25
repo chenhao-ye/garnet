@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -91,6 +92,8 @@ namespace Garnet.cluster
         /// <exception cref="GarnetException">Thrown if the background replay operation times out.</exception>
         public unsafe void Consume(byte* record, int recordLength, long currentAddress, long nextAddress, bool isProtected)
         {
+            var timingStats = serverOptions.AofReplayTimingContext?.GetSublogStats(physicalSublogIdx);
+            var replayTotalStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
             if (serverOptions.AofReplayTaskCount == 1)
             {
                 ConsumeDirect(record, recordLength, currentAddress, nextAddress, isProtected);
@@ -111,10 +114,18 @@ namespace Garnet.cluster
                 replayBatchContext.LeaderFollowerBarrier.WaitCompleted(serverOptions.ReplicaSyncTimeout, cts.Token);
 
                 // Advertise new replicaton offset after replay completes
+                var replayPostchecksStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                 replicationManager.SetSublogReplicationOffset(physicalSublogIdx, nextAddress);
 
                 // Periodically try to take a new snapshot (will skip if snapshot read not enabled)
                 storeWrapper.TryAdvanceSnapshotAfterReplay();
+                if (timingStats != null)
+                    timingStats.Add(AofReplayTimingPhase.ReplayPostchecks, Stopwatch.GetTimestamp() - replayPostchecksStart);
+            }
+
+            if (timingStats != null)
+            {
+                timingStats.Add(AofReplayTimingPhase.ReplayTotal, Stopwatch.GetTimestamp() - replayTotalStart);
             }
         }
 
@@ -130,6 +141,7 @@ namespace Garnet.cluster
         /// fails.</exception>
         internal unsafe void ConsumeDirect(byte* record, int recordLength, long currentAddress, long nextAddress, bool isProtected)
         {
+            var taskTimingStats = serverOptions.AofReplayTimingContext?.GetReplayTaskStats(physicalSublogIdx, 0);
             ValidateSublogIndex(physicalSublogIdx);
             replicationManager.SetSublogReplicationOffset(physicalSublogIdx, currentAddress);
             var ptr = record;
@@ -141,7 +153,10 @@ namespace Garnet.cluster
                 var payloadLength = physicalSublog.UnsafeGetLength(ptr);
                 if (payloadLength > 0)
                 {
-                    replicationManager.AofProcessor.ProcessAofRecordInternal(physicalSublogIdx, ptr + entryLength, payloadLength, true, out var isCheckpointStart);
+                    var recordApplyStart = taskTimingStats != null ? Stopwatch.GetTimestamp() : 0L;
+                    replicationManager.AofProcessor.ProcessAofRecordInternal(physicalSublogIdx, ptr + entryLength, payloadLength, true, out var isCheckpointStart, replayTaskIdx: 0);
+                    if (taskTimingStats != null)
+                        taskTimingStats.Add(AofReplayTimingPhase.ReplayRecordApply, Stopwatch.GetTimestamp() - recordApplyStart);
                     // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
                     // point when we take a checkpoint at the checkpoint end marker
                     if (isCheckpointStart)
@@ -153,6 +168,7 @@ namespace Garnet.cluster
                 }
                 else if (payloadLength < 0)
                 {
+                    var fastCommitMetadataStart = taskTimingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (!serverOptions.EnableFastCommit)
                     {
                         throw new GarnetException("Received FastCommit request at replica AOF processor, but FastCommit is not enabled", clientResponse: false);
@@ -160,6 +176,8 @@ namespace Garnet.cluster
                     TsavoriteLogRecoveryInfo info = new();
                     info.Initialize(new ReadOnlySpan<byte>(ptr + entryLength, -payloadLength));
                     physicalSublog.UnsafeCommitMetadataOnly(info, isProtected);
+                    if (taskTimingStats != null)
+                        taskTimingStats.Add(AofReplayTimingPhase.ReplayFastCommitMetadata, Stopwatch.GetTimestamp() - fastCommitMetadataStart);
                     entryLength += TsavoriteLog.UnsafeAlign(-payloadLength);
                 }
                 ptr += entryLength;
@@ -167,11 +185,14 @@ namespace Garnet.cluster
             }
             // logger?.LogError("[{physicalSublogIdx}] = {currentAddress} -> {nextAddress}", physicalSublogIdx, currentAddress, nextAddress);
 
+            var replayPostchecksStart = taskTimingStats != null ? Stopwatch.GetTimestamp() : 0L;
             if (replicationManager.GetSublogReplicationOffset(physicalSublogIdx) != nextAddress)
             {
                 logger?.LogError("ReplicaReplayTask.Consume NextAddress Mismatch sublogIdx: {sublogIdx}; recordLength:{recordLength}; currentAddress:{currentAddress}; nextAddress:{nextAddress}; replicationOffset:{ReplicationOffset}", physicalSublogIdx, recordLength, currentAddress, nextAddress, replicationManager.ReplicationOffset[physicalSublogIdx]);
                 throw new GarnetException("Failed validating integrity of replay", LogLevel.Warning, clientResponse: false);
             }
+            if (taskTimingStats != null)
+                taskTimingStats.Add(AofReplayTimingPhase.ReplayPostchecks, Stopwatch.GetTimestamp() - replayPostchecksStart);
         }
 
         public void Throttle() { }

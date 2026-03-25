@@ -40,6 +40,9 @@ namespace Resp.benchmark
         readonly Options options;
         readonly AofGen aofGen;
         readonly AofSync[] aofSync;
+        internal readonly AofReplayTimingContext replayTimingContext;
+        readonly long[] replayPagesProcessedBySublog;
+        readonly long[] replayRecordsProcessedBySublog;
         StringBuilder stats = new();
         long total_bytes_processed = 0;
         long total_pages_processed = 0;
@@ -63,6 +66,13 @@ namespace Resp.benchmark
                 throw new Exception("InProc AofBench requires --cluster!");
 
             var serverOptions = GetServerOptions(options);
+            if (options.AofBenchType == AofBenchType.Replay && options.Client == ClientType.InProc)
+            {
+                replayTimingContext = new AofReplayTimingContext(options.AofPhysicalSublogCount, options.AofReplayTaskCount);
+                serverOptions.AofReplayTimingContext = replayTimingContext;
+                replayPagesProcessedBySublog = new long[options.AofPhysicalSublogCount];
+                replayRecordsProcessedBySublog = new long[options.AofPhysicalSublogCount];
+            }
 
             if (options.Client == ClientType.InProc)
             {
@@ -80,6 +90,11 @@ namespace Resp.benchmark
         public void Run(int threads)
         {
             var workers = new Thread[threads];
+            replayTimingContext?.Reset();
+            if (replayPagesProcessedBySublog != null)
+                Array.Clear(replayPagesProcessedBySublog, 0, replayPagesProcessedBySublog.Length);
+            if (replayRecordsProcessedBySublog != null)
+                Array.Clear(replayRecordsProcessedBySublog, 0, replayRecordsProcessedBySublog.Length);
 
             try
             {
@@ -130,6 +145,11 @@ namespace Resp.benchmark
                     Console.WriteLine($"[Total pages send]: {total_pages_processed:N0}");
                     Console.WriteLine($"[Total records replayed]: {total_records_replayed:N0}");
                     Console.WriteLine($"[Throughput]: {recordsReplayedPerSecond:N2} records/sec");
+                    if (replayTimingContext != null)
+                    {
+                        foreach (var line in replayTimingContext.GetReportLines(replayPagesProcessedBySublog, replayRecordsProcessedBySublog))
+                            Console.WriteLine(line);
+                    }
                 }
                 else
                 {
@@ -182,6 +202,10 @@ namespace Resp.benchmark
                 }
 
                 //Console.WriteLine($"[{threadId}] - Pages send: {pagesSend:N0}, Total AOF bytes send: {totalBytes:N0}, Total records replayed:{recordsReplayedCount:N0}");
+                if (replayPagesProcessedBySublog != null)
+                    replayPagesProcessedBySublog[threadId] = pagesSend;
+                if (replayRecordsProcessedBySublog != null)
+                    replayRecordsProcessedBySublog[threadId] = recordsReplayedCount;
                 _ = Interlocked.Add(ref total_pages_processed, pagesSend);
                 _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
                 _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);

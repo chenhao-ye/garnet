@@ -2,8 +2,10 @@
 // Licensed under the MIT license.
 
 using System.Net;
+using System.Diagnostics;
 using Garnet.client;
 using Garnet.common;
+using Garnet.server;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using Tsavorite.core;
@@ -22,6 +24,7 @@ namespace Resp.benchmark
         readonly long startAddress;
         long previousAddress;
         bool initialized;
+        readonly AofReplayTimingStats timingStats;
         readonly ILogger logger = null;
 
         public long Size => previousAddress - startAddress;
@@ -43,6 +46,7 @@ namespace Resp.benchmark
             {
                 this.buffer = GC.AllocateArray<byte>(2 << options.AofPageSizeBits(), pinned: true);
                 primaryId = aofBench.primaryId;
+                timingStats = aofBench.replayTimingContext?.GetSublogStats(threadId);
                 if (options.EnableCluster)
                     aofBench.sessions[0].clusterSession.UnsafeSetConfig(replicaOf: primaryId);
             }
@@ -153,6 +157,7 @@ namespace Resp.benchmark
 
         public unsafe void Consume(byte* payloadPtr, int payloadLength, long currentAddress, long nextAddress, bool isProtected)
         {
+            var pageStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
             try
             {
                 if (!initialized)
@@ -165,6 +170,7 @@ namespace Resp.benchmark
                 {
                     fixed (byte* ptr = buffer)
                     {
+                        var appendLogBuildStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                         var respMessageSize = WriterClusterAppendLog(
                             ptr,
                             buffer.Length,
@@ -175,7 +181,13 @@ namespace Resp.benchmark
                             nextAddress,
                             (long)payloadPtr,
                             payloadLength);
+                        if (timingStats != null)
+                            timingStats.Add(AofReplayTimingPhase.AppendLogBuild, Stopwatch.GetTimestamp() - appendLogBuildStart);
+
+                        var sessionConsumeStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                         _ = aofBench.sessions[threadId].TryConsumeMessages(ptr, respMessageSize);
+                        if (timingStats != null)
+                            timingStats.Add(AofReplayTimingPhase.SessionConsume, Stopwatch.GetTimestamp() - sessionConsumeStart);
                     }
                 }
                 else
@@ -196,6 +208,11 @@ namespace Resp.benchmark
             {
                 logger?.LogWarning(ex, "An exception occurred at ReplicationManager.AofSyncTaskInfo.Consume");
                 throw;
+            }
+            finally
+            {
+                if (timingStats != null)
+                    timingStats.Add(AofReplayTimingPhase.PageTotal, Stopwatch.GetTimestamp() - pageStart);
             }
         }
 
