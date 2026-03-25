@@ -11,7 +11,7 @@ RESULT_ROOT = REPO_ROOT / "result"
 
 DEFAULT_BENCHMARK_PROJECT = "benchmark/Resp.benchmark/Resp.benchmark.csproj"
 DEFAULT_SERVER_PROJECT = "main/GarnetServer/GarnetServer.csproj"
-SUPPORTED_BENCHMARKS = {"online", "aof"}
+SUPPORTED_BENCHMARKS = {"online", "offline", "aof"}
 SWEEP_SCOPES = ("client_params", "server_params")
 SCOPE_PREFIXES = {"client_params": "c", "server_params": "s"}
 SWEEP_PARAM_PREFIXES = {"client_params": "client", "server_params": "server"}

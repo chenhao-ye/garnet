@@ -1,7 +1,8 @@
 # Garnet Experiment Framework
 
-Python harness for running YCSB-style parameter-sweep benchmarks against the
-Garnet online benchmark, parsing the output, and plotting the results.
+Python harness for running parameter-sweep benchmarks against Resp.benchmark
+in online, offline, and AOF modes, then parsing the output and plotting the
+results.
 
 ## Prerequisites
 
@@ -98,6 +99,7 @@ sweep:
   Defaults to `benchmark/Resp.benchmark/Resp.benchmark.csproj`.
 - **`server_project`** *(optional)*: path to the GarnetServer `.csproj` relative
   to the repo root. Defaults to `main/GarnetServer/GarnetServer.csproj`.
+- **`benchmark`**: one of `online`, `offline`, or `aof`.
 - **`no_server`** *(optional)*: skip external server launch/shutdown for embedded
   benchmark modes such as AOF `InProc`.
 
@@ -252,6 +254,7 @@ range spans more than 10x.
 | Config | Sweep | Workload | Load step |
 |---|---|---|---|
 | `configs/scale_clients.yaml` | `client_params.threads`: 1, 2, 4, 8, 16, 32 | 70% GET / 30% SET | no |
+| `configs/setonly_lightclient.yaml` | `client_params.threads`: 1, 2, 4, 8, 16, 32 | offline 100% SET with `LightClient` | no |
 | `configs/scale_batchsize.yaml` | `client_params.batchsize`: 1, 4, 16, 64, 256, 1024, 4096 | 70% GET / 30% SET, 8 threads | no |
 | `configs/readonly.yaml` | `client_params.threads`: 1, 2, 4, 8, 16, 32 | 100% GET | yes, per-run `prepare` with MSET |
 | `configs/aof_bench_clients.yaml` | `server_params.aof_physical_sublog_count`: 1, 8 and `client_params.threads`: 1, 2, 4, 8, 16, 32 | online SET workload, null-device AOF | launches server |

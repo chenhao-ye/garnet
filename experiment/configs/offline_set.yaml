@@ -1,0 +1,24 @@
+# Experiment: setonly_lightclient
+# Sweep the number of client threads from 1 to 32.
+# Workload: 100% SET using LightClient in Resp.benchmark offline mode.
+
+name: offline_set
+description: "Offline SET throughput stress test with LightClient; sweep threads 1-32"
+benchmark: offline
+
+base:
+  client_params:
+    client: LightClient
+    op: SET
+    batchsize: 4096
+    dbsize: 1000000
+    runtime: 30
+    disable_console_logger: true
+    aof_null_device: true
+    aof_commit_freq: -1
+  server_params:
+    port: 6379
+
+sweep:
+  client_params:
+    threads: [1, 2, 4, 8, 16, 32]

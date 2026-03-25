@@ -383,6 +383,13 @@ def validate_main_config(
             scope,
             "experiment benchmark is 'online' but client_params does not enable online mode",
         )
+    if benchmark_label == "offline" and "throughput" not in possible_modes:
+        add_issue(
+            issues,
+            "ERROR",
+            scope,
+            "experiment benchmark is 'offline' but client_params enables a different mode",
+        )
     if benchmark_label == "aof" and "aof" not in possible_modes:
         add_issue(
             issues,
