@@ -107,6 +107,24 @@ def _format_count(value: float | None) -> str:
     return f"{value:,.3f}"
 
 
+def _format_table_number(
+    value: float | None, decimals: int = 3, integer_threshold: float = 1_000_000
+) -> str:
+    if value is None:
+        return "-"
+    if float(value).is_integer() and abs(value) >= integer_threshold:
+        return f"{int(value):,}"
+    return f"{value:.{decimals}f}"
+
+
+def _format_sweep_value(value) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def _parse_online_output(
     path: Path, warmup_rows: int = 2
 ) -> tuple[list[dict], list[str]]:
@@ -289,6 +307,126 @@ def _format_summary(
     )
 
 
+def _build_summary_rows(runs: dict[str, dict]) -> dict[str, list[dict[str, str]]]:
+    grouped_rows: dict[str, list[dict[str, str]]] = {}
+
+    for run_name, entry in runs.items():
+        benchmark = entry["benchmark"]
+        config = entry.get("config", {})
+        sweep_params = config.get("sweep_params", {})
+        stats = entry.get("stats", {})
+
+        row = {
+            "run": run_name,
+            "samples": str(entry.get("num_samples", 0)),
+        }
+        for key, value in sweep_params.items():
+            row[key] = _format_sweep_value(value)
+
+        if benchmark == "aof":
+            row["throughput_mrec_s"] = _format_table_number(
+                (stats.get("throughput") or {}).get("mean"), decimals=3
+            )
+            row["bandwidth_gib_s"] = _format_table_number(
+                (stats.get("bandwidth") or {}).get("mean"), decimals=3
+            )
+            row["time_ms"] = _format_table_number(
+                (stats.get("time_ms") or {}).get("mean"), decimals=3
+            )
+            row["bytes"] = _format_table_number(
+                (stats.get("bytes") or {}).get("mean"), decimals=0
+            )
+        elif benchmark == "offline":
+            row["throughput_mops_s"] = _format_table_number(
+                ((stats.get("throughput") or {}).get("mean")), decimals=3
+            )
+            row["total_ops"] = _format_table_number(
+                (stats.get("total_ops") or {}).get("mean"), decimals=0
+            )
+            row["time_ms"] = _format_table_number(
+                (stats.get("time_ms") or {}).get("mean"), decimals=3
+            )
+        else:
+            row["throughput_mops_s"] = _format_table_number(
+                ((stats.get("tpt_kops") or {}).get("mean") or 0.0) / 1000.0
+                if (stats.get("tpt_kops") or {}).get("mean") is not None
+                else None,
+                decimals=3,
+            )
+            row["median_us"] = _format_table_number(
+                (stats.get("median_us") or {}).get("mean"), decimals=3
+            )
+            row["p95_us"] = _format_table_number(
+                (stats.get("p95_us") or {}).get("mean"), decimals=3
+            )
+            row["p99_us"] = _format_table_number(
+                (stats.get("p99_us") or {}).get("mean"), decimals=3
+            )
+
+        grouped_rows.setdefault(benchmark, []).append(row)
+
+    return grouped_rows
+
+
+def _render_text_table(rows: list[dict[str, str]], columns: list[str]) -> str:
+    widths = {
+        column: max(
+            len(column),
+            max((len(str(row.get(column, "-"))) for row in rows), default=0),
+        )
+        for column in columns
+    }
+
+    def _fmt_row(row: dict[str, str]) -> str:
+        return " | ".join(
+            str(row.get(column, "-")).rjust(widths[column]) for column in columns
+        )
+
+    separator = "-+-".join("-" * widths[column] for column in columns)
+    header = " | ".join(column.rjust(widths[column]) for column in columns)
+    body = [_fmt_row(row) for row in rows]
+    return "\n".join([header, separator, *body])
+
+
+def _write_summary_file(exp_dir: Path, experiment_name: str, warmup: int, runs: dict) -> Path:
+    grouped_rows = _build_summary_rows(runs)
+    lines = [
+        f"Experiment: {experiment_name}",
+        f"Warmup rows discarded: {warmup}",
+    ]
+
+    benchmark_column_order = {
+        "aof": ["run", "samples", "throughput_mrec_s", "bandwidth_gib_s", "time_ms", "bytes"],
+        "offline": ["run", "samples", "throughput_mops_s", "total_ops", "time_ms"],
+        "online": ["run", "samples", "throughput_mops_s", "median_us", "p95_us", "p99_us"],
+    }
+
+    for benchmark in sorted(grouped_rows):
+        rows = grouped_rows[benchmark]
+        sweep_columns = sorted(
+            {
+                key
+                for row in rows
+                for key in row
+                if key not in {"run", "samples"}
+                and key not in set(benchmark_column_order.get(benchmark, []))
+            }
+        )
+        ordered_columns = ["run", *sweep_columns, *benchmark_column_order.get(benchmark, ["samples"])[1:]]
+        lines.extend(
+            [
+                "",
+                f"[{benchmark}]",
+                _render_text_table(rows, ordered_columns),
+            ]
+        )
+
+    summary_path = exp_dir / "summary.txt"
+    with open(summary_path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return summary_path
+
+
 def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
     """Parse a single run directory. Returns None if output.txt is missing."""
     output_path = run_dir / "benchmark" / "output.txt"
@@ -376,7 +514,9 @@ def main():
     out_path = exp_dir / "result.yaml"
     with open(out_path, "w") as f:
         yaml.dump(result, f)
+    summary_path = _write_summary_file(exp_dir, args.experiment, args.warmup, runs)
     print(f"\nResult written to: {out_path}")
+    print(f"Summary written to: {summary_path}")
 
 
 if __name__ == "__main__":

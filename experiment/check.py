@@ -359,6 +359,75 @@ def validate_aof_mode(
             )
 
 
+def validate_offline_mode(
+    issues: list[Issue],
+    scope: str,
+    base_params: dict[str, Any],
+    sweep_client_params: dict[str, Any],
+    specified_keys: set[str],
+) -> None:
+    offline_contexts = list(
+        iter_param_contexts(
+            base_params,
+            sweep_client_params,
+            ["client", "op"],
+        )
+    )
+
+    common_ignored_keys = {
+        "pool",
+        "itp",
+        "sync",
+        "op_workload",
+        "op_percent",
+        "sscardinality",
+        "client_hist",
+        "aof_bench_type",
+    }
+    common_ignored = sorted(common_ignored_keys & specified_keys)
+    if common_ignored:
+        add_issue(
+            issues,
+            "WARNING",
+            scope,
+            f"offline benchmark ignores parameter(s): {format_values(common_ignored)}",
+        )
+
+    external_client_ignored_keys = {
+        "aof",
+        "cluster",
+        "aof_null_device",
+        "aof_commit_freq",
+        "aof_physical_sublog_count",
+        "aof_replay_task_count",
+        "aof_memory",
+        "aof_memory_size",
+        "aof_page_size",
+        "index",
+    }
+    if any(context["client"] != "InProc" for context in offline_contexts):
+        ignored = sorted(external_client_ignored_keys & specified_keys)
+        if ignored:
+            add_issue(
+                issues,
+                "WARNING",
+                scope,
+                f"offline benchmark with a non-InProc client ignores embedded-server parameter(s): {format_values(ignored)}",
+            )
+
+    if any(
+        context["client"] in {"GarnetClientSession", "SERedis"}
+        and context["op"] != "MSET"
+        for context in offline_contexts
+    ):
+        add_issue(
+            issues,
+            "ERROR",
+            scope,
+            "offline benchmark supports client=GarnetClientSession and client=SERedis only with 'op: MSET'",
+        )
+
+
 def validate_main_config(
     issues: list[Issue],
     *,
@@ -408,6 +477,8 @@ def validate_main_config(
 
     if "online" in possible_modes:
         validate_online_mode(issues, scope, base_params, sweep_client_params, specified_keys)
+    if "throughput" in possible_modes:
+        validate_offline_mode(issues, scope, base_params, sweep_client_params, specified_keys)
     if "aof" in possible_modes:
         validate_aof_mode(issues, scope, base_params, sweep_client_params, specified_keys)
 

@@ -14,8 +14,6 @@ base:
     dbsize: 1000000
     runtime: 30
     disable_console_logger: true
-    aof_null_device: true
-    aof_commit_freq: -1
   server_params:
     port: 6379
 

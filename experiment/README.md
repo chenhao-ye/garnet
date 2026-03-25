@@ -207,7 +207,8 @@ Reads every `benchmark/output.txt` under `result/<experiment_name>/`, locates
 the stats header line (`min (us); 5th (us); ...`), and parses the benchmark
 rows. The first `N` rows (default 2) are discarded as warmup. Per-run
 statistics (mean, std, min, max) are computed for each column and written to
-`result/<experiment_name>/result.yaml`.
+`result/<experiment_name>/result.yaml`. A human-friendly tabular summary is also
+written to `result/<experiment_name>/summary.txt`.
 
 ### result.yaml schema
 

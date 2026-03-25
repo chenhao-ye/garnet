@@ -206,7 +206,7 @@ def run_command(
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Cmd: {shlex.join(cmd)} @{run_dir}")
+    logger.info(f"Cmd: {shlex.join(cmd)} @ {run_dir}")
 
     if dry_run:
         logger.info("[dry-run] skipping execution")
