@@ -40,6 +40,7 @@ experiment/
     scale_batchsize.yaml  # example: sweep batchsize 1-4096
     readonly.yaml         # example: pre-load then 100% GET sweep
     aof_bench_clients.yaml  # example: vary sublog setup, sweep threads
+    aof_replay_matrix.yaml  # example: sweep physical sublogs x replay tasks
 
 result/
   <experiment_name>/
@@ -260,3 +261,4 @@ range spans more than 10x.
 | `configs/readonly.yaml` | `client_params.threads`: 1, 2, 4, 8, 16, 32 | 100% GET | yes, per-run `prepare` with MSET |
 | `configs/aof_bench_clients.yaml` | `server_params.aof_physical_sublog_count`: 1, 8 and `client_params.threads`: 1, 2, 4, 8, 16, 32 | online SET workload, null-device AOF | launches server |
 | `configs/aof_bench_sublog.yaml` | `client_params.aof_replay_task_count`: 1, 2, 4, 8 | AofBench Replay, InProc, null device | no server |
+| `configs/aof_replay_matrix.yaml` | `client_params.aof_physical_sublog_count`: 1, 2, 4, 8, 16, 32 and `client_params.aof_replay_task_count`: 1, 2, 4, 8, 16, 32 | AofBench Replay, InProc, null device | no server |
