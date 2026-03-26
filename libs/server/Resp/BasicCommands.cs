@@ -257,14 +257,21 @@ namespace Garnet.server
         private bool NetworkSET<TGarnetApi>(ref TGarnetApi storageApi)
             where TGarnetApi : IGarnetApi
         {
+            var totalStart = Stopwatch.GetTimestamp();
             Debug.Assert(parseState.Count == 2);
             var key = parseState.GetArgSliceByRef(0);
             var value = parseState.GetArgSliceByRef(1);
 
+            var storeStart = Stopwatch.GetTimestamp();
             _ = storageApi.SET(key, value);
+            storeWrapper.serverWriteTimingContext?.Add(ServerWriteTimingPhase.SetStore, Stopwatch.GetTimestamp() - storeStart);
 
+            var responseStart = Stopwatch.GetTimestamp();
             while (!RespWriteUtils.TryWriteDirect(CmdStrings.RESP_OK, ref dcurr, dend))
                 SendAndReset();
+            storeWrapper.serverWriteTimingContext?.Add(ServerWriteTimingPhase.SetResponseWrite, Stopwatch.GetTimestamp() - responseStart);
+            storeWrapper.serverWriteTimingContext?.Add(ServerWriteTimingPhase.SetCommandTotal, Stopwatch.GetTimestamp() - totalStart);
+            storeWrapper.serverWriteTimingContext?.IncrementSetCount();
 
             return true;
         }

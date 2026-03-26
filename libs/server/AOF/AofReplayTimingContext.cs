@@ -27,7 +27,13 @@ namespace Garnet.server
         ReplayOpTotal = 13,
         ReplayStoreUpsert = 14,
         ReplayOtherReplayOp = 15,
-        Count = 16
+        ReplayProcessRecordScaffolding = 16,
+        ReplaySkipRecord = 17,
+        ReplayProcessRecordSetup = 18,
+        ReplaySharedUpsertPrimitive = 19,
+        ReplayStoreUpsertMaterialize = 20,
+        ReplayStoreUpsertCleanup = 21,
+        Count = 22
     }
 
     public sealed class AofReplayTimingStats
@@ -103,7 +109,14 @@ namespace Garnet.server
             yield return FormatPhaseLine("Replay Control Ops", aggregate.GetTicks(AofReplayTimingPhase.ReplayControlOps), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
             yield return FormatPhaseLine("Replay Op Total", aggregate.GetTicks(AofReplayTimingPhase.ReplayOpTotal), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
             yield return FormatPhaseLine("Replay Store Upsert", aggregate.GetTicks(AofReplayTimingPhase.ReplayStoreUpsert), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
+            yield return FormatPhaseLine("Replay Shared Upsert Primitive", aggregate.GetTicks(AofReplayTimingPhase.ReplaySharedUpsertPrimitive), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
+            yield return FormatPhaseLine("Replay Store Upsert Materialize", aggregate.GetTicks(AofReplayTimingPhase.ReplayStoreUpsertMaterialize), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
+            yield return FormatPhaseLine("Replay Store Upsert Cleanup", aggregate.GetTicks(AofReplayTimingPhase.ReplayStoreUpsertCleanup), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
             yield return FormatPhaseLine("Replay Other ReplayOp", aggregate.GetTicks(AofReplayTimingPhase.ReplayOtherReplayOp), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
+            yield return FormatPhaseLine("Replay ProcessRecord Scaffolding", aggregate.GetTicks(AofReplayTimingPhase.ReplayProcessRecordScaffolding), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
+            yield return FormatPhaseLine("Replay SkipRecord", aggregate.GetTicks(AofReplayTimingPhase.ReplaySkipRecord), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
+            yield return FormatPhaseLine("Replay ProcessRecord Setup", aggregate.GetTicks(AofReplayTimingPhase.ReplayProcessRecordSetup), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
+            yield return FormatPhaseLine("Replay Replay-Only Overhead", Math.Max(0, aggregate.GetTicks(AofReplayTimingPhase.ReplayRecordApply) - aggregate.GetTicks(AofReplayTimingPhase.ReplaySharedUpsertPrimitive)), pageTotalTicks, totalPages, totalRecords, includeRecordRate: true);
             yield return FormatTopPhasesLine("Replay Top Phases", aggregate, pageTotalTicks);
 
             if (pagesBySublog == null || recordsBySublog == null)

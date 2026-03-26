@@ -121,24 +121,41 @@ namespace Garnet.server
         /// <param name="isCheckpointStart"></param>
         public void ProcessAofRecordInternal(int virtualSublogIdx, byte* ptr, int length, bool asReplica, out bool isCheckpointStart, int replayTaskIdx = -1)
         {
+            var processRecordStart = Stopwatch.GetTimestamp();
+            var processRecordSetupStart = processRecordStart;
             var timingStats = GetReplayTimingStats(virtualSublogIdx, replayTaskIdx);
+            var txnHandlingTicks = 0L;
+            var controlOpsTicks = 0L;
+            var replayOpTicks = 0L;
+            var processRecordSetupTicks = 0L;
             var header = *(AofHeader*)ptr;
             var shardedHeader = default(AofShardedHeader);
             var replayContext = aofReplayCoordinator.GetReplayContext(virtualSublogIdx);
             isCheckpointStart = false;
             var shardedLog = storeWrapper.serverOptions.AofPhysicalSublogCount > 1;
             var updateSequenceNumber = shardedLog && storeWrapper.serverOptions.AofReadWithTimestamp;
+            if (timingStats != null)
+            {
+                processRecordSetupTicks = Stopwatch.GetTimestamp() - processRecordSetupStart;
+                timingStats.Add(AofReplayTimingPhase.ReplayProcessRecordSetup, processRecordSetupTicks);
+            }
 
             // Handle transactions
             var txnHandlingStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
             if (aofReplayCoordinator.AddOrReplayTransactionOperation(virtualSublogIdx, ptr, length, asReplica))
             {
                 if (timingStats != null)
-                    timingStats.Add(AofReplayTimingPhase.ReplayTxnHandling, Stopwatch.GetTimestamp() - txnHandlingStart);
+                {
+                    txnHandlingTicks = Stopwatch.GetTimestamp() - txnHandlingStart;
+                    timingStats.Add(AofReplayTimingPhase.ReplayTxnHandling, txnHandlingTicks);
+                }
                 return;
             }
             if (timingStats != null)
-                timingStats.Add(AofReplayTimingPhase.ReplayTxnHandling, Stopwatch.GetTimestamp() - txnHandlingStart);
+            {
+                txnHandlingTicks = Stopwatch.GetTimestamp() - txnHandlingStart;
+                timingStats.Add(AofReplayTimingPhase.ReplayTxnHandling, txnHandlingTicks);
+            }
 
             switch (header.opType)
             {
@@ -163,7 +180,10 @@ namespace Garnet.server
                         storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, shardedHeader.sequenceNumber);
                     }
                     if (timingStats != null)
-                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
+                    {
+                        controlOpsTicks = Stopwatch.GetTimestamp() - controlOpsStart;
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, controlOpsTicks);
+                    }
                     break;
                 case AofEntryType.CheckpointEndCommit:
                     controlOpsStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
@@ -200,7 +220,10 @@ namespace Garnet.server
                         }
                     }
                     if (timingStats != null)
-                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
+                    {
+                        controlOpsTicks = Stopwatch.GetTimestamp() - controlOpsStart;
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, controlOpsTicks);
+                    }
                     break;
                 case AofEntryType.MainStoreStreamingCheckpointStartCommit:
                 case AofEntryType.ObjectStoreStreamingCheckpointStartCommit:
@@ -222,7 +245,10 @@ namespace Garnet.server
                         }
                     }
                     if (timingStats != null)
-                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
+                    {
+                        controlOpsTicks = Stopwatch.GetTimestamp() - controlOpsStart;
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, controlOpsTicks);
+                    }
                     break;
                 case AofEntryType.MainStoreStreamingCheckpointEndCommit:
                 case AofEntryType.ObjectStoreStreamingCheckpointEndCommit:
@@ -234,7 +260,10 @@ namespace Garnet.server
                         storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, shardedHeader.sequenceNumber);
                     }
                     if (timingStats != null)
-                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
+                    {
+                        controlOpsTicks = Stopwatch.GetTimestamp() - controlOpsStart;
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, controlOpsTicks);
+                    }
                     break;
                 case AofEntryType.FlushAll:
                     controlOpsStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
@@ -251,7 +280,10 @@ namespace Garnet.server
                             () => storeWrapper.FlushAllDatabases(unsafeTruncateLog: header.unsafeTruncateLog == 1));
                     }
                     if (timingStats != null)
-                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, Stopwatch.GetTimestamp() - controlOpsStart);
+                    {
+                        controlOpsTicks = Stopwatch.GetTimestamp() - controlOpsStart;
+                        timingStats.Add(AofReplayTimingPhase.ReplayControlOps, controlOpsTicks);
+                    }
                     break;
                 case AofEntryType.FlushDb:
                     controlOpsStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
@@ -274,8 +306,20 @@ namespace Garnet.server
                     var replayOpStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     _ = ReplayOp(virtualSublogIdx, stringBasicContext, objectBasicContext, unifiedBasicContext, ptr, length, asReplica, timingStats);
                     if (timingStats != null)
-                        timingStats.Add(AofReplayTimingPhase.ReplayOpTotal, Stopwatch.GetTimestamp() - replayOpStart);
+                    {
+                        replayOpTicks = Stopwatch.GetTimestamp() - replayOpStart;
+                        timingStats.Add(AofReplayTimingPhase.ReplayOpTotal, replayOpTicks);
+                    }
                     break;
+            }
+
+            if (timingStats != null)
+            {
+                var accountedTicks = processRecordSetupTicks + txnHandlingTicks + controlOpsTicks + replayOpTicks;
+                var totalElapsed = Stopwatch.GetTimestamp() - processRecordStart;
+                var scaffoldingTicks = totalElapsed - accountedTicks;
+                if (scaffoldingTicks > 0)
+                    timingStats.Add(AofReplayTimingPhase.ReplayProcessRecordScaffolding, scaffoldingTicks);
             }
         }
 
@@ -291,8 +335,15 @@ namespace Garnet.server
             var replayContext = aofReplayCoordinator.GetReplayContext(sublogIdx);
 
             // Skips (1) entries with versions that were part of prior checkpoint; and (2) future entries in fuzzy region
+            var skipRecordStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
             if (SkipRecord(sublogIdx, replayContext.inFuzzyRegion, entryPtr, length, asReplica))
+            {
+                if (timingStats != null)
+                    timingStats.Add(AofReplayTimingPhase.ReplaySkipRecord, Stopwatch.GetTimestamp() - skipRecordStart);
                 return false;
+            }
+            if (timingStats != null)
+                timingStats.Add(AofReplayTimingPhase.ReplaySkipRecord, Stopwatch.GetTimestamp() - skipRecordStart);
 
             var bufferPtr = (byte*)Unsafe.AsPointer(ref replayContext.objectOutputBuffer[0]);
             var bufferLength = replayContext.objectOutputBuffer.Length;
@@ -303,7 +354,7 @@ namespace Garnet.server
                 case AofEntryType.StoreUpsert:
                     var replayOpInnerStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
                     if (needUpdateSequenceNumber) UpdateKeySequenceNumber(sublogIdx, entryPtr);
-                    StoreUpsert(stringContext, AofHeader.SkipHeader(entryPtr));
+                    StoreUpsert(stringContext, AofHeader.SkipHeader(entryPtr), timingStats);
                     if (timingStats != null)
                         timingStats.Add(AofReplayTimingPhase.ReplayStoreUpsert, Stopwatch.GetTimestamp() - replayOpInnerStart);
                     break;
@@ -410,9 +461,10 @@ namespace Garnet.server
             storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogKeySequenceNumber(sublogIdx, key, shardedHeader.sequenceNumber);
         }
 
-        static void StoreUpsert<TStringContext>(TStringContext stringContext, byte* keyPtr)
+        static void StoreUpsert<TStringContext>(TStringContext stringContext, byte* keyPtr, AofReplayTimingStats timingStats = null)
             where TStringContext : ITsavoriteContext<StringInput, StringOutput, long, MainSessionFunctions, StoreFunctions, StoreAllocator>
         {
+            var materializeStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
             var key = SpanByte.FromLengthPrefixedPinnedPointer(keyPtr);
             var curr = keyPtr + key.TotalSize();
 
@@ -421,11 +473,20 @@ namespace Garnet.server
 
             var stringInput = new StringInput();
             _ = stringInput.DeserializeFrom(curr);
+            if (timingStats != null)
+                timingStats.Add(AofReplayTimingPhase.ReplayStoreUpsertMaterialize, Stopwatch.GetTimestamp() - materializeStart);
 
             StringOutput output = default;
+            var sharedUpsertStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
             _ = stringContext.Upsert(key, ref stringInput, value, ref output);
+            if (timingStats != null)
+                timingStats.Add(AofReplayTimingPhase.ReplaySharedUpsertPrimitive, Stopwatch.GetTimestamp() - sharedUpsertStart);
+
+            var cleanupStart = timingStats != null ? Stopwatch.GetTimestamp() : 0L;
             if (!output.SpanByteAndMemory.IsSpanByte)
                 output.SpanByteAndMemory.Dispose();
+            if (timingStats != null)
+                timingStats.Add(AofReplayTimingPhase.ReplayStoreUpsertCleanup, Stopwatch.GetTimestamp() - cleanupStart);
         }
 
         static void StoreRMW<TStringContext>(TStringContext stringContext, byte* keyPtr)

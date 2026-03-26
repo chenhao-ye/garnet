@@ -21,6 +21,7 @@ namespace Garnet.server
         public readonly MemoryPool<byte> memoryPool;
         public readonly CacheSizeTracker objectStoreSizeTracker;
         public readonly GarnetObjectSerializer garnetObjectSerializer;
+        public readonly StoreWrapper storeWrapper;
         public IStoreFunctions storeFunctions;
         public ObjectIdMap transientObjectIdMap;
         public ETagState etagState;
@@ -37,6 +38,7 @@ namespace Garnet.server
         {
             this.appendOnlyFile = appendOnlyFile;
             this.watchVersionMap = watchVersionMap;
+            this.storeWrapper = storeWrapper;
             this.customCommandManager = storeWrapper.customCommandManager;
             this.memoryPool = memoryPool ?? MemoryPool<byte>.Shared;
             this.objectStoreSizeTracker = objectStoreSizeTracker;

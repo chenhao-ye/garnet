@@ -204,7 +204,10 @@ namespace Garnet.server
         public GarnetStatus SET<TStringContext>(PinnedSpanByte key, PinnedSpanByte value, ref TStringContext context)
             where TStringContext : ITsavoriteContext<StringInput, StringOutput, long, MainSessionFunctions, StoreFunctions, StoreAllocator>
         {
+            var upsertStart = functionsState.storeWrapper.serverWriteTimingContext != null ? Stopwatch.GetTimestamp() : 0L;
             context.Upsert(key.ReadOnlySpan, value.ReadOnlySpan);
+            if (upsertStart != 0)
+                functionsState.storeWrapper.serverWriteTimingContext.Add(ServerWriteTimingPhase.SetStoreEngineUpsert, Stopwatch.GetTimestamp() - upsertStart);
             return GarnetStatus.OK;
         }
 
@@ -212,7 +215,10 @@ namespace Garnet.server
             where TStringContext : ITsavoriteContext<StringInput, StringOutput, long, MainSessionFunctions, StoreFunctions, StoreAllocator>
         {
             var output = new StringOutput();
+            var upsertStart = functionsState.storeWrapper.serverWriteTimingContext != null ? Stopwatch.GetTimestamp() : 0L;
             context.Upsert(key.ReadOnlySpan, ref input, value.ReadOnlySpan, ref output);
+            if (upsertStart != 0)
+                functionsState.storeWrapper.serverWriteTimingContext.Add(ServerWriteTimingPhase.SetStoreEngineUpsert, Stopwatch.GetTimestamp() - upsertStart);
             return GarnetStatus.OK;
         }
 

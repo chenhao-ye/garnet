@@ -12,9 +12,19 @@ namespace Garnet
     {
         static void Main(string[] args)
         {
+            GarnetServer server = null;
             try
             {
-                using var server = new GarnetServer(args);
+                server = new GarnetServer(args);
+                using var _ = server;
+
+                AppDomain.CurrentDomain.ProcessExit += (_, _) => server.Dispose();
+                Console.CancelKeyPress += (_, e) =>
+                {
+                    e.Cancel = true;
+                    server.Dispose();
+                    Environment.Exit(0);
+                };
 
                 // Optional: register custom extensions
                 RegisterExtensions(server);

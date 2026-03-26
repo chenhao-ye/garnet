@@ -687,6 +687,7 @@ namespace Garnet.server
             where TEpochAccessor : IEpochAccessor
         {
             if (functionsState.StoredProcMode) return;
+            var aofAppendStart = functionsState.appendOnlyFile != null ? Stopwatch.GetTimestamp() : 0L;
 
             // We need this check because when we ingest records from the primary
             // if the input is zero then input overlaps with value so any update to RespInputHeader->flags
@@ -733,6 +734,9 @@ namespace Garnet.server
                     epochAccessor,
                     out _);
             }
+
+            if (aofAppendStart != 0)
+                functionsState.storeWrapper.serverWriteTimingContext?.Add(ServerWriteTimingPhase.SetAofAppend, Stopwatch.GetTimestamp() - aofAppendStart);
         }
 
         /// <summary>

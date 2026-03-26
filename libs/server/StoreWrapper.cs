@@ -236,6 +236,7 @@ namespace Garnet.server
         internal readonly IClusterProvider clusterProvider;
         internal readonly SlowLogContainer slowLogContainer;
         internal readonly ILogger sessionLogger;
+        internal readonly ServerWriteTimingContext serverWriteTimingContext;
         internal long safeAofAddress = -1;
 
         // snapshotAddress: read by ConsistentReadContext; long.MaxValue = read latest (initial state)
@@ -301,6 +302,7 @@ namespace Garnet.server
                 : null;
             this.logger = loggerFactory?.CreateLogger("StoreWrapper");
             this.sessionLogger = loggerFactory?.CreateLogger("Session");
+            this.serverWriteTimingContext = serverOptions.EnableAOF ? new ServerWriteTimingContext() : null;
             this.accessControlList = accessControlList;
             this.GarnetObjectSerializer = new GarnetObjectSerializer(this.customCommandManager);
             this.taskManager = new TaskManager(loggerFactory?.CreateLogger("TaskManager"));
@@ -996,6 +998,7 @@ namespace Garnet.server
                 return;
             disposed = true;
 
+            serverWriteTimingContext?.Report();
             clusterProvider?.Dispose();
             itemBroker?.Dispose();
             monitor?.Dispose();
