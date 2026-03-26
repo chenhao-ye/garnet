@@ -196,7 +196,8 @@ namespace Resp.benchmark
                                 var key = SpanByte.FromPinnedPointer(keyPtr, keyData.Length);
                                 var value = SpanByte.FromPinnedPointer(valuePtr, valueData.Length);
                                 var aofHeader = new AofHeader { opType = AofEntryType.StoreUpsert, storeVersion = 1, sessionID = 0 };
-                                if (options.AofPhysicalSublogCount == 1)
+                                var useShardedHeader = options.AofPhysicalSublogCount > 1 || options.AofReplayTaskCount > 1;
+                                if (!useShardedHeader)
                                 {
                                     if (!garnetLog.GetSubLog(threadId).DummyEnqueue(
                                         ref pageOffset,
