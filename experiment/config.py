@@ -124,8 +124,8 @@ def run_name_for_combo(combo: dict[str, dict[str, Any]]) -> str:
     parts: list[str] = []
     for scope in SWEEP_SCOPES:
         for key, value in combo.get(scope, {}).items():
-            parts.append(f"{SCOPE_PREFIXES[scope]}.{key}_{sanitize_name_part(value)}")
-    return "__".join(parts) if parts else "default"
+            parts.append(f"{SCOPE_PREFIXES[scope]}.{key}.{sanitize_name_part(value)}")
+    return "-".join(parts) if parts else "default"
 
 
 def flatten_sweep_params(combo: dict[str, dict[str, Any]]) -> dict[str, Any]:

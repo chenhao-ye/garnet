@@ -21,4 +21,4 @@ base:
 
 sweep:
   client_params:
-    aof_replay_task_count: [1, 2, 4, 8, 16, 32]
+    aof_replay_task_count: [1, 2, 4, 8]
