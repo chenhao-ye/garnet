@@ -1,0 +1,24 @@
+# Experiment: aof_replay_virtual
+# Sweep the number of AOF replay tasks per physical sublog (1, 2, 4, 8) using
+# the offline AofBench in Replay mode with main-memory replication
+# (--aof-null-device, InProc client).
+# No external Garnet server is needed — AofBench creates an embedded server.
+
+name: aof_replay_virtual
+description: "Scale AOF replay task count (1-8) with main-memory replication (null device, InProc)"
+benchmark: aof
+no_server: true
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: Replay
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: "256m"
+
+sweep:
+  client_params:
+    aof_replay_task_count: [1, 2, 4, 8]

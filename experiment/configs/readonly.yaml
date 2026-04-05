@@ -1,0 +1,38 @@
+# Experiment: readonly
+# Pure read workload (100% GET). Keys must exist before measuring, so a load
+# step pre-populates the server with MSET before the sweep begins.
+#
+# The `prepare` section runs a separate non-online benchmark for each run that
+# writes all keys once, then the benchmark step measures pure GET throughput.
+
+name: readonly
+description: "100% GET workload after server pre-load; sweep threads 1-32"
+benchmark: online
+
+prepare:
+  client_params:
+    op: MSET
+    threads: 8
+    runtime: -1
+    totalops: 100000
+    dbsize: 100000
+    keylength: 8
+    valuelength: 64
+
+base:
+  client_params:
+    client: GarnetClientSession
+    online: true
+    op_workload: [GET]
+    op_percent: [100]
+    dbsize: 100000
+    keylength: 8
+    valuelength: 64
+    runtime: 30
+    disable_console_logger: true
+  server_params:
+    port: 6379
+
+sweep:
+  client_params:
+    threads: [1, 2, 4, 8]

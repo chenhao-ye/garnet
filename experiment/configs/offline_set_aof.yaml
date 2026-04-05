@@ -1,0 +1,27 @@
+# Experiment: offline_set_aof
+# Sweep the number of client threads from 1 to 32.
+# Workload: 100% SET using LightClient in Resp.benchmark offline mode with AOF enabled.
+
+name: offline_set_aof
+description: "Offline SET throughput stress test with LightClient and server-side AOF; sweep threads 1-32"
+benchmark: offline
+
+base:
+  client_params:
+    client: LightClient
+    op: SET
+    batchsize: 4096
+    dbsize: 1000000
+    runtime: 30
+    disable_console_logger: true
+  server_params:
+    port: 6379
+    aof: true
+    aof_null_device: true
+    aof_commit_freq: -1
+    aof_memory: 256m
+    aof_page_size: 4m
+
+sweep:
+  client_params:
+    threads: [1, 2, 4, 8, 16, 32]

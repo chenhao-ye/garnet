@@ -1,0 +1,23 @@
+# Experiment: online_set_gcs
+# Sweep the number of client threads from 1 to 32.
+# Workload: 100% SET using GarnetClientSession in Resp.benchmark online mode.
+
+name: online_set_gcs
+description: "Online SET throughput stress test with GarnetClientSession; sweep threads 1-32"
+benchmark: online
+
+base:
+  client_params:
+    client: GarnetClientSession
+    online: true
+    op_workload: [SET]
+    op_percent: [100]
+    dbsize: 1000000
+    runtime: 30
+    disable_console_logger: true
+  server_params:
+    port: 6379
+
+sweep:
+  client_params:
+    threads: [1, 2, 4, 8, 16, 32]
