@@ -51,11 +51,6 @@ namespace Tsavorite.core
         private Status SnapshotRead(TKey key, ref TInput input, ref TOutput output, TContext userContext)
         {
             var snapshotAddr = getSnapshotAddress();
-            if (snapshotAddr == long.MaxValue)
-            {
-                return TransactionalContext.Read(key, ref input, ref output, userContext);
-            }
-
             var scanFn = new ConsistentReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator>.SnapshotVersionScanFunctions(snapshotAddr);
             Session.store.Log.IterateKeyVersions(ref scanFn, key);
             if (scanFn.foundAddress != LogAddress.kInvalidAddress)

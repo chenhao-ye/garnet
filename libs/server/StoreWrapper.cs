@@ -214,7 +214,7 @@ namespace Garnet.server
                 ? new GarnetServerMonitor(this, serverOptions, servers,
                     loggerFactory?.CreateLogger("GarnetServerMonitor"))
                 : null;
-            this.enforceConsistentRead = serverOptions.EnableCluster && serverOptions.EnableAOF && (serverOptions.MultiLogEnabled || !serverOptions.AofReadWithTimestamp);
+            this.enforceConsistentRead = serverOptions.EnableCluster && serverOptions.EnableAOF && serverOptions.MultiLogEnabled;
             this.logger = loggerFactory?.CreateLogger("StoreWrapper");
             this.sessionLogger = loggerFactory?.CreateLogger("Session");
             this.accessControlList = accessControlList;
@@ -919,13 +919,20 @@ namespace Garnet.server
             var addr = Interlocked.Read(ref snapshotAddress);
             if (addr == long.MaxValue && !serverOptions.AofReadWithTimestamp)
             {
-                // On first snapshot call, take a snapshot immediately (non-blocking attempt)
-                if (snapshotMutex.Wait(0))
+                // Block until the snapshot is taken. Concurrent callers will wait here; once
+                // the first thread releases the mutex, subsequent threads re-check and skip
+                // TakeSnapshot() because snapshotAddress is no longer long.MaxValue.
+                snapshotMutex.Wait();
+                try
                 {
-                    try { TakeSnapshot(); }
-                    finally { snapshotMutex.Release(); }
                     addr = Interlocked.Read(ref snapshotAddress);
+                    if (addr == long.MaxValue)
+                    {
+                        TakeSnapshot();
+                        addr = Interlocked.Read(ref snapshotAddress);
+                    }
                 }
+                finally { snapshotMutex.Release(); }
             }
             return addr;
         }
