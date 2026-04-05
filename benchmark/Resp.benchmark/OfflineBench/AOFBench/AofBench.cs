@@ -21,6 +21,7 @@ namespace Resp.benchmark
                 QuietMode = true,
                 EnableAOF = options.EnableAOF || options.AofBench,
                 EnableCluster = options.EnableCluster,
+                IndexMemorySize = options.IndexMemorySize,
                 ClusterConfigFlushFrequencyMs = -1,
                 FastAofTruncate = options.EnableCluster && options.UseAofNullDevice,
                 UseAofNullDevice = options.UseAofNullDevice,
@@ -28,6 +29,7 @@ namespace Resp.benchmark
                 AofPageSize = options.AofPageSize,
                 CommitFrequencyMs = options.CommitFrequencyMs,
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
+                AofReplayTaskCount = options.AofReplayTaskCount,
                 ReplicationOffsetMaxLag = 0,
                 CheckpointDir = OperatingSystem.IsLinux() ? "/tmp" : null
             };

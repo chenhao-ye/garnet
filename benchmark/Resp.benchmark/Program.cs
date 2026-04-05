@@ -102,6 +102,7 @@ namespace Resp.benchmark
                 Console.WriteLine($"cluster:{opts.EnableCluster}");
                 Console.WriteLine($"index:{opts.IndexMemorySize}");
                 Console.WriteLine($"aof-sublog-count:{opts.AofPhysicalSublogCount}");
+                Console.WriteLine($"aof-replay-task-count:{opts.AofReplayTaskCount}");
                 Console.WriteLine("----------------------------------");
             }
         }
@@ -293,7 +294,7 @@ namespace Resp.benchmark
                     bench.Run(
                         opts.Op,
                         opts.TotalOps,
-                        threadBench, runTime: TimeSpan.FromSeconds(opts.RunTime),
+                        threadBench, runTime: opts.RunTime == -1 ? default : TimeSpan.FromSeconds(opts.RunTime),
                         keyLen: keyLen,
                         valueLen: valueLen,
                         BatchSize: BatchSize,

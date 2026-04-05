@@ -60,7 +60,8 @@ namespace Resp.benchmark
                 AofReplicationRefreshFrequencyMs = 10,
                 EnableCluster = true,
                 ReplicationOffsetMaxLag = 0,
-                AofPhysicalSublogCount = options.AofPhysicalSublogCount
+                AofPhysicalSublogCount = options.AofPhysicalSublogCount,
+                AofReplayTaskCount = options.AofReplayTaskCount
             };
             aofServerOptions.GetAofSettings(0, aofEpoch, out var logSettings);
             appendOnlyFile = new GarnetAppendOnlyFile(aofServerOptions, logSettings, Program.loggerFactory.CreateLogger("AofGen - AOF instance"));
@@ -196,7 +197,8 @@ namespace Resp.benchmark
                                 var key = SpanByte.FromPinnedPointer(keyPtr, keyData.Length);
                                 var value = SpanByte.FromPinnedPointer(valuePtr, valueData.Length);
                                 var aofHeader = new AofHeader { opType = AofEntryType.StoreUpsert, storeVersion = 1, sessionID = 0 };
-                                if (options.AofPhysicalSublogCount == 1)
+                                var useShardedHeader = options.AofPhysicalSublogCount > 1 || options.AofReplayTaskCount > 1;
+                                if (!useShardedHeader)
                                 {
                                     if (!garnetLog.GetSubLog(threadId).DummyEnqueue(
                                         ref pageOffset,
