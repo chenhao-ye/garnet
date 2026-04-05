@@ -99,12 +99,15 @@ namespace Garnet.server
             Debug.Assert(dbFound);
 
             this.stateMachineDriver = db.StateMachineDriver;
-            var session = db.Store.NewSession<FixedSpanByteKey, StringInput, StringOutput, long, MainSessionFunctions>(functions, IsConsistentReadSession);
+            Func<long> getSnapshotAddress = IsConsistentReadSession && !storeWrapper.serverOptions.AofReadWithTimestamp
+                ? storeWrapper.GetSnapshotAddress
+                : null;
+            var session = db.Store.NewSession<FixedSpanByteKey, StringInput, StringOutput, long, MainSessionFunctions>(functions, IsConsistentReadSession, getSnapshotAddress: getSnapshotAddress);
 
             if (!storeWrapper.serverOptions.DisableObjects)
             {
                 var objectStoreFunctions = new ObjectSessionFunctions(functionsState, readSessionState);
-                var objectStoreSession = db.Store.NewSession<FixedSpanByteKey, ObjectInput, ObjectOutput, long, ObjectSessionFunctions>(objectStoreFunctions, IsConsistentReadSession);
+                var objectStoreSession = db.Store.NewSession<FixedSpanByteKey, ObjectInput, ObjectOutput, long, ObjectSessionFunctions>(objectStoreFunctions, IsConsistentReadSession, getSnapshotAddress: getSnapshotAddress);
                 objectBasicContext = objectStoreSession.BasicContext;
                 objectTransactionalContext = objectStoreSession.TransactionalContext;
                 objectStoreConsistentReadContext = objectStoreSession.ConsistentReadContext;
@@ -112,7 +115,7 @@ namespace Garnet.server
             }
 
             var unifiedStoreFunctions = new UnifiedSessionFunctions(functionsState, readSessionState);
-            var unifiedStoreSession = db.Store.NewSession<FixedSpanByteKey, UnifiedInput, UnifiedOutput, long, UnifiedSessionFunctions>(unifiedStoreFunctions, IsConsistentReadSession);
+            var unifiedStoreSession = db.Store.NewSession<FixedSpanByteKey, UnifiedInput, UnifiedOutput, long, UnifiedSessionFunctions>(unifiedStoreFunctions, IsConsistentReadSession, getSnapshotAddress: getSnapshotAddress);
 
             stringBasicContext = session.BasicContext;
             stringTransactionalContext = session.TransactionalContext;

@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
 using System;
@@ -23,6 +23,11 @@ namespace Tsavorite.core
     {
         public readonly BasicContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> BasicContext { get; }
 
+        /// <summary>
+        /// Snapshot address provider. When non-null, snapshot read protocol is used instead of timestamp protocol.
+        /// </summary>
+        private readonly Func<long> getSnapshotAddress;
+
         /// <inheritdoc/>
         public long GetKeyHash<TOpKey>(TOpKey key)
             where TOpKey : IKey
@@ -31,9 +36,10 @@ namespace Tsavorite.core
 #endif
             => Session.store.GetKeyHash(key);
 
-        internal ConsistentReadContext(ClientSession<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> clientSession)
+        internal ConsistentReadContext(ClientSession<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> clientSession, Func<long> getSnapshotAddress = null)
         {
             BasicContext = new BasicContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator>(clientSession);
+            this.getSnapshotAddress = getSnapshotAddress;
         }
 
         /// <inheritdoc/>
@@ -42,12 +48,70 @@ namespace Tsavorite.core
         /// <inheritdoc/>
         public ClientSession<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> Session => BasicContext.Session;
 
+        #region Snapshot Read Support
+
+        internal struct SnapshotVersionScanFunctions : IScanIteratorFunctions
+        {
+            private readonly long snapshotMaxAddress;
+            internal long foundAddress;
+
+            internal SnapshotVersionScanFunctions(long snapshotMaxAddress)
+            {
+                this.snapshotMaxAddress = snapshotMaxAddress;
+                foundAddress = LogAddress.kInvalidAddress;
+            }
+
+            public bool OnStart(long beginAddress, long endAddress) => true;
+
+            public bool Reader<TSourceLogRecord>(in TSourceLogRecord logRecord, RecordMetadata recordMetadata,
+                long numberOfRecords, out CursorRecordResult cursorRecordResult)
+                where TSourceLogRecord : ISourceLogRecord
+            {
+                cursorRecordResult = CursorRecordResult.Accept;
+                // Skip records at or beyond snapshot boundary (too new)
+                if (recordMetadata.Address >= snapshotMaxAddress)
+                    return true;
+                // Found most recent version at or before snapshot boundary
+                if (!logRecord.Info.Tombstone)
+                    foundAddress = recordMetadata.Address;
+                return false; // Stop iteration
+            }
+
+            public void OnStop(bool completed, long numberOfRecords) { }
+            public void OnException(Exception exception, long numberOfRecords) { }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private Status SnapshotRead(TKey key, ref TInput input, ref TOutput output, TContext userContext)
+        {
+            var snapshotAddr = getSnapshotAddress();
+            if (snapshotAddr == long.MaxValue)
+            {
+                // No snapshot yet -- read latest
+                return BasicContext.Read(key, ref input, ref output, userContext);
+            }
+
+            var scanFn = new SnapshotVersionScanFunctions(snapshotAddr);
+            Session.store.Log.IterateKeyVersions(ref scanFn, key);
+            if (scanFn.foundAddress != LogAddress.kInvalidAddress)
+            {
+                var readOptions = default(ReadOptions);
+                return BasicContext.ReadAtAddress(scanFn.foundAddress, key, ref input, ref output, ref readOptions, out _, userContext);
+            }
+            return new Status(StatusCode.NotFound);
+        }
+
+        #endregion
+
         #region ITsavoriteContext/Read
 
         /// <inheritdoc/>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Status Read(TKey key, ref TInput input, ref TOutput output, TContext userContext = default)
         {
+            if (getSnapshotAddress != null)
+                return SnapshotRead(key, ref input, ref output, userContext);
+
             var hash = GetKeyHash(key);
             Session.functions.BeforeConsistentReadCallback(hash);
             var status = BasicContext.Read(key, ref input, ref output, userContext);
@@ -98,6 +162,12 @@ namespace Tsavorite.core
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Status Read(TKey key, ref TInput input, ref TOutput output, ref ReadOptions readOptions, out RecordMetadata recordMetadata, TContext userContext = default)
         {
+            if (getSnapshotAddress != null)
+            {
+                recordMetadata = default;
+                return SnapshotRead(key, ref input, ref output, userContext);
+            }
+
             var hash = GetKeyHash(key);
             Session.functions.BeforeConsistentReadCallback(hash);
             var status = BasicContext.Read(key, ref input, ref output, ref readOptions, out recordMetadata, userContext);
@@ -139,7 +209,8 @@ namespace Tsavorite.core
         public bool CompletePending(bool wait = false, bool spinWaitForCommit = false)
         {
             var status = BasicContext.CompletePending(wait, spinWaitForCommit);
-            Session.functions.AfterConsistentReadKeyCallback();
+            if (getSnapshotAddress == null)
+                Session.functions.AfterConsistentReadKeyCallback();
             return status;
         }
 
@@ -147,7 +218,8 @@ namespace Tsavorite.core
         public bool CompletePendingWithOutputs(out CompletedOutputIterator<TInput, TOutput, TContext> completedOutputs, bool wait = false, bool spinWaitForCommit = false)
         {
             var status = BasicContext.CompletePendingWithOutputs(out completedOutputs, wait, spinWaitForCommit);
-            Session.functions.AfterConsistentReadKeyCallback();
+            if (getSnapshotAddress == null)
+                Session.functions.AfterConsistentReadKeyCallback();
             return status;
         }
 
@@ -155,14 +227,16 @@ namespace Tsavorite.core
         public async ValueTask CompletePendingAsync(bool waitForCommit = false, CancellationToken token = default)
         {
             await BasicContext.CompletePendingAsync(waitForCommit, token).ConfigureAwait(false);
-            Session.functions.AfterConsistentReadKeyCallback();
+            if (getSnapshotAddress == null)
+                Session.functions.AfterConsistentReadKeyCallback();
         }
 
         /// <inheritdoc/>
         public async ValueTask<CompletedOutputIterator<TInput, TOutput, TContext>> CompletePendingWithOutputsAsync(bool waitForCommit = false, CancellationToken token = default)
         {
             var status = BasicContext.CompletePendingWithOutputsAsync(waitForCommit, token);
-            Session.functions.AfterConsistentReadKeyCallback();
+            if (getSnapshotAddress == null)
+                Session.functions.AfterConsistentReadKeyCallback();
             return await status.ConfigureAwait(false);
         }
 

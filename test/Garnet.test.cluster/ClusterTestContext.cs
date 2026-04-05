@@ -293,6 +293,8 @@ namespace Garnet.test.cluster
             int replicaSyncTimeout = 60,
             int sublogCount = 1,
             int replayTaskCount = 1,
+            bool aofReadWithTimestamp = true,
+            int aofSnapshotFreq = 5,
             int expiredObjectCollectionFrequencySecs = 0,
             ClusterPreferredEndpointType clusterPreferredEndpointType = ClusterPreferredEndpointType.Ip,
             bool useClusterAnnounceHostname = false)
@@ -352,6 +354,8 @@ namespace Garnet.test.cluster
                 replicaSyncTimeout: replicaSyncTimeout,
                 sublogCount: sublogCount,
                 replayTaskCount: replayTaskCount,
+                aofReadWithTimestamp: aofReadWithTimestamp,
+                aofSnapshotFreq: aofSnapshotFreq,
                 expiredObjectCollectionFrequencySecs: expiredObjectCollectionFrequencySecs,
                 clusterPreferredEndpointType: clusterPreferredEndpointType,
                 clusterAnnounceHostname: useClusterAnnounceHostname ? "localhost" : null);

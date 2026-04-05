@@ -23,7 +23,8 @@ namespace Tsavorite.core
         public ClientSession<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> NewSession<TKey, TInput, TOutput, TContext, TFunctions>(
             TFunctions functions,
             bool enableConsistentRead = false,
-            ReadCopyOptions readCopyOptions = default)
+            ReadCopyOptions readCopyOptions = default,
+            Func<long> getSnapshotAddress = null)
             where TKey : IKey
 #if NET9_0_OR_GREATER
                 , allows ref struct
@@ -42,7 +43,7 @@ namespace Tsavorite.core
                 if (_activeSessions == null)
                     _ = Interlocked.CompareExchange(ref _activeSessions, [], null);
             }
-            var session = new ClientSession<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator>(this, ctx, functions, enableConsistentRead);
+            var session = new ClientSession<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator>(this, ctx, functions, enableConsistentRead, getSnapshotAddress);
             lock (_activeSessions)
                 _activeSessions.Add(sessionID, new SessionInfo { session = session, isActive = true });
             return session;

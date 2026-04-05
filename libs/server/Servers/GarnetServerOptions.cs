@@ -87,6 +87,18 @@ namespace Garnet.server
         public int AofReplayTaskCount = 1;
 
         /// <summary>
+        /// When true, use the Timestamp (prefix-consistent) read protocol on replicas.
+        /// When false, use the Snapshot read protocol.
+        /// </summary>
+        public bool AofReadWithTimestamp = true;
+
+        /// <summary>
+        /// Frequency in milliseconds at which a snapshot of the AOF read state is taken on replicas.
+        /// Only applies when AofReadWithTimestamp is false.
+        /// </summary>
+        public int AofSnapshotFreq = 5;
+
+        /// <summary>
         /// Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).
         /// </summary>
         public int AofTailWitnessFreq = 100;

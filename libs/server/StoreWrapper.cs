@@ -154,6 +154,10 @@ namespace Garnet.server
         internal readonly ILogger sessionLogger;
         internal long safeAofAddress = -1;
 
+        private long snapshotAddress = long.MaxValue;
+        private long lastSnapshotTickMs = 0;
+        private readonly SemaphoreSlim snapshotMutex = new(1, 1);
+
         private readonly bool enforceConsistentRead;
 
         // Standalone instance node_id
@@ -210,7 +214,7 @@ namespace Garnet.server
                 ? new GarnetServerMonitor(this, serverOptions, servers,
                     loggerFactory?.CreateLogger("GarnetServerMonitor"))
                 : null;
-            this.enforceConsistentRead = serverOptions.EnableCluster && serverOptions.EnableAOF && serverOptions.MultiLogEnabled;
+            this.enforceConsistentRead = serverOptions.EnableCluster && serverOptions.EnableAOF && (serverOptions.MultiLogEnabled || !serverOptions.AofReadWithTimestamp);
             this.logger = loggerFactory?.CreateLogger("StoreWrapper");
             this.sessionLogger = loggerFactory?.CreateLogger("Session");
             this.accessControlList = accessControlList;
@@ -907,6 +911,81 @@ namespace Garnet.server
             => enforceConsistentRead && clusterProvider.IsReplica();
 
         /// <summary>
+        /// Returns the current snapshot address for snapshot read protocol.
+        /// long.MaxValue means "read latest" (initial state before first snapshot).
+        /// </summary>
+        public long GetSnapshotAddress()
+        {
+            var addr = Interlocked.Read(ref snapshotAddress);
+            if (addr == long.MaxValue && !serverOptions.AofReadWithTimestamp)
+            {
+                // On first snapshot call, take a snapshot immediately (non-blocking attempt)
+                if (snapshotMutex.Wait(0))
+                {
+                    try { TakeSnapshot(); }
+                    finally { snapshotMutex.Release(); }
+                    addr = Interlocked.Read(ref snapshotAddress);
+                }
+            }
+            return addr;
+        }
+
+        /// <summary>
+        /// Attempts to advance the snapshot address after replay completes.
+        /// Time-gated and non-blocking; skips if another thread is already snapshotting.
+        /// </summary>
+        public void TryAdvanceSnapshotAfterReplay()
+        {
+            if (serverOptions.AofReadWithTimestamp) return;
+
+            var now = Environment.TickCount64;
+            if (now - Interlocked.Read(ref lastSnapshotTickMs) < serverOptions.AofSnapshotFreq)
+                return;
+
+            if (!snapshotMutex.Wait(0)) return;
+            try
+            {
+                now = Environment.TickCount64;
+                if (now - Interlocked.Read(ref lastSnapshotTickMs) < serverOptions.AofSnapshotFreq) return;
+
+                Interlocked.Exchange(ref lastSnapshotTickMs, now);
+                if (store.Log.TailAddress == Interlocked.Read(ref snapshotAddress)) return;
+
+                TakeSnapshot();
+            }
+            finally { snapshotMutex.Release(); }
+        }
+
+        private void TakeSnapshot()
+        {
+            store.Log.Flush(wait: true);
+            Interlocked.Exchange(ref snapshotAddress, store.Log.SafeReadOnlyAddress);
+        }
+
+        /// <summary>
+        /// Forces an immediate snapshot, bypassing the time-gate. For testing only.
+        /// </summary>
+        internal void ForceTakeSnapshot()
+        {
+            snapshotMutex.Wait();
+            try
+            {
+                Interlocked.Exchange(ref lastSnapshotTickMs, Environment.TickCount64);
+                TakeSnapshot();
+            }
+            finally { snapshotMutex.Release(); }
+        }
+
+        /// <summary>
+        /// Resets snapshot state to initial values.
+        /// </summary>
+        internal void ResetSnapshotState()
+        {
+            Interlocked.Exchange(ref snapshotAddress, long.MaxValue);
+            Interlocked.Exchange(ref lastSnapshotTickMs, 0);
+        }
+
+        /// <summary>
         /// Dispose
         /// </summary>
         public void Dispose()
@@ -919,6 +998,7 @@ namespace Garnet.server
             itemBroker?.Dispose();
             monitor?.Dispose();
             luaTimeoutManager?.Dispose();
+            snapshotMutex?.Dispose();
             ctsCommit?.Cancel();
             taskManager.Dispose();
             databaseManager.Dispose();

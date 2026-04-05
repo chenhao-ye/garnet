@@ -274,7 +274,7 @@ namespace Garnet.server
                 throw new GarnetException("Failed to set initialize database session in database sessions map!");
 
             // Create consistent read APIs and storageSession
-            if (storeWrapper.serverOptions.EnableCluster && storeWrapper.serverOptions.EnableAOF && storeWrapper.serverOptions.MultiLogEnabled && storeWrapper.appendOnlyFile != null)
+            if (storeWrapper.serverOptions.EnableCluster && storeWrapper.serverOptions.EnableAOF && (storeWrapper.serverOptions.MultiLogEnabled || !storeWrapper.serverOptions.AofReadWithTimestamp) && storeWrapper.appendOnlyFile != null)
                 consistentReadDBSession = CreateConsistentReadApi();
 
             // Set the current active session to the default session

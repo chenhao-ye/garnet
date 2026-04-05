@@ -91,12 +91,13 @@ namespace Tsavorite.core
             TsavoriteKV<TStoreFunctions, TAllocator>.TsavoriteExecutionContext<TInput, TOutput, TContext> ctx,
             TFunctions functions,
             bool enableConsistentRead = false,
+            Func<long> getSnapshotAddress = null,
             ILoggerFactory loggerFactory = null)
         {
             if (enableConsistentRead)
             {
-                crContext = new(this);
-                tcrContext = new(this);
+                crContext = new(this, getSnapshotAddress);
+                tcrContext = new(this, getSnapshotAddress);
                 bContext = crContext.BasicContext;
                 uContext = new(this);
                 lContext = tcrContext.TransactionalContext;

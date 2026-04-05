@@ -21,6 +21,7 @@ namespace Garnet.cluster
     {
         internal readonly int physicalSublogIdx;
         readonly GarnetServerOptions serverOptions;
+        readonly StoreWrapper storeWrapper;
         readonly GarnetAppendOnlyFile appendOnlyFile;
         readonly ReplicationManager replicationManager;
         readonly CancellationTokenSource cts;
@@ -51,7 +52,8 @@ namespace Garnet.cluster
             this.physicalSublogIdx = physicalSublogIdx;
             this.respSessionNetworkSender = respSessionNetworkSender;
             serverOptions = clusterProvider.serverOptions;
-            appendOnlyFile = clusterProvider.storeWrapper.appendOnlyFile;
+            storeWrapper = clusterProvider.storeWrapper;
+            appendOnlyFile = storeWrapper.appendOnlyFile;
             replicationManager = clusterProvider.replicationManager;
             replayIterator = null;
             activeWorkerMonitor = new();
@@ -111,6 +113,9 @@ namespace Garnet.cluster
 
                 // Advertise new replicaton offset after replay completes
                 replicationManager.SetSublogReplicationOffset(physicalSublogIdx, nextAddress);
+
+                // Periodically try to take a new snapshot (will skip if snapshot read not enabled)
+                storeWrapper.TryAdvanceSnapshotAfterReplay();
             }
         }
 
@@ -168,6 +173,9 @@ namespace Garnet.cluster
                 logger?.LogError("ReplicaReplayTask.Consume NextAddress Mismatch sublogIdx: {sublogIdx}; recordLength:{recordLength}; currentAddress:{currentAddress}; nextAddress:{nextAddress}; replicationOffset:{ReplicationOffset}", physicalSublogIdx, recordLength, currentAddress, nextAddress, replicationManager.ReplicationOffset[physicalSublogIdx]);
                 throw new GarnetException("Failed validating integrity of replay", LogLevel.Warning, clientResponse: false);
             }
+
+            // Periodically try to take a new snapshot (will skip if snapshot read not enabled)
+            storeWrapper.TryAdvanceSnapshotAfterReplay();
         }
 
         public void Throttle() { }
@@ -190,6 +198,10 @@ namespace Garnet.cluster
             {
                 replayIterator = appendOnlyFile.Log.ScanSingle(physicalSublogIdx, startAddress, long.MaxValue, scanUncommitted: true, recover: false, logger: logger);
                 _ = Task.Run(async () => await BackgroundReplayTask());
+
+                // Start background snapshot task on physical sublog 0 only
+                if (physicalSublogIdx == 0 && !serverOptions.AofReadWithTimestamp)
+                    _ = Task.Run(BackgroundSnapshotTask);
             }
 
             async Task BackgroundReplayTask()
@@ -226,6 +238,23 @@ namespace Garnet.cluster
             {
                 cts.Token.ThrowIfCancellationRequested();
                 Thread.Yield();
+            }
+        }
+
+        async Task BackgroundSnapshotTask()
+        {
+            try
+            {
+                while (!cts.IsCancellationRequested)
+                {
+                    await Task.Delay(serverOptions.AofSnapshotFreq, cts.Token);
+                    storeWrapper.TryAdvanceSnapshotAfterReplay();
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "An exception occurred at BackgroundSnapshotTask");
             }
         }
     }

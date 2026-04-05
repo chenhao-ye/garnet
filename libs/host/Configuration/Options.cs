@@ -216,6 +216,13 @@ namespace Garnet
         [Option("aof-tail-witness-freq", Required = false, HelpText = "Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).")]
         public int AofTailWitnessFreq { get; set; }
 
+        [Option("aof-read-protocol", Required = false, HelpText = "Read protocol to use on replicas: 'timestamp' (default, prefix-consistent) or 'snapshot'.")]
+        public string AofReadProtocol { get; set; }
+
+        [IntRangeValidation(1, int.MaxValue)]
+        [Option("aof-snapshot-freq", Required = false, HelpText = "Frequency in milliseconds at which a snapshot of the AOF read state is taken on replicas (only applies with snapshot read protocol).")]
+        public int AofSnapshotFreq { get; set; }
+
         [IntRangeValidation(-1, int.MaxValue)]
         [Option("aof-commit-freq", Required = false, HelpText = "Write ahead logging (append-only file) commit issue frequency in milliseconds. 0 = issue an immediate commit per operation, -1 = manually issue commits using COMMITAOF command")]
         public int CommitFrequencyMs { get; set; }
@@ -787,6 +794,9 @@ namespace Garnet
             if (AofPhysicalSublogCount > 1 && !EnableFastCommit.GetValueOrDefault())
                 throw new Exception("Cannot use sharded-log without FastCommit!");
 
+            if (!string.IsNullOrEmpty(AofReadProtocol) && AofReadProtocol.Equals("snapshot", StringComparison.OrdinalIgnoreCase) && AofPhysicalSublogCount > 1)
+                throw new Exception("Cannot use snapshot read protocol with multiple physical AOF sublogs. Snapshot read protocol requires AofPhysicalSublogCount == 1.");
+
             Func<INamedDeviceFactoryCreator> azureFactoryCreator = () =>
             {
                 if (!string.IsNullOrEmpty(AzureStorageConnectionString))
@@ -840,6 +850,8 @@ namespace Garnet
                 AofPhysicalSublogCount = AofPhysicalSublogCount,
                 AofReplayTaskCount = AofReplayTaskCount,
                 AofTailWitnessFreq = AofTailWitnessFreq,
+                AofReadWithTimestamp = string.IsNullOrEmpty(AofReadProtocol) || AofReadProtocol.Equals("timestamp", StringComparison.OrdinalIgnoreCase),
+                AofSnapshotFreq = AofSnapshotFreq > 0 ? AofSnapshotFreq : 5,
                 AofReplicationRefreshFrequencyMs = AofReplicationRefreshFrequencyMs,
                 CommitFrequencyMs = CommitFrequencyMs,
                 WaitForCommit = WaitForCommit.GetValueOrDefault(),

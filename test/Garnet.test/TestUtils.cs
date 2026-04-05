@@ -512,6 +512,8 @@ namespace Garnet.test
             int replicaSyncTimeout = 60,
             int sublogCount = 1,
             int replayTaskCount = 1,
+            bool aofReadWithTimestamp = true,
+            int aofSnapshotFreq = 5,
             int expiredObjectCollectionFrequencySecs = 0,
             ClusterPreferredEndpointType clusterPreferredEndpointType = ClusterPreferredEndpointType.Ip,
             string clusterAnnounceHostname = null)
@@ -579,6 +581,8 @@ namespace Garnet.test
                     replicaSyncTimeout: replicaSyncTimeout,
                     sublogCount: sublogCount,
                     replayTaskCount: replayTaskCount,
+                    aofReadWithTimestamp: aofReadWithTimestamp,
+                    aofSnapshotFreq: aofSnapshotFreq,
                     expiredObjectCollectionFrequencySecs: expiredObjectCollectionFrequencySecs,
                     clusterPreferredEndpointType: clusterPreferredEndpointType,
                     clusterAnnounceHostname: clusterAnnounceHostname);
@@ -660,6 +664,8 @@ namespace Garnet.test
             int replicaSyncTimeout = 60,
             int sublogCount = 1,
             int replayTaskCount = 1,
+            bool aofReadWithTimestamp = true,
+            int aofSnapshotFreq = 5,
             int expiredObjectCollectionFrequencySecs = 0,
             ClusterPreferredEndpointType clusterPreferredEndpointType = ClusterPreferredEndpointType.Ip,
             string clusterAnnounceHostname = null)
@@ -786,6 +792,8 @@ namespace Garnet.test
                 ReplicaSyncTimeout = replicaSyncTimeout <= 0 ? Timeout.InfiniteTimeSpan : TimeSpan.FromSeconds(replicaSyncTimeout),
                 AofPhysicalSublogCount = sublogCount,
                 AofReplayTaskCount = replayTaskCount,
+                AofReadWithTimestamp = aofReadWithTimestamp,
+                AofSnapshotFreq = aofSnapshotFreq,
                 ExpiredObjectCollectionFrequencySecs = expiredObjectCollectionFrequencySecs,
             };
 

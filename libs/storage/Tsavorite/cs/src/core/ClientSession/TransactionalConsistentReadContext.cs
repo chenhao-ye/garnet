@@ -23,6 +23,11 @@ namespace Tsavorite.core
     {
         public readonly TransactionalContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> TransactionalContext { get; }
 
+        /// <summary>
+        /// Snapshot address provider. When non-null, snapshot read protocol is used instead of timestamp protocol.
+        /// </summary>
+        private readonly Func<long> getSnapshotAddress;
+
         /// <inheritdoc/>
         public long GetKeyHash<TOpKey>(TOpKey key)
             where TOpKey : IKey
@@ -34,10 +39,34 @@ namespace Tsavorite.core
         /// <inheritdoc/>
         public bool IsNull => TransactionalContext.IsNull;
 
-        internal TransactionalConsistentReadContext(ClientSession<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> clientSession)
+        internal TransactionalConsistentReadContext(ClientSession<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> clientSession, Func<long> getSnapshotAddress = null)
         {
             TransactionalContext = new TransactionalContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator>(clientSession);
+            this.getSnapshotAddress = getSnapshotAddress;
         }
+
+        #region Snapshot Read Support
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private Status SnapshotRead(TKey key, ref TInput input, ref TOutput output, TContext userContext)
+        {
+            var snapshotAddr = getSnapshotAddress();
+            if (snapshotAddr == long.MaxValue)
+            {
+                return TransactionalContext.Read(key, ref input, ref output, userContext);
+            }
+
+            var scanFn = new ConsistentReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator>.SnapshotVersionScanFunctions(snapshotAddr);
+            Session.store.Log.IterateKeyVersions(ref scanFn, key);
+            if (scanFn.foundAddress != LogAddress.kInvalidAddress)
+            {
+                var readOptions = default(ReadOptions);
+                return TransactionalContext.ReadAtAddress(scanFn.foundAddress, key, ref input, ref output, ref readOptions, out _, userContext);
+            }
+            return new Status(StatusCode.NotFound);
+        }
+
+        #endregion
 
         #region Begin/EndTransaction
 
@@ -119,6 +148,9 @@ namespace Tsavorite.core
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Status Read(TKey key, ref TInput input, ref TOutput output, TContext userContext = default)
         {
+            if (getSnapshotAddress != null)
+                return SnapshotRead(key, ref input, ref output, userContext);
+
             var hash = GetKeyHash(key);
             Session.functions.BeforeConsistentReadCallback(hash);
             var status = TransactionalContext.Read(key, ref input, ref output, userContext);
@@ -169,6 +201,12 @@ namespace Tsavorite.core
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Status Read(TKey key, ref TInput input, ref TOutput output, ref ReadOptions readOptions, out RecordMetadata recordMetadata, TContext userContext = default)
         {
+            if (getSnapshotAddress != null)
+            {
+                recordMetadata = default;
+                return SnapshotRead(key, ref input, ref output, userContext);
+            }
+
             var hash = GetKeyHash(key);
             Session.functions.BeforeConsistentReadCallback(hash);
             var status = TransactionalContext.Read(key, ref input, ref output, ref readOptions, out recordMetadata, userContext);

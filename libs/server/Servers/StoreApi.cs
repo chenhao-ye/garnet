@@ -162,5 +162,11 @@ namespace Garnet.server
 
             return lockRet;
         }
+
+        /// <summary>
+        /// Forces an immediate snapshot, bypassing the time-gate in
+        /// <see cref="StoreWrapper.TryAdvanceSnapshotAfterReplay"/>. For testing only.
+        /// </summary>
+        public void ForceTakeSnapshot() => storeWrapper.ForceTakeSnapshot();
     }
 }
