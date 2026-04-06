@@ -110,10 +110,16 @@ namespace Garnet.cluster
                 replayBatchContext.CurrentAddress = currentAddress;
                 replayBatchContext.NextAddress = nextAddress;
                 replayBatchContext.IsProtected = isProtected;
+
+                // Reset production state and signal tasks to wake up
+                replayBatchContext.ResetProduction();
                 replayBatchContext.LeaderFollowerBarrier.SignalWorkReady();
 
                 // Set replication offset currentAddress
                 replicationManager.SetSublogReplicationOffset(physicalSublogIdx, currentAddress);
+
+                // Produce descriptors (overlaps with task consumption)
+                replayBatchContext.ProduceDescriptors(record, recordLength, (int)appendOnlyFile.HeaderSize, physicalSublog);
 
                 // Wait for replay to complete.
                 replayBatchContext.LeaderFollowerBarrier.WaitCompleted(serverOptions.ReplicaSyncTimeout, cts.Token);

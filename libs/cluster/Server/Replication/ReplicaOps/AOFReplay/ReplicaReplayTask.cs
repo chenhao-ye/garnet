@@ -52,58 +52,77 @@ namespace Garnet.cluster
 
                 unsafe
                 {
-                    var record = replayBatchContext.Record;
-                    var recordLength = replayBatchContext.RecordLength;
-                    var currentAddress = replayBatchContext.CurrentAddress;
-                    var nextAddress = replayBatchContext.NextAddress;
                     var isProtected = replayBatchContext.IsProtected;
-                    var ptr = record;
+                    var descriptors = replayBatchContext.Descriptors;
+                    var replayTaskCount = clusterProvider.serverOptions.AofReplayTaskCount;
+                    var headerSize = (int)appendOnlyFile.HeaderSize;
 
-                    var maxSequenceNumber = 0L;
                     try
                     {
-                        // logger?.LogError("[{sublogIdx},{replayIdx}] = {currentAddress} -> {nextAddress}", sublogIdx, replayIdx, currentAddress, nextAddress);                        
-                        while (ptr < record + recordLength)
+                        var consumed = 0;
+                        while (true)
                         {
-                            cts.Token.ThrowIfCancellationRequested();
-                            var entryLength = appendOnlyFile.HeaderSize;
-                            var payloadLength = replaySublog.UnsafeGetLength(ptr);
-                            if (payloadLength > 0)
+                            var produced = Volatile.Read(ref replayBatchContext.ProducedCount);
+                            for (var i = consumed; i < produced; i++)
                             {
-                                var entryPtr = ptr + entryLength;
-                                if (replicationManager.AofProcessor.CanReplay(entryPtr, replayTaskIdx, out var sequenceNumber))
+                                cts.Token.ThrowIfCancellationRequested();
+                                ref var desc = ref descriptors[i];
+
+                                // Fast path: ShardedHeader with non-matching hash — skip without dereferencing
+                                if (desc.KeyHash >= 0 && desc.KeyHash % replayTaskCount != replayTaskIdx)
+                                    continue;
+
+                                // Must dereference to determine entry type and process
+                                var payloadLength = replaySublog.UnsafeGetLength(desc.Ptr);
+                                if (payloadLength > 0)
                                 {
-                                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
-                                    // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
-                                    // point when we take a checkpoint at the checkpoint end marker
-                                    if (isCheckpointStart)
+                                    var entryPtr = desc.Ptr + headerSize;
+
+                                    if (desc.KeyHash >= 0)
                                     {
-                                        // logger?.LogError("[{sublogIdx}] CheckpointStart {address}", sublogIdx, clusterProvider.replicationManager.GetSublogReplicationOffset(sublogIdx));
-                                        replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
+                                        // ShardedHeader, matched — process directly
+                                        replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
+                                        if (isCheckpointStart)
+                                        {
+                                            replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
+                                        }
+                                    }
+                                    else if (ReplayBatchContext.IsTransactionParticipant(entryPtr, replayTaskIdx))
+                                    {
+                                        // TransactionHeader, participating — process
+                                        replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
+                                        if (isCheckpointStart)
+                                        {
+                                            replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
+                                        }
                                     }
                                 }
-                                maxSequenceNumber = Math.Max(sequenceNumber, maxSequenceNumber);
-                                entryLength += TsavoriteLog.UnsafeAlign(payloadLength);
-                            }
-                            else if (payloadLength < 0)
-                            {
-                                if (!clusterProvider.serverOptions.EnableFastCommit)
-                                    throw new GarnetException("Received FastCommit request at replica AOF processor, but FastCommit is not enabled", clientResponse: false);
-
-                                // Only a single thread should commit metadata
-                                if (replayTaskIdx == 0)
+                                else if (payloadLength < 0)
                                 {
-                                    TsavoriteLogRecoveryInfo info = new();
-                                    info.Initialize(new ReadOnlySpan<byte>(ptr + entryLength, -payloadLength));
-                                    replaySublog.UnsafeCommitMetadataOnly(info, isProtected);
+                                    if (!clusterProvider.serverOptions.EnableFastCommit)
+                                        throw new GarnetException("Received FastCommit request at replica AOF processor, but FastCommit is not enabled", clientResponse: false);
+
+                                    // Only a single thread should commit metadata
+                                    if (replayTaskIdx == 0)
+                                    {
+                                        var entryPtr = desc.Ptr + headerSize;
+                                        TsavoriteLogRecoveryInfo info = new();
+                                        info.Initialize(new ReadOnlySpan<byte>(entryPtr, -payloadLength));
+                                        replaySublog.UnsafeCommitMetadataOnly(info, isProtected);
+                                    }
                                 }
-                                entryLength += TsavoriteLog.UnsafeAlign(-payloadLength);
                             }
-                            ptr += entryLength;
+                            consumed = produced;
+
+                            // Check if all descriptors have been produced and consumed
+                            if (Volatile.Read(ref replayBatchContext.ProductionComplete) && consumed >= replayBatchContext.TotalCount)
+                                break;
+
+                            Thread.Yield();
                         }
 
-                        // Update max sequence number for this virtual sublog which is mapped
-                        appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, maxSequenceNumber);
+                        // Update max sequence number for this virtual sublog (batch-wide max computed by producer)
+                        appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, replayBatchContext.MaxBatchSequenceNumber);
                     }
                     catch (Exception ex)
                     {
