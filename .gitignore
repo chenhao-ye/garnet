@@ -223,3 +223,5 @@ BenchmarkDotNet.Artifacts/
 
 # Helm chart artifacts
 .cr-release-packages/
+result/
+**.pyc
