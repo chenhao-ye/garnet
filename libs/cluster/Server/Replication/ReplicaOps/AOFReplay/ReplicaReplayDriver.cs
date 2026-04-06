@@ -70,6 +70,13 @@ namespace Garnet.cluster
                 foreach (var replayTask in replayTasks)
                     _ = Task.Run(async () => await replayTask.ContinuousBackgroundReplay().ConfigureAwait(false));
             }
+
+            // Start background snapshot task on physical sublog 0 only.
+            // Must start here (not only in InitialiazeBackgroundReplayTask) so it also runs
+            // under synchronous replay (ReplicationOffsetMaxLag == 0), where
+            // InitialiazeBackgroundReplayTask is never called.
+            if (physicalSublogIdx == 0 && !serverOptions.AofReadWithTimestamp)
+                _ = Task.Run(BackgroundSnapshotTask);
         }
 
         public void Dispose()
@@ -198,10 +205,6 @@ namespace Garnet.cluster
             {
                 replayIterator = appendOnlyFile.Log.ScanSingle(physicalSublogIdx, startAddress, long.MaxValue, scanUncommitted: true, recover: false, logger: logger);
                 _ = Task.Run(async () => await BackgroundReplayTask());
-
-                // Start background snapshot task on physical sublog 0 only
-                if (physicalSublogIdx == 0 && !serverOptions.AofReadWithTimestamp)
-                    _ = Task.Run(BackgroundSnapshotTask);
             }
 
             async Task BackgroundReplayTask()

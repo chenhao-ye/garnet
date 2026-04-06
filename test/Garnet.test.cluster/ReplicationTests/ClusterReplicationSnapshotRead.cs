@@ -111,6 +111,12 @@ namespace Garnet.test.cluster
 
             context.clusterTestUtils.WaitForReplicaAofSync(primaryIndex, replicaIndex, context.logger);
 
+            // Wait for the background snapshot task to advance snapshotAddress past batch2 records.
+            // TryAdvanceSnapshotAfterReplay is time-gated to fire at most once per snapshotFreqMs;
+            // sleeping 2x that interval guarantees the background task has had at least one chance
+            // to run and flush batch2's records into the readable snapshot window.
+            Thread.Sleep(snapshotFreqMs * 2);
+
             for (var i = 0; i < keys.Length; i++)
             {
                 var value = context.clusterTestUtils.GetKey(replicaIndex,
