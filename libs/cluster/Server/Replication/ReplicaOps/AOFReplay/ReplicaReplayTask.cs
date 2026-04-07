@@ -4,7 +4,6 @@
 using System;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using Garnet.common;
 using Garnet.server;
@@ -34,8 +33,7 @@ namespace Garnet.cluster
         readonly CancellationTokenSource cts = cts;
         readonly TsavoriteLog replaySublog = clusterProvider.storeWrapper.appendOnlyFile.Log.GetSubLog(replayDriver.physicalSublogIdx);
         readonly ILogger logger = logger;
-        private readonly Channel<ReplayRecord> replayChannel = Channel.CreateUnbounded<ReplayRecord>(
-            new() { SingleWriter = true, SingleReader = true, AllowSynchronousContinuations = false });
+        private readonly SpscRingBuffer replayRingBuffer = new(capacity: 1024);
 
         /// <summary>
         /// Asynchronously replays log entries using SemaphoreSlim coordination, processing and applying them for replication
@@ -72,7 +70,7 @@ namespace Garnet.cluster
                     var maxSequenceNumber = 0L;
                     try
                     {
-                        // logger?.LogError("[{sublogIdx},{replayIdx}] = {currentAddress} -> {nextAddress}", sublogIdx, replayIdx, currentAddress, nextAddress);                        
+                        // logger?.LogError("[{sublogIdx},{replayIdx}] = {currentAddress} -> {nextAddress}", sublogIdx, replayIdx, currentAddress, nextAddress);
                         while (ptr < record + recordLength)
                         {
                             cts.Token.ThrowIfCancellationRequested();
@@ -132,29 +130,26 @@ namespace Garnet.cluster
 
         public void AddRecord(ReplayRecord replayRecord)
         {
-            replayChannel.Writer.TryWrite(replayRecord);
+            replayRingBuffer.Enqueue(replayRecord);
         }
 
-        internal async Task ChannelBackgroundReplay()
+        internal Task ChannelBackgroundReplay()
         {
             var physicalSublogIdx = replayDriver.physicalSublogIdx;
             var virtualSublogIdx = appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, replayTaskIdx);
-            var reader = replayChannel.Reader;
 
-            while (await reader.WaitToReadAsync(cts.Token))
+            // Spin-based consumer loop — no async overhead
+            while (!cts.Token.IsCancellationRequested)
             {
                 ProcessRecord(virtualSublogIdx, physicalSublogIdx);
-                //ProcessRecordWithPrefetch(virtualSublogIdx, physicalSublogIdx);
             }
+
+            return Task.CompletedTask;
         }
 
         internal unsafe void ProcessRecord(int virtualSublogIdx, int physicalSublogIdx)
         {
-            const int PrefetchSize = 4;
-            var reader = replayChannel.Reader;
-            var prefetchBuffer = stackalloc ReplayRecord[PrefetchSize];
-
-            while (reader.TryRead(out var record))
+            while (replayRingBuffer.TryDequeue(out var record))
             {
                 try
                 {
@@ -178,14 +173,13 @@ namespace Garnet.cluster
         internal unsafe void ProcessRecordWithPrefetch(int virtualSublogIdx, int physicalSublogIdx)
         {
             const int PrefetchSize = 4;
-            var reader = replayChannel.Reader;
             var prefetchBuffer = stackalloc ReplayRecord[PrefetchSize];
 
             while (true)
             {
                 // Read a batch of records and prefetch their entry pointers
                 var count = 0;
-                while (count < PrefetchSize && reader.TryRead(out prefetchBuffer[count]))
+                while (count < PrefetchSize && replayRingBuffer.TryDequeue(out prefetchBuffer[count]))
                 {
                     if (Sse.IsSupported)
                         Sse.Prefetch0(prefetchBuffer[count].entryPtr);
