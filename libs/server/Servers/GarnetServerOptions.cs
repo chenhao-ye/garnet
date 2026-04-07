@@ -87,6 +87,12 @@ namespace Garnet.server
         public int AofReplayTaskCount = 1;
 
         /// <summary>
+        /// When true, replay tasks only drain records from channels without processing them.
+        /// Used for benchmarking the producer preprocessing throughput.
+        /// </summary>
+        public bool AofReplayProduceOnly = false;
+
+        /// <summary>
         /// When true, use the Timestamp (prefix-consistent) read protocol on replicas.
         /// When false, use the Snapshot read protocol.
         /// </summary>

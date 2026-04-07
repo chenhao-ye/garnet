@@ -66,9 +66,11 @@ namespace Garnet.cluster
             this.logger = logger;
 
             // Initialize background replay tasks for this sublog replay driver
+            // When AofReplayProduceOnly is set, always create channel-based tasks to measure producer throughput
             var replayTaskCount = serverOptions.AofReplayTaskCount;
-            if (replayTaskCount > 1)
+            if (replayTaskCount > 1 || serverOptions.AofReplayProduceOnly)
             {
+                replayTaskCount = Math.Max(replayTaskCount, 1);
                 replayBatchContext = new ReplayBatchContext(replayTaskCount);
                 replayTasks = [.. Enumerable.Range(0, replayTaskCount).Select(i => new ReplicaReplayTask(i, this, clusterProvider, cts, logger))];
                 foreach (var replayTask in replayTasks)
@@ -112,7 +114,7 @@ namespace Garnet.cluster
         /// <exception cref="GarnetException">Thrown if the background replay operation times out.</exception>
         public unsafe void Consume(byte* record, int recordLength, long currentAddress, long nextAddress, bool isProtected)
         {
-            if (serverOptions.AofReplayTaskCount == 1)
+            if (serverOptions.AofReplayTaskCount == 1 && !serverOptions.AofReplayProduceOnly)
             {
                 ConsumeDirect(record, recordLength, currentAddress, nextAddress, isProtected);
             }

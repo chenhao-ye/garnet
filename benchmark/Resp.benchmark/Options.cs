@@ -146,6 +146,9 @@ namespace Resp.benchmark
         [Option("aof-replay-task-count", Required = false, Default = 1, HelpText = "Number of replay tasks per physical sublog at the replica.")]
         public int AofReplayTaskCount { get; set; }
 
+        [Option("aof-replay-produce-only", Required = false, Default = false, HelpText = "Measure producer preprocessing throughput only; replay tasks drain records without processing.")]
+        public bool AofReplayProduceOnly { get; set; }
+
         [Option("aof-memory-size", Required = false, Default = "64m", HelpText = "Total AOF memory buffer used in bytes (rounds down to power of 2) - spills to disk after this limit.")]
         public string AofMemorySize { get; set; }
 

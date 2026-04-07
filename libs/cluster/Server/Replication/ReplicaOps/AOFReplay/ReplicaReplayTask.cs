@@ -140,11 +140,24 @@ namespace Garnet.cluster
             var physicalSublogIdx = replayDriver.physicalSublogIdx;
             var virtualSublogIdx = appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, replayTaskIdx);
             var reader = replayChannel.Reader;
+            var produceOnly = clusterProvider.serverOptions.AofReplayProduceOnly;
 
             while (await reader.WaitToReadAsync(cts.Token))
             {
-                ProcessRecord(virtualSublogIdx, physicalSublogIdx);
+                if (produceOnly)
+                    DrainOnly();
+                else
+                    ProcessRecord(virtualSublogIdx, physicalSublogIdx);
                 //ProcessRecordWithPrefetch(virtualSublogIdx, physicalSublogIdx);
+            }
+        }
+
+        internal void DrainOnly()
+        {
+            var reader = replayChannel.Reader;
+            while (reader.TryRead(out _))
+            {
+                _ = replayDriver.batchWorkerMonitor.Exit();
             }
         }
 
