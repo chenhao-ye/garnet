@@ -207,7 +207,8 @@ namespace Resp.benchmark
                             var key = SpanByte.FromPinnedPointer(keyPtr, kb.Length);
                             var value = SpanByte.FromPinnedPointer(valPtr, vb.Length);
                             StringInput input = default;
-                            if (aofGen.appendOnlyFile.Log.Size == 1)
+                            var useShardedHeader = options.AofPhysicalSublogCount > 1 || options.AofReplayTaskCount > 1;
+                            if (!useShardedHeader)
                             {
                                 var aofHeader = new AofHeader
                                 {
