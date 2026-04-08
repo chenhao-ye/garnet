@@ -212,7 +212,10 @@ namespace Garnet.server
                 foreach (var entry in fuzzyRegionOps)
                 {
                     fixed (byte* entryPtr = entry)
-                        _ = aofProcessor.ReplayOp(sublogIdx, aofProcessor.stringBasicContext, aofProcessor.objectBasicContext, aofProcessor.unifiedBasicContext, entryPtr, entry.Length, asReplica);
+                    {
+                        var ss = aofProcessor.respServerSessions[sublogIdx].storageSession;
+                        _ = aofProcessor.ReplayOp(sublogIdx, ss.stringBasicContext, ss.objectBasicContext, ss.unifiedBasicContext, entryPtr, entry.Length, asReplica);
+                    }
                 }
             }
 
@@ -242,7 +245,8 @@ namespace Garnet.server
                 {
                     // If recovering reads will not expose partial transactions so we can replay without locking.
                     // Also we don't have to synchronize replay of sublogs because write ordering has been established at the time of enqueue.
-                    ProcessTransactionGroupOperations(aofProcessor, aofProcessor.stringBasicContext, aofProcessor.objectBasicContext, aofProcessor.unifiedBasicContext, txnGroup, asReplica);
+                    var ss = aofProcessor.respServerSessions[sublogIdx].storageSession;
+                    ProcessTransactionGroupOperations(aofProcessor, ss.stringBasicContext, ss.objectBasicContext, ss.unifiedBasicContext, txnGroup, asReplica);
                 }
                 else
                 {

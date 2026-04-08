@@ -31,15 +31,6 @@ namespace Garnet.server
                 respServerSession.clusterSession.SetReadWriteSession();
         }
 
-        /// <summary>Basic (Ephemeral locking) Session Context for main store</summary>
-        StringBasicContext stringBasicContext;
-
-        /// <summary>Basic (Ephemeral locking) Session Context for object store</summary>
-        ObjectBasicContext objectBasicContext;
-
-        /// <summary>Basic (Ephemeral locking) Session Context for unified store</summary>
-        UnifiedBasicContext unifiedBasicContext;
-
         readonly StoreWrapper replayAofStoreWrapper;
         readonly IClusterProvider clusterProvider;
         readonly ILogger logger;
@@ -101,14 +92,7 @@ namespace Garnet.server
 
                 // Switch the storage context to match the session, if necessary
                 if (activeDbId != db.Id || initialSetup)
-                {
-                    stringBasicContext = respServerSession.storageSession.stringBasicContext;
-                    unifiedBasicContext = respServerSession.storageSession.unifiedBasicContext;
-
-                    if (!storeWrapper.serverOptions.DisableObjects)
-                        objectBasicContext = respServerSession.storageSession.objectBasicContext.Session.BasicContext;
                     activeDbId = db.Id;
-                }
             }
         }
 
@@ -245,7 +229,8 @@ namespace Garnet.server
                     }
                     break;
                 default:
-                    _ = ReplayOp(virtualSublogIdx, stringBasicContext, objectBasicContext, unifiedBasicContext, ptr, length, asReplica);
+                    var ss = respServerSessions[virtualSublogIdx].storageSession;
+                    _ = ReplayOp(virtualSublogIdx, ss.stringBasicContext, ss.objectBasicContext, ss.unifiedBasicContext, ptr, length, asReplica);
                     break;
             }
         }
