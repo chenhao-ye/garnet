@@ -313,7 +313,7 @@ namespace Garnet.server
                 curr += argument.TotalSize;
             }
 
-            return (int)(dest - curr);
+            return (int)(curr - dest);
         }
 
         /// <summary>
@@ -337,7 +337,7 @@ namespace Garnet.server
                 curr += argument.TotalSize;
             }
 
-            return (int)(src - curr);
+            return (int)(curr - src);
         }
 
         /// <summary>
