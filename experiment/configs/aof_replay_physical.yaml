@@ -17,8 +17,6 @@ base:
     aof_null_device: true
     client: InProc
     aof_commit_freq: -1
-    aof_memory_size: "256m"
-    aof_replay_task_count: 1
 
 sweep:
   client_params:
