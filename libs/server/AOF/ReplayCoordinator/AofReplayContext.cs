@@ -18,7 +18,7 @@ namespace Garnet.server
         public readonly Dictionary<int, TransactionGroup> activeTxns = [];
 
         public CustomProcedureInput customProcInput;
-        public readonly SessionParseState parseState;
+        public SessionParseState parseState;
 
         public readonly byte[] objectOutputBuffer;
 
