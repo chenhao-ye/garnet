@@ -256,11 +256,11 @@ namespace Garnet.server
             {
                 case AofEntryType.StoreUpsert:
                     if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
-                    StoreUpsert(stringContext, AofHeader.SkipHeader(entryPtr));
+                    StoreUpsert(stringContext, ref replayContext.parseState, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.StoreRMW:
                     if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
-                    StoreRMW(stringContext, AofHeader.SkipHeader(entryPtr));
+                    StoreRMW(stringContext, ref replayContext.parseState, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.StoreDelete:
                     if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
@@ -268,7 +268,7 @@ namespace Garnet.server
                     break;
                 case AofEntryType.ObjectStoreRMW:
                     if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
-                    ObjectStoreRMW(objectContext, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
+                    ObjectStoreRMW(objectContext, ref replayContext.parseState, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.ObjectStoreUpsert:
                     if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
@@ -280,11 +280,11 @@ namespace Garnet.server
                     break;
                 case AofEntryType.UnifiedStoreRMW:
                     if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
-                    UnifiedStoreRMW(unifiedContext, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
+                    UnifiedStoreRMW(unifiedContext, ref replayContext.parseState, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.UnifiedStoreStringUpsert:
                     if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
-                    UnifiedStoreStringUpsert(unifiedContext, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
+                    UnifiedStoreStringUpsert(unifiedContext, ref replayContext.parseState, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.UnifiedStoreObjectUpsert:
                     if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
@@ -315,7 +315,7 @@ namespace Garnet.server
             storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogKeySequenceNumber(sublogIdx, key, shardedHeader.sequenceNumber);
         }
 
-        static void StoreUpsert<TStringContext>(TStringContext stringContext, byte* keyPtr)
+        static void StoreUpsert<TStringContext>(TStringContext stringContext, ref SessionParseState parseState, byte* keyPtr)
             where TStringContext : ITsavoriteContext<FixedSpanByteKey, StringInput, StringOutput, long, MainSessionFunctions, StoreFunctions, StoreAllocator>
         {
             var key = SpanByte.FromLengthPrefixedPinnedPointer(keyPtr);
@@ -324,8 +324,9 @@ namespace Garnet.server
             var value = PinnedSpanByte.FromLengthPrefixedPinnedPointer(curr);
             curr += value.TotalSize;
 
-            var stringInput = new StringInput();
+            var stringInput = new StringInput { parseState = parseState };
             _ = stringInput.DeserializeFrom(curr);
+            parseState = stringInput.parseState;
 
             StringOutput output = default;
             _ = stringContext.Upsert((FixedSpanByteKey)key, ref stringInput, value, ref output);
@@ -333,14 +334,15 @@ namespace Garnet.server
                 output.SpanByteAndMemory.Dispose();
         }
 
-        static void StoreRMW<TStringContext>(TStringContext stringContext, byte* keyPtr)
+        static void StoreRMW<TStringContext>(TStringContext stringContext, ref SessionParseState parseState, byte* keyPtr)
             where TStringContext : ITsavoriteContext<FixedSpanByteKey, StringInput, StringOutput, long, MainSessionFunctions, StoreFunctions, StoreAllocator>
         {
             var key = SpanByte.FromLengthPrefixedPinnedPointer(keyPtr);
             var curr = keyPtr + key.TotalSize();
 
-            var stringInput = new StringInput();
+            var stringInput = new StringInput { parseState = parseState };
             _ = stringInput.DeserializeFrom(curr);
+            parseState = stringInput.parseState;
 
             var output = StringOutput.FromPinnedSpan(stackalloc byte[32]);
 
@@ -370,14 +372,15 @@ namespace Garnet.server
                 output.SpanByteAndMemory.Dispose();
         }
 
-        static void ObjectStoreRMW<TObjectContext>(TObjectContext objectContext, byte* keyPtr, byte* outputPtr, int outputLength)
+        static void ObjectStoreRMW<TObjectContext>(TObjectContext objectContext, ref SessionParseState parseState, byte* keyPtr, byte* outputPtr, int outputLength)
             where TObjectContext : ITsavoriteContext<FixedSpanByteKey, ObjectInput, ObjectOutput, long, ObjectSessionFunctions, StoreFunctions, StoreAllocator>
         {
             var key = SpanByte.FromLengthPrefixedPinnedPointer(keyPtr);
             var curr = keyPtr + key.TotalSize();
 
-            var objectInput = new ObjectInput();
+            var objectInput = new ObjectInput { parseState = parseState };
             _ = objectInput.DeserializeFrom(curr);
+            parseState = objectInput.parseState;
 
             // Call RMW with the reconstructed key & ObjectInput
             var output = ObjectOutput.FromPinnedPointer(outputPtr, outputLength);
@@ -393,7 +396,7 @@ namespace Garnet.server
             where TObjectContext : ITsavoriteContext<FixedSpanByteKey, ObjectInput, ObjectOutput, long, ObjectSessionFunctions, StoreFunctions, StoreAllocator>
             => objectContext.Delete((FixedSpanByteKey)SpanByte.FromLengthPrefixedPinnedPointer(keyPtr));
 
-        static void UnifiedStoreStringUpsert<TUnifiedContext>(TUnifiedContext unifiedContext, byte* keyPtr, byte* outputPtr, int outputLength)
+        static void UnifiedStoreStringUpsert<TUnifiedContext>(TUnifiedContext unifiedContext, ref SessionParseState parseState, byte* keyPtr, byte* outputPtr, int outputLength)
             where TUnifiedContext : ITsavoriteContext<FixedSpanByteKey, UnifiedInput, UnifiedOutput, long, UnifiedSessionFunctions, StoreFunctions, StoreAllocator>
         {
             var key = SpanByte.FromLengthPrefixedPinnedPointer(keyPtr);
@@ -402,8 +405,9 @@ namespace Garnet.server
             var value = PinnedSpanByte.FromLengthPrefixedPinnedPointer(curr);
             curr += value.TotalSize;
 
-            var unifiedInput = new UnifiedInput();
+            var unifiedInput = new UnifiedInput { parseState = parseState };
             _ = unifiedInput.DeserializeFrom(curr);
+            parseState = unifiedInput.parseState;
 
             var output = UnifiedOutput.FromPinnedPointer(outputPtr, outputLength);
             _ = unifiedContext.Upsert((FixedSpanByteKey)key, ref unifiedInput, value, ref output);
@@ -426,14 +430,15 @@ namespace Garnet.server
                 output.SpanByteAndMemory.Dispose();
         }
 
-        static void UnifiedStoreRMW<TUnifiedContext>(TUnifiedContext unifiedContext, byte* keyPtr, byte* outputPtr, int outputLength)
+        static void UnifiedStoreRMW<TUnifiedContext>(TUnifiedContext unifiedContext, ref SessionParseState parseState, byte* keyPtr, byte* outputPtr, int outputLength)
             where TUnifiedContext : ITsavoriteContext<FixedSpanByteKey, UnifiedInput, UnifiedOutput, long, UnifiedSessionFunctions, StoreFunctions, StoreAllocator>
         {
             var key = SpanByte.FromLengthPrefixedPinnedPointer(keyPtr);
             var curr = keyPtr + key.TotalSize();
 
-            var unifiedInput = new UnifiedInput();
+            var unifiedInput = new UnifiedInput { parseState = parseState };
             _ = unifiedInput.DeserializeFrom(curr);
+            parseState = unifiedInput.parseState;
 
             // Call RMW with the reconstructed key & UnifiedInput
             var output = UnifiedOutput.FromPinnedPointer(outputPtr, outputLength);
