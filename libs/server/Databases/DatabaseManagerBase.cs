@@ -114,6 +114,9 @@ namespace Garnet.server
         public abstract IDatabaseManager Clone(bool enableAof);
 
         /// <inheritdoc/>
+        public abstract void RecoverVectorSets();
+
+        /// <inheritdoc/>
         public TsavoriteKV<StoreFunctions, StoreAllocator> Store => DefaultDatabase.Store;
 
         /// <inheritdoc/>
@@ -348,9 +351,10 @@ namespace Garnet.server
         {
             if (db.StoreCollectionDbStorageSession == null)
             {
-                var scratchBufferManager = new ScratchBufferBuilder();
+                var scratchBufferBuilder = new ScratchBufferBuilder();
+                var scratchBufferAllocator = new ScratchBufferAllocator();
                 db.StoreCollectionDbStorageSession =
-                    new StorageSession(StoreWrapper, scratchBufferManager, null, null, db.Id, readSessionState: null, Logger);
+                    new StorageSession(StoreWrapper, scratchBufferBuilder, scratchBufferAllocator, null, null, db.Id, readSessionState: null, db.VectorManager, Logger);
             }
 
             ExecuteHashCollect(db.StoreCollectionDbStorageSession);
@@ -553,6 +557,9 @@ namespace Garnet.server
 
             // During the checkpoint, we may have serialized Garnet objects in (v) versions of objects.
             // We can now safely remove these serialized versions as they are no longer needed.
+            // TODO: this should be done via push-based iterator under epoch protection
+            // so that we can adjust heap size at the time of clearing serializedBytes and update
+            // HeapMemorySize. The eviction scan can then avoid double-decrement.
             using var iter1 = db.Store.Log.Scan(db.Store.Log.ReadOnlyAddress, db.Store.Log.TailAddress, DiskScanBufferingMode.SinglePageBuffering, includeClosedRecords: true);
             while (iter1.GetNext())
             {
@@ -590,8 +597,9 @@ namespace Garnet.server
         {
             if (db.StoreExpiredKeyDeletionDbStorageSession == null)
             {
-                var scratchBufferManager = new ScratchBufferBuilder();
-                db.StoreExpiredKeyDeletionDbStorageSession = new StorageSession(StoreWrapper, scratchBufferManager, null, null, db.Id, readSessionState: null, Logger);
+                var scratchBufferBuilder = new ScratchBufferBuilder();
+                var scratchBufferAllocator = new ScratchBufferAllocator();
+                db.StoreExpiredKeyDeletionDbStorageSession = new StorageSession(StoreWrapper, scratchBufferBuilder, scratchBufferAllocator, null, null, db.Id, readSessionState: null, db.VectorManager, Logger);
             }
 
             var scanFrom = StoreWrapper.store.Log.ReadOnlyAddress;
@@ -628,8 +636,9 @@ namespace Garnet.server
         {
             if (db.HybridLogStatScanStorageSession == null)
             {
-                var scratchBufferManager = new ScratchBufferBuilder();
-                db.HybridLogStatScanStorageSession = new StorageSession(StoreWrapper, scratchBufferManager, null, null, db.Id, readSessionState: null, Logger);
+                var scratchBufferBuilder = new ScratchBufferBuilder();
+                var scratchBufferAllocator = new ScratchBufferAllocator();
+                db.HybridLogStatScanStorageSession = new StorageSession(StoreWrapper, scratchBufferBuilder, scratchBufferAllocator, null, null, db.Id, readSessionState: null, db.VectorManager, Logger);
             }
 
             using var session = store.NewSession<FixedSpanByteKey, TInput, TOutput, long, ISessionFunctions<TInput, TOutput, long>>(sessionFunctions);

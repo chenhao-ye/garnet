@@ -111,6 +111,8 @@ namespace Garnet.server
 
             var status = storageApi.SET_Conditional(key, ref input);
 
+            scratchBufferBuilder.RewindScratchBuffer(valArgSlice);
+
             if (status is GarnetStatus.NOTFOUND)
             {
                 while (!RespWriteUtils.TryWriteDirect(CmdStrings.RESP_OK, ref dcurr, dend))
@@ -139,7 +141,7 @@ namespace Garnet.server
 
             var status = storageApi.GET(key, out PinnedSpanByte value);
 
-            if (status is GarnetStatus.NOTFOUND)
+            if (status is GarnetStatus.NOTFOUND or GarnetStatus.WRONGTYPE)
             {
                 WriteNull();
                 return true;

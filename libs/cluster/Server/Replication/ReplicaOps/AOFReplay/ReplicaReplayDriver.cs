@@ -221,8 +221,8 @@ namespace Garnet.cluster
         {
             ValidateSublogIndex(physicalSublogIdx);
             replicationManager.SetSublogReplicationOffset(physicalSublogIdx, currentAddress);
-            var replicationOffset = currentAddress;
             var ptr = record;
+            var replicationOffset = currentAddress;
             // logger?.LogError("[{physicalSublogIdx}] = {currentAddress} -> {nextAddress}", physicalSublogIdx, currentAddress, nextAddress);
             while (ptr < record + recordLength)
             {

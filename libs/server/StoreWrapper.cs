@@ -374,6 +374,8 @@ namespace Garnet.server
                     ReplayAOF(AofAddress.Create(length: serverOptions.AofPhysicalSublogCount, value: -1));
                 }
             }
+
+            databaseManager.RecoverVectorSets();
         }
 
         /// <summary>
@@ -830,6 +832,10 @@ namespace Garnet.server
             {
                 StartPrimaryTasks();
             }
+            else if (clusterProvider?.IsReplica() ?? false)
+            {
+                StartReplicaTasks();
+            }
 
             // Start generic node tasks
             StartGenericNodeTasks();
@@ -1023,6 +1029,15 @@ namespace Garnet.server
         }
 
         /// <summary>
+        /// Suspend background task that may interfere with the primary store.
+        /// </summary>
+        /// <returns></returns>
+        public async Task SuspendReplicaOnlyTasks()
+        {
+            await taskManager.Cancel(TaskPlacementCategory.Replica);
+        }
+
+        /// <summary>
         /// Start background maintenance tasks that should only run when this node is a primary
         /// </summary>
         /// <returns></returns>
@@ -1052,6 +1067,18 @@ namespace Garnet.server
             if (serverOptions.ExpiredKeyDeletionScanFrequencySecs > 0)
             {
                 taskManager.RegisterAndRun(TaskType.ExpiredKeyDeletionTask, (token) => ExpiredKeyDeletionScanTask(serverOptions.ExpiredKeyDeletionScanFrequencySecs, token));
+            }
+        }
+
+
+        /// <summary>
+        /// Start background maintenance tasks that should only be run when this node is a replica.
+        /// </summary>
+        public void StartReplicaTasks()
+        {
+            if (serverOptions.EnableVectorSetPreview)
+            {
+                _ = taskManager.RegisterAndRun(TaskType.VectorReplicationReplayTask, token => DefaultDatabase.VectorManager.StartReplicationTasksAsync(token));
             }
         }
 

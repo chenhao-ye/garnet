@@ -22,7 +22,7 @@ namespace Garnet.cluster
         readonly ILogger logger;
         readonly CancellationTokenSource cts;
 
-        AofSyncTask[] aofSyncTasks;
+        readonly AofSyncTask[] aofSyncTasks;
 
         /// <summary>
         /// Check if client connection is healthy
@@ -153,7 +153,7 @@ namespace Garnet.cluster
             finally
             {
                 var (address, port) = clusterProvider.clusterManager.CurrentConfig.GetWorkerAddressFromNodeId(remoteNodeId);
-                logger?.LogWarning("AofSync task terminated; client disposed replicaId:{remoteNodeId} [{address}:{port}] previousAddress:{previousAddress}", remoteNodeId, address, port, PreviousAddress);
+                logger?.LogWarning("AofSyncDriver terminated; client disposed replicaId:{remoteNodeId} [{address}:{port}] startAddress: {startAddress}, previousAddress:{previousAddress}", remoteNodeId, address, port, StartAddress, PreviousAddress);
 
                 if (!aofSyncDriverStore.TryRemove(this))
                     logger?.LogError("Unable to remove {remoteNodeId} from aofTaskStore at end of ReplicaSyncTask", remoteNodeId);
@@ -237,8 +237,8 @@ namespace Garnet.cluster
         public Task<string> ExecuteAttachSync(SyncMetadata syncMetadata)
             => aofSyncTasks[0].garnetClient.ExecuteClusterAttachSync(syncMetadata.ToByteArray());
 
-        public bool TryWriteRecordSpan(ReadOnlySpan<byte> recordSpan, out Task<string> task)
-            => aofSyncTasks[0].garnetClient.TryWriteRecordSpan(recordSpan, out task);
+        public bool TryWriteRecordSpan(ReadOnlySpan<byte> recordSpan, MigrationRecordSpanType type, out Task<string> task)
+            => aofSyncTasks[0].garnetClient.TryWriteRecordSpan(recordSpan, type, out task);
 
         public Task<string> SendAndResetIterationBuffer()
             => aofSyncTasks[0].garnetClient.SendAndResetIterationBuffer();
