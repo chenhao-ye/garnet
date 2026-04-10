@@ -126,10 +126,9 @@ namespace Garnet.cluster
                 {
                     ConsumeAndScheduleReplay(record, recordLength, currentAddress, nextAddress, isProtected);
                 }
-
-                // Periodically try to take a new snapshot (will skip if snapshot read not enabled)
-                storeWrapper.TryAdvanceSnapshotAfterReplay();
             }
+            // Periodically try to take a new snapshot (will skip if snapshot read not enabled)
+            storeWrapper.TryAdvanceSnapshotAfterReplay();
         }
 
         private unsafe void ScheduleReplay(byte* record, int recordLength, long currentAddress, long nextAddress, bool isProtected)
@@ -264,9 +263,6 @@ namespace Garnet.cluster
                 logger?.LogError("ReplicaReplayTask.Consume NextAddress Mismatch sublogIdx: {sublogIdx}; recordLength:{recordLength}; currentAddress:{currentAddress}; nextAddress:{nextAddress}; replicationOffset:{ReplicationOffset}", physicalSublogIdx, recordLength, currentAddress, nextAddress, replicationManager.ReplicationOffset[physicalSublogIdx]);
                 throw new GarnetException("Failed validating integrity of replay", LogLevel.Warning, clientResponse: false);
             }
-
-            // Periodically try to take a new snapshot (will skip if snapshot read not enabled)
-            storeWrapper.TryAdvanceSnapshotAfterReplay();
         }
 
         public void Throttle() { }
