@@ -4,7 +4,6 @@
 using System;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using Garnet.common;
 using Garnet.server;
@@ -15,8 +14,7 @@ namespace Garnet.cluster
 {
     internal unsafe struct ReplayRecord
     {
-        public byte* entryPtr;
-        public int payloadLength;
+        public byte* entryPtr; // null == sentinel (end-of-batch marker)
     }
 
     internal sealed class ReplicaReplayTask(
@@ -34,8 +32,7 @@ namespace Garnet.cluster
         readonly CancellationTokenSource cts = cts;
         readonly TsavoriteLog replaySublog = clusterProvider.storeWrapper.appendOnlyFile.Log.GetSubLog(replayDriver.physicalSublogIdx);
         readonly ILogger logger = logger;
-        private readonly Channel<ReplayRecord> replayChannel = Channel.CreateUnbounded<ReplayRecord>(
-            new() { SingleWriter = true, SingleReader = true, AllowSynchronousContinuations = false });
+        private readonly SpscRingBuffer replayRingBuffer = new(capacity: 32768);
 
         /// <summary>
         /// Asynchronously replays log entries using SemaphoreSlim coordination, processing and applying them for replication
@@ -132,33 +129,87 @@ namespace Garnet.cluster
 
         public void AddRecord(ReplayRecord replayRecord)
         {
-            replayChannel.Writer.TryWrite(replayRecord);
+            replayRingBuffer.Enqueue(replayRecord);
         }
 
-        internal async Task ChannelBackgroundReplay()
+        /// <summary>
+        /// Flushes any partial tail batch and enqueues a sentinel to signal end-of-batch.
+        /// The worker calls Exit() once on seeing the sentinel.
+        /// </summary>
+        public void AddSentinel()
+        {
+            replayRingBuffer.Flush();          // publish all preceding records before the sentinel
+            replayRingBuffer.Enqueue(default); // entryPtr == null marks the sentinel
+            replayRingBuffer.Flush();          // publish the sentinel itself (may be in a partial batch)
+        }
+
+        internal Task ChannelBackgroundReplay()
         {
             var physicalSublogIdx = replayDriver.physicalSublogIdx;
             var virtualSublogIdx = appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, replayTaskIdx);
-            var reader = replayChannel.Reader;
 
-            while (await reader.WaitToReadAsync(cts.Token))
+            // Spin-based consumer loop — no async overhead
+            while (!cts.Token.IsCancellationRequested)
             {
                 ProcessRecord(virtualSublogIdx, physicalSublogIdx);
-                //ProcessRecordWithPrefetch(virtualSublogIdx, physicalSublogIdx);
             }
+
+            return Task.CompletedTask;
         }
 
         internal unsafe void ProcessRecord(int virtualSublogIdx, int physicalSublogIdx)
         {
+            while (replayRingBuffer.TryDequeue(out var record))
+            {
+                if (record.entryPtr == null) // sentinel: end of batch
+                {
+                    _ = replayDriver.batchWorkerMonitor.Exit();
+                    return;
+                }
+
+                // Recover payloadLength from the TsavoriteLog record header immediately before entryPtr.
+                // This avoids storing it in the ring buffer entry, keeping ReplayRecord at 8 bytes.
+                var payloadLength = replaySublog.UnsafeGetLength(record.entryPtr - appendOnlyFile.HeaderSize);
+
+                replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, record.entryPtr, payloadLength, true, out var isCheckpointStart);
+
+                // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
+                // point when we take a checkpoint at the checkpoint end marker
+                if (isCheckpointStart)
+                {
+                    // logger?.LogError("[{sublogIdx}] CheckpointStart {address}", sublogIdx, clusterProvider.replicationManager.GetSublogReplicationOffset(sublogIdx));
+                    replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
+                }
+            }
+        }
+
+        internal unsafe void ProcessRecordWithPrefetch(int virtualSublogIdx, int physicalSublogIdx)
+        {
             const int PrefetchSize = 4;
-            var reader = replayChannel.Reader;
             var prefetchBuffer = stackalloc ReplayRecord[PrefetchSize];
 
-            while (reader.TryRead(out var record))
+            while (true)
             {
-                try
+                // Read a batch of records and prefetch their entry pointers; stop at sentinel
+                var count = 0;
+                var sentinelSeen = false;
+                while (count < PrefetchSize && replayRingBuffer.TryDequeue(out prefetchBuffer[count]))
                 {
-                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, record.entryPtr, record.payloadLength, true, out var isCheckpointStart);
+                    if (prefetchBuffer[count].entryPtr == null) // sentinel
+                    {
+                        sentinelSeen = true;
+                        break;
+                    }
+                    if (Sse.IsSupported)
+                        Sse.Prefetch0(prefetchBuffer[count].entryPtr);
+                    count++;
+                }
+
+                // Process all prefetched real records
+                for (var i = 0; i < count; i++)
+                {
+                    var payloadLength = replaySublog.UnsafeGetLength(prefetchBuffer[i].entryPtr - appendOnlyFile.HeaderSize);
+                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, prefetchBuffer[i].entryPtr, payloadLength, true, out var isCheckpointStart);
 
                     // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
                     // point when we take a checkpoint at the checkpoint end marker
@@ -168,53 +219,15 @@ namespace Garnet.cluster
                         replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
                     }
                 }
-                finally
+
+                if (sentinelSeen)
                 {
                     _ = replayDriver.batchWorkerMonitor.Exit();
-                }
-            }
-        }
-
-        internal unsafe void ProcessRecordWithPrefetch(int virtualSublogIdx, int physicalSublogIdx)
-        {
-            const int PrefetchSize = 4;
-            var reader = replayChannel.Reader;
-            var prefetchBuffer = stackalloc ReplayRecord[PrefetchSize];
-
-            while (true)
-            {
-                // Read a batch of records and prefetch their entry pointers
-                var count = 0;
-                while (count < PrefetchSize && reader.TryRead(out prefetchBuffer[count]))
-                {
-                    if (Sse.IsSupported)
-                        Sse.Prefetch0(prefetchBuffer[count].entryPtr);
-                    count++;
+                    return;
                 }
 
                 if (count == 0)
                     break;
-
-                // Process all prefetched records
-                for (var i = 0; i < count; i++)
-                {
-                    try
-                    {
-                        replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, prefetchBuffer[i].entryPtr, prefetchBuffer[i].payloadLength, true, out var isCheckpointStart);
-
-                        // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
-                        // point when we take a checkpoint at the checkpoint end marker
-                        if (isCheckpointStart)
-                        {
-                            // logger?.LogError("[{sublogIdx}] CheckpointStart {address}", sublogIdx, clusterProvider.replicationManager.GetSublogReplicationOffset(sublogIdx));
-                            replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
-                        }
-                    }
-                    finally
-                    {
-                        _ = replayDriver.batchWorkerMonitor.Exit();
-                    }
-                }
             }
         }
     }

@@ -33,7 +33,7 @@ namespace Garnet.cluster
         internal readonly ReplayBatchContext replayBatchContext;
         readonly ReplicaReplayTask[] replayTasks;
         readonly TsavoriteLog physicalSublog;
-        readonly bool useChannels = false;
+        readonly bool useChannels = true;
 
         internal readonly ActiveWorkerMonitor batchWorkerMonitor;
 
@@ -156,6 +156,8 @@ namespace Garnet.cluster
             replicationManager.SetSublogReplicationOffset(physicalSublogIdx, currentAddress);
             var replicationOffset = currentAddress;
             var ptr = record;
+            var replayTaskCount = replayTasks.Length;
+            var taskHasRecords = stackalloc bool[replayTaskCount]; // zero-initialized
 
             // logger?.LogError("[{physicalSublogIdx}] = {currentAddress} -> {nextAddress}", physicalSublogIdx, currentAddress, nextAddress);
             while (ptr < record + recordLength)
@@ -167,13 +169,8 @@ namespace Garnet.cluster
                 {
                     var entryPtr = ptr + entryLength;
                     var replayTaskIdx = replicationManager.AofProcessor.GetReplayTaskIdx(entryPtr);
-                    // Signal one worker item;
-                    _ = batchWorkerMonitor.TryEnter();
-                    replayTasks[replayTaskIdx].AddRecord(new ReplayRecord()
-                    {
-                        entryPtr = entryPtr,
-                        payloadLength = payloadLength
-                    });
+                    replayTasks[replayTaskIdx].AddRecord(new ReplayRecord { entryPtr = entryPtr });
+                    taskHasRecords[replayTaskIdx] = true;
                     entryLength += TsavoriteLog.UnsafeAlign(payloadLength);
                 }
                 else if (payloadLength < 0)
@@ -190,6 +187,18 @@ namespace Garnet.cluster
                 ptr += entryLength;
                 replicationOffset += entryLength;
             }
+
+            // Count tasks that received records; pre-register all their completions with one atomic,
+            // then send each a sentinel so workers call Exit() once per batch instead of once per record.
+            var tasksWithRecords = 0;
+            for (var i = 0; i < replayTaskCount; i++)
+                if (taskHasRecords[i]) tasksWithRecords++;
+
+            if (tasksWithRecords > 0)
+                _ = batchWorkerMonitor.TryEnter(tasksWithRecords, out _);
+
+            for (var i = 0; i < replayTaskCount; i++)
+                if (taskHasRecords[i]) replayTasks[i].AddSentinel();
 
             batchWorkerMonitor.TryClose();
             replicationManager.SetSublogReplicationOffset(physicalSublogIdx, replicationOffset);
