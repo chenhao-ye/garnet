@@ -550,18 +550,14 @@ namespace Garnet.server
         public bool CanReplay(byte* ptr, int replayTaskIdx, out long sequenceNumber)
         {
             var header = *(AofHeader*)ptr;
-            var replayHeaderType = (AofHeaderType)header.padding;
             sequenceNumber = 0L;
-            switch (replayHeaderType)
+            switch (header.headerType)
             {
-                // Check if should replay entry by inspecting key
+                // Check replay tag embedded in header to determine if this task should replay the entry
                 case AofHeaderType.ShardedHeader:
                     var shardedHeader = *(AofShardedHeader*)ptr;
                     sequenceNumber = shardedHeader.sequenceNumber;
-                    var curr = AofHeader.SkipHeader(ptr);
-                    var key = PinnedSpanByte.FromLengthPrefixedPinnedPointer(curr).ReadOnlySpan;
-                    var hash = GarnetLog.HASH(key);
-                    var _replayTaskIdx = hash % storeWrapper.serverOptions.AofReplayTaskCount;
+                    var _replayTaskIdx = header.replayTag % storeWrapper.serverOptions.AofReplayTaskCount;
                     return replayTaskIdx == _replayTaskIdx;
                 // If no key to inspect, check bit vector for participating replay tasks in the transaction
                 // NOTE: HeaderType transactions include MULTI-EXEC transactions, custom txn procedures, and any operation that executes across physical and virtual sublogs (e.g. checkpoint, flushdb)
@@ -571,7 +567,7 @@ namespace Garnet.server
                     var bitVector = BitVector.CopyFrom(new Span<byte>(txnHeader.replayTaskAccessVector, AofTransactionHeader.ReplayTaskAccessVectorBytes));
                     return bitVector.IsSet(replayTaskIdx);
                 default:
-                    throw new GarnetException($"Replay header type {replayHeaderType} not supported!");
+                    throw new GarnetException($"Replay header type {header.headerType} not supported!");
             }
         }
 
@@ -585,23 +581,17 @@ namespace Garnet.server
         public int GetReplayTaskIdx(byte* ptr)
         {
             var header = *(AofHeader*)ptr;
-            var replayHeaderType = (AofHeaderType)header.padding;
-            switch (replayHeaderType)
+            switch (header.headerType)
             {
-                // Check if should replay entry by inspecting key
+                // Extract replay tag from header to determine target replay task
                 case AofHeaderType.ShardedHeader:
-                    var shardedHeader = *(AofShardedHeader*)ptr;
-                    var curr = AofHeader.SkipHeader(ptr);
-                    var key = PinnedSpanByte.FromLengthPrefixedPinnedPointer(curr).ReadOnlySpan;
-                    var hash = GarnetLog.HASH(key);
-                    var _replayTaskIdx = (int)(hash % storeWrapper.serverOptions.AofReplayTaskCount);
-                    return _replayTaskIdx;
+                    return header.replayTag % storeWrapper.serverOptions.AofReplayTaskCount;
                 // If no key to inspect, check bit vector for participating replay tasks in the transaction
                 // NOTE: HeaderType transactions include MULTI-EXEC transactions, custom txn procedures, and any operation that executes across physical and virtual sublogs (e.g. checkpoint, flushdb)
                 case AofHeaderType.TransactionHeader:
                     return -1;
                 default:
-                    throw new GarnetException($"Replay header type {replayHeaderType} not supported!");
+                    throw new GarnetException($"Replay header type {header.headerType} not supported!");
             }
         }
 
@@ -620,8 +610,7 @@ namespace Garnet.server
             if (untilSequenceNumber == -1)
                 return true;
             var header = *(AofHeader*)ptr;
-            var replayHeaderType = (AofHeaderType)header.padding;
-            switch (replayHeaderType)
+            switch (header.headerType)
             {
                 case AofHeaderType.ShardedHeader:
                     var shardedHeader = *(AofShardedHeader*)ptr;
@@ -632,7 +621,7 @@ namespace Garnet.server
                     entrySequenceNumber = txnHeader.shardedHeader.sequenceNumber;
                     return txnHeader.shardedHeader.sequenceNumber > untilSequenceNumber;
                 default:
-                    throw new GarnetException($"Replay header type {replayHeaderType} not supported!");
+                    throw new GarnetException($"Replay header type {header.headerType} not supported!");
             }
         }
     }
