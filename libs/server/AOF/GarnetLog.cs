@@ -559,6 +559,8 @@ namespace Garnet.server
             }
             else
             {
+                var hash = HASH(key);
+                var replayTag = (byte)((hash / serverOptions.AofPhysicalSublogCount) & AofHeader.ReplayTagMask);
                 var shardedHeader = new AofShardedHeader
                 {
                     basicHeader = new AofHeader
@@ -566,7 +568,7 @@ namespace Garnet.server
                         opType = opType,
                         storeVersion = version,
                         sessionID = sessionId,
-                        padding = (byte)AofHeaderType.ShardedHeader
+                        padding = AofHeader.MakePadding(AofHeaderType.ShardedHeader, replayTag)
                     },
                     sequenceNumber = appendOnlyFile.seqNumGen.GetSequenceNumber()
                 };
@@ -584,7 +586,6 @@ namespace Garnet.server
                 // Multi physical sublogs and multi-replay support
                 else
                 {
-                    var hash = HASH(key);
                     var physicalSublogIdx = hash % serverOptions.AofPhysicalSublogCount;
                     shardedLog.sublog[physicalSublogIdx].Enqueue(
                         shardedHeader,
@@ -625,6 +626,8 @@ namespace Garnet.server
             }
             else
             {
+                var hash = HASH(key);
+                var replayTag = (byte)((hash / serverOptions.AofPhysicalSublogCount) & AofHeader.ReplayTagMask);
                 var shardedHeader = new AofShardedHeader
                 {
                     basicHeader = new AofHeader
@@ -632,7 +635,7 @@ namespace Garnet.server
                         opType = opType,
                         storeVersion = version,
                         sessionID = sessionId,
-                        padding = (byte)AofHeaderType.ShardedHeader
+                        padding = AofHeader.MakePadding(AofHeaderType.ShardedHeader, replayTag)
                     },
                     sequenceNumber = appendOnlyFile.seqNumGen.GetSequenceNumber()
                 };
@@ -649,7 +652,6 @@ namespace Garnet.server
                 // Multi physical sublogs and multi-replay support
                 else
                 {
-                    var hash = HASH(key);
                     var physicalSublogIdx = hash % serverOptions.AofPhysicalSublogCount;
                     shardedLog.sublog[physicalSublogIdx].Enqueue(
                         shardedHeader,
@@ -688,6 +690,8 @@ namespace Garnet.server
             }
             else
             {
+                var hash = HASH(key);
+                var replayTag = (byte)((hash / serverOptions.AofPhysicalSublogCount) & AofHeader.ReplayTagMask);
                 var shardedHeader = new AofShardedHeader
                 {
                     basicHeader = new AofHeader
@@ -695,7 +699,7 @@ namespace Garnet.server
                         opType = opType,
                         storeVersion = version,
                         sessionID = sessionId,
-                        padding = (byte)AofHeaderType.ShardedHeader
+                        padding = AofHeader.MakePadding(AofHeaderType.ShardedHeader, replayTag)
                     },
                     sequenceNumber = appendOnlyFile.seqNumGen.GetSequenceNumber()
                 };
@@ -712,7 +716,6 @@ namespace Garnet.server
                 // Multi physical sublogs and multi-replay support
                 else
                 {
-                    var hash = HASH(key);
                     var physicalSublogIdx = hash % serverOptions.AofPhysicalSublogCount;
                     shardedLog.sublog[physicalSublogIdx].Enqueue(
                         shardedHeader,
