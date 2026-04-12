@@ -166,13 +166,14 @@ namespace Garnet.cluster
                 if (payloadLength > 0)
                 {
                     var entryPtr = ptr + entryLength;
-                    var replayTaskIdx = replicationManager.AofProcessor.GetReplayTaskIdx(entryPtr);
+                    var replayTaskIdx = replicationManager.AofProcessor.GetReplayTaskIdx(entryPtr, out var keyHash);
                     // Signal one worker item;
                     _ = batchWorkerMonitor.TryEnter();
                     replayTasks[replayTaskIdx].AddRecord(new ReplayRecord()
                     {
                         entryPtr = entryPtr,
-                        payloadLength = payloadLength
+                        payloadLength = payloadLength,
+                        keyHash = keyHash
                     });
                     entryLength += TsavoriteLog.UnsafeAlign(payloadLength);
                 }

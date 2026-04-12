@@ -174,10 +174,10 @@ namespace Garnet.server
                                 var entryPtr = ptr + entryLength;
                                 // Check if entry is assigned for processing to this replay task and
                                 // the sequence number is bellow the threshold to ensure prefix consistency
-                                if (aofProcessor.CanReplay(entryPtr, replayTaskIdx, out var sequenceNumber) &&
+                                if (aofProcessor.CanReplay(entryPtr, replayTaskIdx, out var sequenceNumber, out var keyHash) &&
                                     (untilSequenceNumber == -1 || sequenceNumber <= untilSequenceNumber))
                                 {
-                                    aofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
+                                    aofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart, keyHash);
                                     maxSequenceNumber = Math.Max(sequenceNumber, maxSequenceNumber);
                                 }
                                 entryLength += TsavoriteLog.UnsafeAlign(payloadLength);

@@ -536,7 +536,7 @@ namespace Garnet.server
             }
         }
 
-        internal void Enqueue<TInput, TEpochAccessor>(AofEntryType opType, long version, int sessionId, ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, ref TInput input, TEpochAccessor epochAccessor, out long logicalAddress)
+        internal void Enqueue<TInput, TEpochAccessor>(AofEntryType opType, long version, int sessionId, ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, ref TInput input, TEpochAccessor epochAccessor, out long logicalAddress, long keyHash = -1)
             where TInput : IStoreInput
             where TEpochAccessor : IEpochAccessor
         {
@@ -584,7 +584,7 @@ namespace Garnet.server
                 // Multi physical sublogs and multi-replay support
                 else
                 {
-                    var hash = HASH(key);
+                    var hash = keyHash >= 0 ? keyHash : HASH(key);
                     var physicalSublogIdx = hash % serverOptions.AofPhysicalSublogCount;
                     shardedLog.sublog[physicalSublogIdx].Enqueue(
                         shardedHeader,
@@ -603,7 +603,7 @@ namespace Garnet.server
             }
         }
 
-        internal void Enqueue<TInput, TEpochAccessor>(AofEntryType opType, long version, int sessionId, ReadOnlySpan<byte> key, ref TInput input, TEpochAccessor epochAccessor, out long logicalAddress)
+        internal void Enqueue<TInput, TEpochAccessor>(AofEntryType opType, long version, int sessionId, ReadOnlySpan<byte> key, ref TInput input, TEpochAccessor epochAccessor, out long logicalAddress, long keyHash = -1)
             where TInput : IStoreInput
             where TEpochAccessor : IEpochAccessor
         {
@@ -649,7 +649,7 @@ namespace Garnet.server
                 // Multi physical sublogs and multi-replay support
                 else
                 {
-                    var hash = HASH(key);
+                    var hash = keyHash >= 0 ? keyHash : HASH(key);
                     var physicalSublogIdx = hash % serverOptions.AofPhysicalSublogCount;
                     shardedLog.sublog[physicalSublogIdx].Enqueue(
                         shardedHeader,
@@ -667,7 +667,7 @@ namespace Garnet.server
             }
         }
 
-        internal void Enqueue<TEpochAccessor>(AofEntryType opType, long version, int sessionId, ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, TEpochAccessor epochAccessor, out long logicalAddress)
+        internal void Enqueue<TEpochAccessor>(AofEntryType opType, long version, int sessionId, ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, TEpochAccessor epochAccessor, out long logicalAddress, long keyHash = -1)
             where TEpochAccessor : IEpochAccessor
         {
             if (usingSingleLog)
@@ -712,7 +712,7 @@ namespace Garnet.server
                 // Multi physical sublogs and multi-replay support
                 else
                 {
-                    var hash = HASH(key);
+                    var hash = keyHash >= 0 ? keyHash : HASH(key);
                     var physicalSublogIdx = hash % serverOptions.AofPhysicalSublogCount;
                     shardedLog.sublog[physicalSublogIdx].Enqueue(
                         shardedHeader,

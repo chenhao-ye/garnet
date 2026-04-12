@@ -108,7 +108,7 @@ namespace Garnet.server
         /// <param name="length"></param>
         /// <param name="asReplica"></param>
         /// <param name="isCheckpointStart"></param>
-        public void ProcessAofRecordInternal(int virtualSublogIdx, byte* ptr, int length, bool asReplica, out bool isCheckpointStart)
+        public void ProcessAofRecordInternal(int virtualSublogIdx, byte* ptr, int length, bool asReplica, out bool isCheckpointStart, long keyHash = -1)
         {
             var header = *(AofHeader*)ptr;
             var shardedHeader = default(AofShardedHeader);
@@ -247,7 +247,8 @@ namespace Garnet.server
                         replayContext.UnifiedBasicContext,
                         ptr,
                         length,
-                        asReplica);
+                        asReplica,
+                        keyHash);
                     break;
             }
         }
@@ -255,7 +256,7 @@ namespace Garnet.server
         private bool ReplayOp<TStringContext, TObjectContext, TUnifiedContext>(
                 int sublogIdx,
                 TStringContext stringContext, TObjectContext objectContext, TUnifiedContext unifiedContext,
-                byte* entryPtr, int length, bool asReplica)
+                byte* entryPtr, int length, bool asReplica, long keyHash = -1)
             where TStringContext : ITsavoriteContext<FixedSpanByteKey, StringInput, StringOutput, long, MainSessionFunctions, StoreFunctions, StoreAllocator>
             where TObjectContext : ITsavoriteContext<FixedSpanByteKey, ObjectInput, ObjectOutput, long, ObjectSessionFunctions, StoreFunctions, StoreAllocator>
             where TUnifiedContext : ITsavoriteContext<FixedSpanByteKey, UnifiedInput, UnifiedOutput, long, UnifiedSessionFunctions, StoreFunctions, StoreAllocator>
@@ -280,43 +281,43 @@ namespace Garnet.server
             switch (header.opType)
             {
                 case AofEntryType.StoreUpsert:
-                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr, keyHash);
                     StoreUpsert(stringContext, ref replayContext.parseState, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.StoreRMW:
-                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr, keyHash);
                     StoreRMW(stringContext, ref replayContext.parseState, activeVectorManager, replayContext.respServerSession, obtainServerSession, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.StoreDelete:
-                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr, keyHash);
                     StoreDelete(stringContext, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.ObjectStoreRMW:
-                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr, keyHash);
                     ObjectStoreRMW(objectContext, ref replayContext.parseState, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.ObjectStoreUpsert:
-                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr, keyHash);
                     ObjectStoreUpsert(objectContext, storeWrapper.GarnetObjectSerializer, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.ObjectStoreDelete:
-                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr, keyHash);
                     ObjectStoreDelete(objectContext, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.UnifiedStoreRMW:
-                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr, keyHash);
                     UnifiedStoreRMW(unifiedContext, ref replayContext.parseState, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.UnifiedStoreStringUpsert:
-                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr, keyHash);
                     UnifiedStoreStringUpsert(unifiedContext, ref replayContext.parseState, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.UnifiedStoreObjectUpsert:
-                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr, keyHash);
                     UnifiedStoreObjectUpsert(unifiedContext, storeWrapper.GarnetObjectSerializer, AofHeader.SkipHeader(entryPtr), bufferPtr, bufferLength);
                     break;
                 case AofEntryType.UnifiedStoreDelete:
-                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr);
+                    if (usingShardedLog) UpdateKeySequenceNumber(sublogIdx, entryPtr, keyHash);
                     UnifiedStoreDelete(unifiedContext, activeVectorManager, replayContext.respServerSession.storageSession, AofHeader.SkipHeader(entryPtr));
                     break;
                 case AofEntryType.StoredProcedure:
@@ -332,12 +333,16 @@ namespace Garnet.server
             return true;
         }
 
-        private void UpdateKeySequenceNumber(int sublogIdx, byte* ptr)
+        private void UpdateKeySequenceNumber(int sublogIdx, byte* ptr, long keyHash = -1)
         {
             var shardedHeader = *(AofShardedHeader*)ptr;
-            var curr = ptr + sizeof(AofShardedHeader);
-            var key = PinnedSpanByte.FromLengthPrefixedPinnedPointer(curr).ReadOnlySpan;
-            storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogKeySequenceNumber(sublogIdx, key, shardedHeader.sequenceNumber);
+            if (keyHash < 0)
+            {
+                var curr = ptr + sizeof(AofShardedHeader);
+                var key = PinnedSpanByte.FromLengthPrefixedPinnedPointer(curr).ReadOnlySpan;
+                keyHash = GarnetLog.HASH(key);
+            }
+            storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogKeySequenceNumber(sublogIdx, keyHash, shardedHeader.sequenceNumber);
         }
 
         static void StoreUpsert<TStringContext>(TStringContext stringContext, ref SessionParseState parseState, byte* keyPtr)
@@ -552,11 +557,12 @@ namespace Garnet.server
         /// <param name="sequenceNumber"></param>
         /// <returns></returns>
         /// <exception cref="GarnetException"></exception>
-        public bool CanReplay(byte* ptr, int replayTaskIdx, out long sequenceNumber)
+        public bool CanReplay(byte* ptr, int replayTaskIdx, out long sequenceNumber, out long keyHash)
         {
             var header = *(AofHeader*)ptr;
             var replayHeaderType = (AofHeaderType)header.padding;
             sequenceNumber = 0L;
+            keyHash = -1;
             switch (replayHeaderType)
             {
                 // Check if should replay entry by inspecting key
@@ -565,8 +571,8 @@ namespace Garnet.server
                     sequenceNumber = shardedHeader.sequenceNumber;
                     var curr = AofHeader.SkipHeader(ptr);
                     var key = PinnedSpanByte.FromLengthPrefixedPinnedPointer(curr).ReadOnlySpan;
-                    var hash = GarnetLog.HASH(key);
-                    var _replayTaskIdx = hash % storeWrapper.serverOptions.AofReplayTaskCount;
+                    keyHash = GarnetLog.HASH(key);
+                    var _replayTaskIdx = keyHash % storeWrapper.serverOptions.AofReplayTaskCount;
                     return replayTaskIdx == _replayTaskIdx;
                 // If no key to inspect, check bit vector for participating replay tasks in the transaction
                 // NOTE: HeaderType transactions include MULTI-EXEC transactions, custom txn procedures, and any operation that executes across physical and virtual sublogs (e.g. checkpoint, flushdb)
@@ -587,10 +593,11 @@ namespace Garnet.server
         /// <returns>The zero-based index of the replay task to which the entry should be assigned. Returns -1 if the header type
         /// does not contain a key for task assignment.</returns>
         /// <exception cref="GarnetException">Thrown when the AOF header type referenced by <paramref name="ptr"/> is not supported.</exception>
-        public int GetReplayTaskIdx(byte* ptr)
+        public int GetReplayTaskIdx(byte* ptr, out long keyHash)
         {
             var header = *(AofHeader*)ptr;
             var replayHeaderType = (AofHeaderType)header.padding;
+            keyHash = -1;
             switch (replayHeaderType)
             {
                 // Check if should replay entry by inspecting key
@@ -598,8 +605,8 @@ namespace Garnet.server
                     var shardedHeader = *(AofShardedHeader*)ptr;
                     var curr = AofHeader.SkipHeader(ptr);
                     var key = PinnedSpanByte.FromLengthPrefixedPinnedPointer(curr).ReadOnlySpan;
-                    var hash = GarnetLog.HASH(key);
-                    var _replayTaskIdx = (int)(hash % storeWrapper.serverOptions.AofReplayTaskCount);
+                    keyHash = GarnetLog.HASH(key);
+                    var _replayTaskIdx = (int)(keyHash % storeWrapper.serverOptions.AofReplayTaskCount);
                     return _replayTaskIdx;
                 // If no key to inspect, check bit vector for participating replay tasks in the transaction
                 // NOTE: HeaderType transactions include MULTI-EXEC transactions, custom txn procedures, and any operation that executes across physical and virtual sublogs (e.g. checkpoint, flushdb)

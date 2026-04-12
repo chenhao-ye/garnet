@@ -266,7 +266,7 @@ namespace Garnet.server
             where TEpochAccessor : IEpochAccessor
         {
             if ((rmwInfo.UserData & NeedAofLog) == NeedAofLog) // Check if we need to write to AOF
-                WriteLogRMW(key.KeyBytes, ref input, rmwInfo.Version, rmwInfo.SessionID, epochAccessor);
+                WriteLogRMW(key.KeyBytes, ref input, rmwInfo.Version, rmwInfo.SessionID, epochAccessor, rmwInfo.KeyHash & long.MaxValue);
         }
     }
 }

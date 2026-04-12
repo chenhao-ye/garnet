@@ -138,7 +138,7 @@ namespace Garnet.server
             where TEpochAccessor : IEpochAccessor
         {
             if ((upsertInfo.UserData & NeedAofLog) == NeedAofLog) // Check if we need to write to AOF
-                WriteLogUpsert(key.KeyBytes, ref input, valueSpan, upsertInfo.Version, upsertInfo.SessionID, epochAccessor);
+                WriteLogUpsert(key.KeyBytes, ref input, valueSpan, upsertInfo.Version, upsertInfo.SessionID, epochAccessor, upsertInfo.KeyHash & long.MaxValue);
         }
 
         /// <inheritdoc />
@@ -150,7 +150,7 @@ namespace Garnet.server
             where TEpochAccessor : IEpochAccessor
         {
             if ((upsertInfo.UserData & NeedAofLog) == NeedAofLog) // Check if we need to write to AOF
-                WriteLogUpsert(key.KeyBytes, ref input, (IGarnetObject)valueObject, upsertInfo.Version, upsertInfo.SessionID, epochAccessor);
+                WriteLogUpsert(key.KeyBytes, ref input, (IGarnetObject)valueObject, upsertInfo.Version, upsertInfo.SessionID, epochAccessor, upsertInfo.KeyHash & long.MaxValue);
         }
     }
 }

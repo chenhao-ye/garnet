@@ -111,6 +111,15 @@ namespace Garnet.server
         }
 
         /// <summary>
+        /// Update key sequence number of virtual sublog associated with the specified virtual sublogIdx using a pre-computed key hash.
+        /// </summary>
+        /// <param name="virtualSublogIdx"></param>
+        /// <param name="keyHash"></param>
+        /// <param name="sequenceNumber"></param>
+        public void UpdateVirtualSublogKeySequenceNumber(int virtualSublogIdx, long keyHash, long sequenceNumber)
+            => vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
+
+        /// <summary>
         /// Update key sequence number of virtual sublog associated with the specified keyHash.
         /// </summary>
         /// <param name="keyHash"></param>

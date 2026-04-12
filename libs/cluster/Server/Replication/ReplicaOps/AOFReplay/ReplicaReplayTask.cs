@@ -17,6 +17,7 @@ namespace Garnet.cluster
     {
         public byte* entryPtr;
         public int payloadLength;
+        public long keyHash;
     }
 
     internal sealed class ReplicaReplayTask(
@@ -81,9 +82,9 @@ namespace Garnet.cluster
                             if (payloadLength > 0)
                             {
                                 var entryPtr = ptr + entryLength;
-                                if (replicationManager.AofProcessor.CanReplay(entryPtr, replayTaskIdx, out var sequenceNumber))
+                                if (replicationManager.AofProcessor.CanReplay(entryPtr, replayTaskIdx, out var sequenceNumber, out var keyHash))
                                 {
-                                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
+                                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart, keyHash);
                                     // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
                                     // point when we take a checkpoint at the checkpoint end marker
                                     if (isCheckpointStart)
@@ -158,7 +159,7 @@ namespace Garnet.cluster
             {
                 try
                 {
-                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, record.entryPtr, record.payloadLength, true, out var isCheckpointStart);
+                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, record.entryPtr, record.payloadLength, true, out var isCheckpointStart, record.keyHash);
 
                     // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
                     // point when we take a checkpoint at the checkpoint end marker
@@ -200,7 +201,7 @@ namespace Garnet.cluster
                 {
                     try
                     {
-                        replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, prefetchBuffer[i].entryPtr, prefetchBuffer[i].payloadLength, true, out var isCheckpointStart);
+                        replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, prefetchBuffer[i].entryPtr, prefetchBuffer[i].payloadLength, true, out var isCheckpointStart, prefetchBuffer[i].keyHash);
 
                         // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
                         // point when we take a checkpoint at the checkpoint end marker
