@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Garnet.common;
 
@@ -73,13 +74,12 @@ namespace Garnet.server
         public static unsafe byte* SkipHeader(byte* entryPtr)
         {
             var header = *(AofHeader*)entryPtr;
-            var headerType = (AofHeaderType)header.padding;
-            return headerType switch
+            return header.headerType switch
             {
                 AofHeaderType.BasicHeader => entryPtr + TotalSize,
                 AofHeaderType.ShardedHeader => entryPtr + AofShardedHeader.TotalSize,
                 AofHeaderType.TransactionHeader => entryPtr + AofTransactionHeader.TotalSize,
-                _ => throw new GarnetException($"Type not supported {headerType}"),
+                _ => throw new GarnetException($"Type not supported {header.headerType}"),
             };
         }
 
@@ -97,15 +97,55 @@ namespace Garnet.server
         internal const byte ShardedLogFlag = 1;
 
         /// <summary>
+        /// Mask for extracting AofHeaderType from padding (bits 0-1)
+        /// </summary>
+        internal const byte HeaderTypeMask = 0x03;
+
+        /// <summary>
+        /// Bit shift for replay tag within padding (bits 2-7)
+        /// </summary>
+        internal const int ReplayTagShift = 2;
+
+        /// <summary>
+        /// Mask for replay tag after shifting (6 bits, values 0-63)
+        /// </summary>
+        internal const byte ReplayTagMask = 0x3F;
+
+        /// <summary>
+        /// Construct padding byte from header type and replay tag
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static byte MakePadding(AofHeaderType type, byte replayTag)
+            => (byte)((byte)type | ((replayTag & ReplayTagMask) << ReplayTagShift));
+
+        /// <summary>
         /// Version of AOF
         /// </summary>
         [FieldOffset(0)]
         public byte aofHeaderVersion;
         /// <summary>
-        /// Padding, for alignment and future use
+        /// Padding: bits 0-1 store AofHeaderType, bits 2-7 store replay tag
         /// </summary>
         [FieldOffset(1)]
         public byte padding;
+
+        /// <summary>
+        /// Header type extracted from padding (bits 0-1)
+        /// </summary>
+        internal readonly AofHeaderType headerType
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => (AofHeaderType)(padding & HeaderTypeMask);
+        }
+
+        /// <summary>
+        /// Replay tag extracted from padding (bits 2-7, 6-bit value 0-63)
+        /// </summary>
+        internal readonly byte replayTag
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => (byte)((padding >> ReplayTagShift) & ReplayTagMask);
+        }
         /// <summary>
         /// Type of operation
         /// </summary>

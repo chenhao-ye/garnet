@@ -211,11 +211,13 @@ namespace Resp.benchmark
                                 }
                                 else
                                 {
+                                    var hash = GarnetLog.HASH(new ReadOnlySpan<byte>(keyPtr, keyData.Length));
+                                    var replayTag = (byte)((hash / options.AofPhysicalSublogCount) & AofHeader.ReplayTagMask);
                                     var extendedAofHeader = new AofShardedHeader
                                     {
                                         basicHeader = new AofHeader
                                         {
-                                            padding = (byte)AofHeaderType.ShardedHeader,
+                                            padding = AofHeader.MakePadding(AofHeaderType.ShardedHeader, replayTag),
                                             opType = aofHeader.opType,
                                             storeVersion = aofHeader.storeVersion,
                                             sessionID = aofHeader.sessionID
