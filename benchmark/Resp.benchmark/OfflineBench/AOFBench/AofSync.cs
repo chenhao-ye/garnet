@@ -183,6 +183,35 @@ namespace Resp.benchmark
             return (int)(curr - bufferPtr);
         }
 
+        /// <summary>
+        /// Consume a pre-built RESP message directly, skipping serialization.
+        /// </summary>
+        public unsafe void ConsumeRespMessage(byte* respMessagePtr, int respMessageLength)
+        {
+            try
+            {
+                if (!initialized)
+                {
+                    InitializeReplayStream();
+                    initialized = true;
+                }
+
+                if (options.Client == ClientType.InProc)
+                {
+                    _ = aofBench.sessions[threadId].TryConsumeMessages(respMessagePtr, respMessageLength);
+                }
+                else
+                {
+                    throw new NotSupportedException("Pre-built RESP messages are only supported for InProc mode");
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "An exception occurred at ReplicationManager.AofSyncTaskInfo.ConsumeRespMessage");
+                throw;
+            }
+        }
+
         public unsafe void Consume(byte* payloadPtr, int payloadLength, long currentAddress, long nextAddress, bool isProtected)
         {
             try

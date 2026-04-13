@@ -71,6 +71,7 @@ namespace Resp.benchmark
             server = new EmbeddedRespServer(serverOptions, Program.loggerFactory, new GarnetServerEmbedded());
             sessions = server.GetRespSessions(options.AofPhysicalSublogCount);
             aofGen = new AofGen(options);
+            aofGen.PrimaryId = primaryId;
             aofSync = [.. Enumerable.Range(0, options.AofPhysicalSublogCount).Select(x => new AofSync(this, threadId: x, startAddress: 64, options, aofGen))];
         }
 
@@ -104,16 +105,22 @@ namespace Resp.benchmark
                 foreach (var worker in workers)
                     worker.Start();
 
-
                 waiter.Set();
 
                 Stopwatch swatch = new();
                 swatch.Start();
-                // Let workers operate for a specific RunTime
-                Thread.Sleep(TimeSpan.FromSeconds(options.RunTime));
+
+                // Wait for workers to finish or timeout — whichever comes first
+                var allDone = new CountdownEvent(threads);
+                for (var idx = 0; idx < threads; idx++)
+                {
+                    var w = workers[idx];
+                    new Thread(() => { w.Join(); allDone.Signal(); }) { IsBackground = true }.Start();
+                }
+                allDone.Wait(TimeSpan.FromSeconds(options.RunTime));
                 done = true;
 
-                // Wait for AOF load to complete
+                // Wait for any still-running workers to notice done flag
                 foreach (var worker in workers)
                     worker.Join();
 
@@ -152,35 +159,28 @@ namespace Resp.benchmark
 
             unsafe void RunAofReplayBench(int threadId)
             {
-                var buffers = aofGen.GetPageBuffers(threadId);
-                var offset = 0;
-                var currentAddress = 64L;
-                var nextAddress = 64L;
+                var respPages = aofGen.GetRespPageBuffers(threadId);
                 var pagesSend = 0L;
                 var totalBytes = 0L;
                 var recordsReplayedCount = 0L;
 
                 waiter.Wait();
 
-                while (!done)
+                for (var i = 0; i < respPages.Length && !done; i++)
                 {
-                    var pos = offset++ % buffers.Length;
-                    var currPage = buffers[pos];
-                    fixed (byte* payloadPtr = currPage.payload)
+                    var currPage = respPages[i];
+                    fixed (byte* bufferPtr = currPage.buffer)
                     {
-                        nextAddress = currentAddress + currPage.payloadLength;
-                        aofSync[threadId].Consume(payloadPtr, currPage.payloadLength, currentAddress, nextAddress, isProtected: false);
+                        aofSync[threadId].ConsumeRespMessage(
+                            bufferPtr + currPage.messageOffset,
+                            currPage.messageLength);
 
-                        // First page has a valid address from 64.
-                        // After that currentAddress starts from beginning of bage (i.e. multiple of page size)
-                        currentAddress = currentAddress == 64 ? currPage.Length : currentAddress + currPage.Length;
                         pagesSend++;
                         totalBytes += currPage.payloadLength;
                         recordsReplayedCount += currPage.recordCount;
                     }
                 }
 
-                //Console.WriteLine($"[{threadId}] - Pages send: {pagesSend:N0}, Total AOF bytes send: {totalBytes:N0}, Total records replayed:{recordsReplayedCount:N0}");
                 _ = Interlocked.Add(ref total_pages_processed, pagesSend);
                 _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
                 _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
