@@ -32,7 +32,7 @@ namespace Garnet.cluster
         internal readonly ReplayBatchContext replayBatchContext;
         readonly ReplicaReplayTask[] replayTasks;
         readonly TsavoriteLog physicalSublog;
-        readonly bool useChannels = false;
+        readonly bool useChannels = true;
 
         public bool ResumeReplay() => activeWorkerMonitor.TryEnter();
 
