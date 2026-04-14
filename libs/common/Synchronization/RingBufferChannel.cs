@@ -6,39 +6,25 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 
-namespace Garnet.cluster
+namespace Garnet.common
 {
     /// <summary>
-    /// Single-entry record handed through <see cref="RingBufferChannel"/>.
-    /// Holds only a pre-header AOF record pointer; the payload length is
-    /// recovered on the consumer side. The struct is exactly 8 bytes so that 8
-    /// slots fit in one 64B cacheline — keep it that way if you extend it
-    /// (extending will break the "one publish = one cacheline" invariant at the
-    /// default batchSize).
-    /// </summary>
-    [StructLayout(LayoutKind.Sequential, Size = 8)]
-    internal readonly unsafe struct ReplayRecord
-    {
-        public readonly byte* Ptr;
-        public ReplayRecord(byte* ptr) { Ptr = ptr; }
-    }
-
-    /// <summary>
-    /// Single-producer, single-consumer ring buffer of <see cref="ReplayRecord"/>
-    /// entries used to hand off AOF record pointers from ReplicaReplayDriver
-    /// to a ReplicaReplayTask.
+    /// Single-producer, single-consumer ring buffer parameterized by the slot
+    /// record type. Used to hand off small fixed-size records across threads
+    /// without per-record atomics.
     ///
     /// Layout is cacheline (64B) aligned. The producer's working state sits on
     /// one cacheline, the consumer's working state on another, and the ring of
-    /// entries follows. With 8-byte slots and a 64-byte cacheline, 8 slots fit
-    /// in one cacheline. With the default batchSize of 8, each publish step
-    /// makes exactly one freshly-written cacheline visible to the consumer.
+    /// entries follows. For optimal cache behavior choose
+    /// <c>batchSize * sizeof(TRecord)</c> to be a multiple of 64 (e.g. with an
+    /// 8-byte record and batchSize=8, each publish makes exactly one
+    /// freshly-written cacheline visible to the consumer).
     ///
     /// The producer batches writes: it only publishes the tail (making prior
     /// writes visible to the consumer) every <c>batchSize</c> writes, or when
     /// <see cref="Flush"/> is called explicitly.
     /// </summary>
-    internal sealed unsafe class RingBufferChannel
+    public sealed unsafe class RingBufferChannel<TRecord> where TRecord : unmanaged
     {
         const int CacheLineBytes = 64;
 
@@ -104,10 +90,10 @@ namespace Garnet.cluster
         }
 
         readonly long[] controlRaw;
-        readonly ReplayRecord[] ringRaw;
+        readonly TRecord[] ringRaw;
         readonly ProducerControl* producer;
         readonly ConsumerControl* consumer;
-        readonly ReplayRecord* ring;
+        readonly TRecord* ring;
         readonly int mask;
         readonly int capacity;
         readonly int batchSize;
@@ -124,19 +110,19 @@ namespace Garnet.cluster
             this.batchSize = batchSize;
 
             // Control: 2 cachelines + 1 cacheline of alignment slack.
-            const int RecordsPerLine = CacheLineBytes / sizeof(long);
-            controlRaw = GC.AllocateArray<long>(3 * RecordsPerLine, pinned: true);
+            const int LongsPerLine = CacheLineBytes / sizeof(long);
+            controlRaw = GC.AllocateArray<long>(3 * LongsPerLine, pinned: true);
             var cRaw = (long)Unsafe.AsPointer(ref controlRaw[0]);
             var cAligned = (cRaw + CacheLineBytes - 1) & ~((long)CacheLineBytes - 1);
             producer = (ProducerControl*)cAligned;
             consumer = (ConsumerControl*)(cAligned + CacheLineBytes);
 
-            // Ring: `capacity` slots + 1 cacheline (8 slots) of alignment slack.
-            const int SlotsPerLine = CacheLineBytes / 8;
-            ringRaw = GC.AllocateArray<ReplayRecord>(capacity + SlotsPerLine, pinned: true);
+            // Ring: `capacity` slots + 1 cacheline of alignment slack (rounded up).
+            var slotsPerLineSlack = (CacheLineBytes + sizeof(TRecord) - 1) / sizeof(TRecord);
+            ringRaw = GC.AllocateArray<TRecord>(capacity + slotsPerLineSlack, pinned: true);
             var rRaw = (long)Unsafe.AsPointer(ref ringRaw[0]);
             var rAligned = (rRaw + CacheLineBytes - 1) & ~((long)CacheLineBytes - 1);
-            ring = (ReplayRecord*)rAligned;
+            ring = (TRecord*)rAligned;
         }
 
         /// <summary>
@@ -146,7 +132,7 @@ namespace Garnet.cluster
         /// completion check is needed on the write path.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Write(ReplayRecord record)
+        public void Write(TRecord record)
         {
             var bufferTail = producer->BufferTail;
             if (bufferTail - producer->CachedHead >= capacity)
@@ -196,7 +182,7 @@ namespace Garnet.cluster
         /// (and check its own cancellation if applicable).
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool Read(out ReplayRecord record)
+        public bool Read(out TRecord record)
         {
             // Fast path: record available, or batch already completed and empty.
             if (TryRead(out record)) return true;
@@ -213,7 +199,7 @@ namespace Garnet.cluster
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        bool TryRead(out ReplayRecord record)
+        bool TryRead(out TRecord record)
         {
             var head = consumer->Head;
             if (head == consumer->CachedTail)

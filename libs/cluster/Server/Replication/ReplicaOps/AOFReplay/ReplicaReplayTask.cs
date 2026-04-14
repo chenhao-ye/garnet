@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Garnet.common;
@@ -11,6 +12,20 @@ using Tsavorite.core;
 
 namespace Garnet.cluster
 {
+    /// <summary>
+    /// Slot type carried by the replay <see cref="RingBufferChannel{TRecord}"/>.
+    /// Holds only a pre-header AOF record pointer; payload length is recovered
+    /// on the consumer side. The struct is exactly 8 bytes so that 8 slots fit
+    /// in one 64B cacheline — keep it that way if you extend it (extending will
+    /// break the "one publish = one cacheline" invariant at the default batchSize).
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, Size = 8)]
+    internal readonly unsafe struct ReplayRecord
+    {
+        public readonly byte* Ptr;
+        public ReplayRecord(byte* ptr) { Ptr = ptr; }
+    }
+
     internal sealed class ReplicaReplayTask(
         int replayIdx,
         ReplicaReplayDriver replayDriver,
@@ -26,7 +41,7 @@ namespace Garnet.cluster
         readonly CancellationTokenSource cts = cts;
         readonly TsavoriteLog replaySublog = clusterProvider.storeWrapper.appendOnlyFile.Log.GetSubLog(replayDriver.physicalSublogIdx);
         readonly ILogger logger = logger;
-        readonly RingBufferChannel ring = new(clusterProvider.serverOptions.AofReplayRingSize, clusterProvider.serverOptions.AofReplayRingBatch);
+        readonly RingBufferChannel<ReplayRecord> channel = new(clusterProvider.serverOptions.AofReplayRingSize, clusterProvider.serverOptions.AofReplayRingBatch);
 
         /// <summary>
         /// Asynchronously replays log entries using SemaphoreSlim coordination, processing and applying them for replication
@@ -124,21 +139,21 @@ namespace Garnet.cluster
         /// <summary>
         /// Enqueue a pre-header AOF record pointer. May block if the ring buffer is full (i.e., the replay task does not consume records fast enough).
         /// </summary>
-        public unsafe void AddRecord(byte* ptr) => ring.Write(new ReplayRecord(ptr));
+        public unsafe void AddRecord(byte* ptr) => channel.Write(new ReplayRecord(ptr));
 
         /// <summary>
         /// Mark the ring as batch-complete (flushes Tail and sets the Completed flag).
-        /// The consumer observes <see cref="RingBufferChannel.IsCompleted"/> after draining
+        /// The consumer observes <see cref="RingBufferChannel{TRecord}.IsCompleted"/> after draining
         /// and uses the barrier to acknowledge; driver calls <see cref="ResetBatch"/>
         /// after <see cref="LeaderFollowerBarrier.WaitCompleted"/>.
         /// </summary>
-        internal void CompleteBatch() => ring.Complete();
+        internal void CompleteBatch() => channel.Complete();
 
         /// <summary>
         /// Clear the ring's Completed flag so the next batch starts fresh. Must be called
         /// by the driver while consumer is parked on the barrier's resetReady.
         /// </summary>
-        internal void ResetBatch() => ring.Reset();
+        internal void ResetBatch() => channel.Reset();
 
         internal unsafe Task ChannelBackgroundReplay()
         {
@@ -146,14 +161,14 @@ namespace Garnet.cluster
             var virtualSublogIdx = appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, replayTaskIdx);
             var headerSize = appendOnlyFile.HeaderSize;
 
-            // Ensure cancel/teardown breaks the Read spin loop by completing the ring.
-            cts.Token.Register(ring.Complete);
+            // Ensure cancel/teardown breaks the Read spin loop by completing the channel.
+            cts.Token.Register(channel.Complete);
 
             try
             {
                 while (!cts.Token.IsCancellationRequested)
                 {
-                    while (ring.Read(out var record))
+                    while (channel.Read(out var record))
                     {
                         var payloadLength = replaySublog.UnsafeGetLength(record.Ptr);
                         var entryPtr = record.Ptr + headerSize;
