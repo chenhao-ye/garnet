@@ -2,9 +2,8 @@
 // Licensed under the MIT license.
 
 using System;
-using System.Runtime.Intrinsics.X86;
+using System.Runtime.InteropServices;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using Garnet.common;
 using Garnet.server;
@@ -13,10 +12,18 @@ using Tsavorite.core;
 
 namespace Garnet.cluster
 {
-    internal unsafe struct ReplayRecord
+    /// <summary>
+    /// Slot type carried by the replay <see cref="RingBufferChannel{TRecord}"/>.
+    /// Holds only a pre-header AOF record pointer; payload length is recovered
+    /// on the consumer side. The struct is exactly 8 bytes so that 8 slots fit
+    /// in one 64B cacheline — keep it that way if you extend it (extending will
+    /// break the "one publish = one cacheline" invariant at the default batchSize).
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, Size = 8)]
+    internal readonly unsafe struct ReplayRecord
     {
-        public byte* entryPtr;
-        public int payloadLength;
+        public readonly byte* Ptr;
+        public ReplayRecord(byte* ptr) { Ptr = ptr; }
     }
 
     internal sealed class ReplicaReplayTask(
@@ -34,8 +41,7 @@ namespace Garnet.cluster
         readonly CancellationTokenSource cts = cts;
         readonly TsavoriteLog replaySublog = clusterProvider.storeWrapper.appendOnlyFile.Log.GetSubLog(replayDriver.physicalSublogIdx);
         readonly ILogger logger = logger;
-        private readonly Channel<ReplayRecord> replayChannel = Channel.CreateUnbounded<ReplayRecord>(
-            new() { SingleWriter = true, SingleReader = true, AllowSynchronousContinuations = false });
+        readonly RingBufferChannel<ReplayRecord> channel = new(clusterProvider.serverOptions.AofReplayRingSize, clusterProvider.serverOptions.AofReplayRingBatch);
 
         /// <summary>
         /// Asynchronously replays log entries using SemaphoreSlim coordination, processing and applying them for replication
@@ -130,77 +136,43 @@ namespace Garnet.cluster
             }
         }
 
-        public void AddRecord(ReplayRecord replayRecord)
-        {
-            replayChannel.Writer.TryWrite(replayRecord);
-        }
+        /// <summary>
+        /// Enqueue a pre-header AOF record pointer. May block if the ring buffer is full (i.e., the replay task does not consume records fast enough).
+        /// </summary>
+        public unsafe void AddRecord(byte* ptr) => channel.Write(new ReplayRecord(ptr));
 
-        internal async Task ChannelBackgroundReplay()
+        /// <summary>
+        /// Mark the ring as batch-complete (flushes Tail and sets the Completed flag).
+        /// The consumer observes <see cref="RingBufferChannel{TRecord}.IsCompleted"/> after draining
+        /// and uses the barrier to acknowledge; driver calls <see cref="ResetBatch"/>
+        /// after <see cref="LeaderFollowerBarrier.WaitCompleted"/>.
+        /// </summary>
+        internal void CompleteBatch() => channel.Complete();
+
+        /// <summary>
+        /// Clear the ring's Completed flag so the next batch starts fresh. Must be called
+        /// by the driver while consumer is parked on the barrier's resetReady.
+        /// </summary>
+        internal void ResetBatch() => channel.Reset();
+
+        internal unsafe Task ChannelBackgroundReplay()
         {
             var physicalSublogIdx = replayDriver.physicalSublogIdx;
             var virtualSublogIdx = appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, replayTaskIdx);
-            var reader = replayChannel.Reader;
+            var headerSize = appendOnlyFile.HeaderSize;
 
-            while (await reader.WaitToReadAsync(cts.Token))
+            // Ensure cancel/teardown breaks the Read spin loop by completing the channel.
+            cts.Token.Register(channel.Complete);
+
+            try
             {
-                ProcessRecord(virtualSublogIdx, physicalSublogIdx);
-                //ProcessRecordWithPrefetch(virtualSublogIdx, physicalSublogIdx);
-            }
-        }
-
-        internal unsafe void ProcessRecord(int virtualSublogIdx, int physicalSublogIdx)
-        {
-            const int PrefetchSize = 4;
-            var reader = replayChannel.Reader;
-            var prefetchBuffer = stackalloc ReplayRecord[PrefetchSize];
-
-            while (reader.TryRead(out var record))
-            {
-                try
+                while (!cts.Token.IsCancellationRequested)
                 {
-                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, record.entryPtr, record.payloadLength, true, out var isCheckpointStart);
-
-                    // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
-                    // point when we take a checkpoint at the checkpoint end marker
-                    if (isCheckpointStart)
+                    while (channel.Read(out var record))
                     {
-                        // logger?.LogError("[{sublogIdx}] CheckpointStart {address}", sublogIdx, clusterProvider.replicationManager.GetSublogReplicationOffset(sublogIdx));
-                        replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
-                    }
-                }
-                finally
-                {
-                    _ = replayDriver.batchWorkerMonitor.Exit();
-                }
-            }
-        }
-
-        internal unsafe void ProcessRecordWithPrefetch(int virtualSublogIdx, int physicalSublogIdx)
-        {
-            const int PrefetchSize = 4;
-            var reader = replayChannel.Reader;
-            var prefetchBuffer = stackalloc ReplayRecord[PrefetchSize];
-
-            while (true)
-            {
-                // Read a batch of records and prefetch their entry pointers
-                var count = 0;
-                while (count < PrefetchSize && reader.TryRead(out prefetchBuffer[count]))
-                {
-                    if (Sse.IsSupported)
-                        Sse.Prefetch0(prefetchBuffer[count].entryPtr);
-                    count++;
-                }
-
-                if (count == 0)
-                    break;
-
-                // Process all prefetched records
-                for (var i = 0; i < count; i++)
-                {
-                    try
-                    {
-                        replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, prefetchBuffer[i].entryPtr, prefetchBuffer[i].payloadLength, true, out var isCheckpointStart);
+                        var payloadLength = replaySublog.UnsafeGetLength(record.Ptr);
+                        var entryPtr = record.Ptr + headerSize;
+                        replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
 
                         // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
                         // point when we take a checkpoint at the checkpoint end marker
@@ -210,12 +182,18 @@ namespace Garnet.cluster
                             replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
                         }
                     }
-                    finally
-                    {
-                        _ = replayDriver.batchWorkerMonitor.Exit();
-                    }
+                    // Read returned false ⇒ batch completed (or cancellation set the Completed flag).
+                    replayBatchContext.LeaderFollowerBarrier.SignalCompleted(cts.Token);
                 }
             }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                logger?.LogError(ex, "{method} failed at replaying", nameof(ChannelBackgroundReplay));
+                cts.Cancel();
+            }
+            return Task.CompletedTask;
         }
+
     }
 }
