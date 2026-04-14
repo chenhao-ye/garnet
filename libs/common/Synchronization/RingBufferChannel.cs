@@ -8,6 +8,70 @@ using System.Threading;
 
 namespace Garnet.common
 {
+    // These control structs live outside the generic class because explicit
+    // layout is disallowed on types nested inside a generic class. Kept
+    // internal to this assembly; do not use outside RingBufferChannel.
+
+    /// <summary>
+    /// Producer-owned state. Own cacheline to avoid false sharing with the
+    /// consumer. Tail is written by the producer, read by the consumer with
+    /// acquire/release semantics.
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = 64)]
+    internal struct ProducerControl
+    {
+        /// <summary>
+        /// Producer's cached view of the consumer's <see cref="ConsumerControl.Head"/>.
+        /// Refreshed only when the ring looks full; lets the producer skip a volatile
+        /// read of the consumer's cacheline on the fast path.
+        /// </summary>
+        [FieldOffset(0)] public long CachedHead;
+
+        /// <summary>
+        /// Producer-private write cursor. Advances on every write but is not yet
+        /// visible to the consumer. Writes beyond <see cref="Tail"/> are buffered
+        /// here until batched publish.
+        /// </summary>
+        [FieldOffset(8)] public long BufferTail;
+
+        /// <summary>
+        /// Published write cursor — the highest index the consumer may read.
+        /// Written by the producer with release semantics every batchSize writes
+        /// (or on Flush / Complete); read by the consumer with acquire semantics.
+        /// </summary>
+        [FieldOffset(16)] public long Tail;
+    }
+
+    /// <summary>
+    /// Consumer-owned state. Own cacheline. Head is written by the consumer,
+    /// read by the producer with acquire/release semantics. Completed is
+    /// written once by the producer on shutdown.
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = 64)]
+    internal struct ConsumerControl
+    {
+        /// <summary>
+        /// Read cursor — the next index the consumer will read. Written by the
+        /// consumer with release semantics on each successful read; read by the
+        /// producer with acquire semantics when checking for free slots.
+        /// </summary>
+        [FieldOffset(0)] public long Head;
+
+        /// <summary>
+        /// Consumer's cached view of the producer's <see cref="ProducerControl.Tail"/>.
+        /// Refreshed only when the ring looks empty; lets the consumer skip a volatile
+        /// read of the producer's cacheline on the fast path.
+        /// </summary>
+        [FieldOffset(8)] public long CachedTail;
+
+        /// <summary>
+        /// Completion flag. Set once by the producer on shutdown; read by the
+        /// consumer to know it may exit after draining. Read as a volatile int
+        /// (treated as bool).
+        /// </summary>
+        [FieldOffset(16)] public int Completed;
+    }
+
     /// <summary>
     /// Single-producer, single-consumer ring buffer parameterized by the slot
     /// record type. Used to hand off small fixed-size records across threads
@@ -27,67 +91,6 @@ namespace Garnet.common
     public sealed unsafe class RingBufferChannel<TRecord> where TRecord : unmanaged
     {
         const int CacheLineBytes = 64;
-
-        /// <summary>
-        /// Producer-owned state. Own cacheline to avoid false sharing with the
-        /// consumer. Tail is written by the producer, read by the consumer with
-        /// acquire/release semantics.
-        /// </summary>
-        [StructLayout(LayoutKind.Explicit, Size = CacheLineBytes)]
-        struct ProducerControl
-        {
-            /// <summary>
-            /// Producer's cached view of the consumer's <see cref="ConsumerControl.Head"/>.
-            /// Refreshed only when the ring looks full; lets the producer skip a volatile
-            /// read of the consumer's cacheline on the fast path.
-            /// </summary>
-            [FieldOffset(0)] public long CachedHead;
-
-            /// <summary>
-            /// Producer-private write cursor. Advances on every <see cref="Write"/> but
-            /// is not yet visible to the consumer. Writes beyond <see cref="Tail"/> are
-            /// buffered here until batched publish.
-            /// </summary>
-            [FieldOffset(8)] public long BufferTail;
-
-            /// <summary>
-            /// Published write cursor — the highest index the consumer may read.
-            /// Written by the producer with release semantics every batchSize writes
-            /// (or on <see cref="Flush"/> / <see cref="Complete"/>); read by the
-            /// consumer with acquire semantics.
-            /// </summary>
-            [FieldOffset(16)] public long Tail;
-        }
-
-        /// <summary>
-        /// Consumer-owned state. Own cacheline. Head is written by the consumer,
-        /// read by the producer with acquire/release semantics. Completed is
-        /// written once by the producer on shutdown.
-        /// </summary>
-        [StructLayout(LayoutKind.Explicit, Size = CacheLineBytes)]
-        struct ConsumerControl
-        {
-            /// <summary>
-            /// Read cursor — the next index the consumer will read. Written by the
-            /// consumer with release semantics on each successful <see cref="Read"/>;
-            /// read by the producer with acquire semantics when checking for free slots.
-            /// </summary>
-            [FieldOffset(0)] public long Head;
-
-            /// <summary>
-            /// Consumer's cached view of the producer's <see cref="ProducerControl.Tail"/>.
-            /// Refreshed only when the ring looks empty; lets the consumer skip a volatile
-            /// read of the producer's cacheline on the fast path.
-            /// </summary>
-            [FieldOffset(8)] public long CachedTail;
-
-            /// <summary>
-            /// Completion flag. Set once by the producer in <see cref="Complete"/>;
-            /// read by the consumer to know it may exit after draining. Read as a
-            /// volatile int (treated as bool).
-            /// </summary>
-            [FieldOffset(16)] public int Completed;
-        }
 
         readonly long[] controlRaw;
         readonly TRecord[] ringRaw;
