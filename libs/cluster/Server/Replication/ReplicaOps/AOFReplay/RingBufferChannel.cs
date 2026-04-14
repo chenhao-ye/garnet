@@ -83,7 +83,7 @@ namespace Garnet.cluster
         {
             /// <summary>
             /// Read cursor — the next index the consumer will read. Written by the
-            /// consumer with release semantics on each successful <see cref="TryRead"/>;
+            /// consumer with release semantics on each successful <see cref="Read"/>;
             /// read by the producer with acquire semantics when checking for free slots.
             /// </summary>
             [FieldOffset(0)] public long Head;
@@ -190,10 +190,30 @@ namespace Garnet.cluster
         }
 
         /// <summary>
-        /// Attempt to read the next record.
+        /// Read the next record. Spins if the ring is empty. Returns false
+        /// only when the channel is <see cref="Complete">completed</see> and
+        /// fully drained; the caller should then acknowledge the batch end
+        /// (and check its own cancellation if applicable).
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool TryRead(out ReplayRecord record)
+        public bool Read(out ReplayRecord record)
+        {
+            // Fast path: record available, or batch already completed and empty.
+            if (TryRead(out record)) return true;
+            if (Volatile.Read(ref consumer->Completed) != 0) return false;
+
+            // Slow path: spin until either a record is available or the channel is completed.
+            var spinner = new SpinWait();
+            do
+            {
+                spinner.SpinOnce();
+                if (TryRead(out record)) return true;
+            } while (Volatile.Read(ref consumer->Completed) == 0);
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        bool TryRead(out ReplayRecord record)
         {
             var head = consumer->Head;
             if (head == consumer->CachedTail)

@@ -140,20 +140,35 @@ namespace Garnet.cluster
         /// </summary>
         internal void ResetBatch() => ring.Reset();
 
-        internal async Task ChannelBackgroundReplay()
+        internal unsafe Task ChannelBackgroundReplay()
         {
             var physicalSublogIdx = replayDriver.physicalSublogIdx;
             var virtualSublogIdx = appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, replayTaskIdx);
+            var headerSize = appendOnlyFile.HeaderSize;
+
+            // Ensure cancel/teardown breaks the Read spin loop by completing the ring.
+            cts.Token.Register(ring.Complete);
 
             try
             {
                 while (!cts.Token.IsCancellationRequested)
                 {
-                    _ = ProcessRecord(virtualSublogIdx, physicalSublogIdx);
-                    if (ring.IsCompleted)
-                        replayBatchContext.LeaderFollowerBarrier.SignalCompleted(cts.Token);
-                    else
-                        await Task.Yield();
+                    while (ring.Read(out var record))
+                    {
+                        var payloadLength = replaySublog.UnsafeGetLength(record.Ptr);
+                        var entryPtr = record.Ptr + headerSize;
+                        replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
+
+                        // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
+                        // point when we take a checkpoint at the checkpoint end marker
+                        if (isCheckpointStart)
+                        {
+                            // logger?.LogError("[{sublogIdx}] CheckpointStart {address}", sublogIdx, clusterProvider.replicationManager.GetSublogReplicationOffset(sublogIdx));
+                            replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
+                        }
+                    }
+                    // Read returned false ⇒ batch completed (or cancellation set the Completed flag).
+                    replayBatchContext.LeaderFollowerBarrier.SignalCompleted(cts.Token);
                 }
             }
             catch (OperationCanceledException) { }
@@ -162,29 +177,8 @@ namespace Garnet.cluster
                 logger?.LogError(ex, "{method} failed at replaying", nameof(ChannelBackgroundReplay));
                 cts.Cancel();
             }
+            return Task.CompletedTask;
         }
 
-        internal unsafe bool ProcessRecord(int virtualSublogIdx, int physicalSublogIdx)
-        {
-            var headerSize = appendOnlyFile.HeaderSize;
-            var didWork = false;
-
-            while (ring.TryRead(out var record))
-            {
-                didWork = true;
-                var payloadLength = replaySublog.UnsafeGetLength(record.Ptr);
-                var entryPtr = record.Ptr + headerSize;
-                replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
-
-                // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
-                // point when we take a checkpoint at the checkpoint end marker
-                if (isCheckpointStart)
-                {
-                    // logger?.LogError("[{sublogIdx}] CheckpointStart {address}", sublogIdx, clusterProvider.replicationManager.GetSublogReplicationOffset(sublogIdx));
-                    replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
-                }
-            }
-            return didWork;
-        }
     }
 }
