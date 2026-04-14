@@ -87,6 +87,16 @@ namespace Garnet.server
         public int AofReplayTaskCount = 1;
 
         /// <summary>
+        /// Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.
+        /// </summary>
+        public int AofReplayRingSize = 16384;
+
+        /// <summary>
+        /// Number of records the producer batches into the replay ring buffer before publishing the tail to the consumer.
+        /// </summary>
+        public int AofReplayRingBatch = 8;
+
+        /// <summary>
         /// Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).
         /// </summary>
         public int AofTailWitnessFreq = 100;

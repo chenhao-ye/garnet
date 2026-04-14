@@ -158,11 +158,7 @@ namespace Garnet.cluster
                     var replayTaskIdx = replicationManager.AofProcessor.GetReplayTaskIdx(entryPtr);
                     // Signal one worker item;
                     _ = batchWorkerMonitor.TryEnter();
-                    replayTasks[replayTaskIdx].AddRecord(new ReplayRecord()
-                    {
-                        entryPtr = entryPtr,
-                        payloadLength = payloadLength
-                    });
+                    replayTasks[replayTaskIdx].AddRecord(ptr);
                     entryLength += TsavoriteLog.UnsafeAlign(payloadLength);
                 }
                 else if (payloadLength < 0)
@@ -179,6 +175,9 @@ namespace Garnet.cluster
                 ptr += entryLength;
                 replicationOffset += entryLength;
             }
+
+            foreach (var t in replayTasks)
+                t.Flush();
 
             batchWorkerMonitor.TryClose();
             replicationManager.SetSublogReplicationOffset(physicalSublogIdx, replicationOffset);
