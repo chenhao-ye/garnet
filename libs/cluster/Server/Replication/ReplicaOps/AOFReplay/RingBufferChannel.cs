@@ -223,6 +223,17 @@ namespace Garnet.cluster
         }
 
         /// <summary>
+        /// Producer-side: clear the completion flag so the channel can be reused
+        /// for a new batch. Caller must ensure no consumer is currently observing
+        /// <see cref="IsCompleted"/> (e.g. all consumers parked on a barrier).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Reset()
+        {
+            Volatile.Write(ref consumer->Completed, 0);
+        }
+
+        /// <summary>
         /// True once <see cref="Complete"/> has been called and the consumer has drained all remaining entries.
         /// </summary>
         public bool IsCompleted

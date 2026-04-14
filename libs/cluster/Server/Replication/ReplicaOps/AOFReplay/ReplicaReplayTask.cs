@@ -127,23 +127,40 @@ namespace Garnet.cluster
         public unsafe void AddRecord(byte* ptr) => ring.Write(new ReplayRecord(ptr));
 
         /// <summary>
-        /// Publish buffered adds so the consumer sees them. Must be called at the end of each producer batch.
+        /// Mark the ring as batch-complete (flushes Tail and sets the Completed flag).
+        /// The consumer observes <see cref="RingBufferChannel.IsCompleted"/> after draining
+        /// and uses the barrier to acknowledge; driver calls <see cref="ResetBatch"/>
+        /// after <see cref="LeaderFollowerBarrier.WaitCompleted"/>.
         /// </summary>
-        public void Flush() => ring.Flush();
+        internal void CompleteBatch() => ring.Complete();
+
+        /// <summary>
+        /// Clear the ring's Completed flag so the next batch starts fresh. Must be called
+        /// by the driver while consumer is parked on the barrier's resetReady.
+        /// </summary>
+        internal void ResetBatch() => ring.Reset();
 
         internal async Task ChannelBackgroundReplay()
         {
             var physicalSublogIdx = replayDriver.physicalSublogIdx;
             var virtualSublogIdx = appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, replayTaskIdx);
 
-            while (!cts.Token.IsCancellationRequested)
+            try
             {
-                if (!ProcessRecord(virtualSublogIdx, physicalSublogIdx))
+                while (!cts.Token.IsCancellationRequested)
                 {
+                    _ = ProcessRecord(virtualSublogIdx, physicalSublogIdx);
                     if (ring.IsCompleted)
-                        break;
-                    await Task.Yield();
+                        replayBatchContext.LeaderFollowerBarrier.SignalCompleted(cts.Token);
+                    else
+                        await Task.Yield();
                 }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                logger?.LogError(ex, "{method} failed at replaying", nameof(ChannelBackgroundReplay));
+                cts.Cancel();
             }
         }
 
@@ -157,21 +174,14 @@ namespace Garnet.cluster
                 didWork = true;
                 var payloadLength = replaySublog.UnsafeGetLength(record.Ptr);
                 var entryPtr = record.Ptr + headerSize;
-                try
-                {
-                    replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
+                replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);
 
-                    // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
-                    // point when we take a checkpoint at the checkpoint end marker
-                    if (isCheckpointStart)
-                    {
-                        // logger?.LogError("[{sublogIdx}] CheckpointStart {address}", sublogIdx, clusterProvider.replicationManager.GetSublogReplicationOffset(sublogIdx));
-                        replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
-                    }
-                }
-                finally
+                // Encountered checkpoint start marker, log the ReplicationCheckpointStartOffset so we know the correct AOF truncation
+                // point when we take a checkpoint at the checkpoint end marker
+                if (isCheckpointStart)
                 {
-                    _ = replayDriver.batchWorkerMonitor.Exit();
+                    // logger?.LogError("[{sublogIdx}] CheckpointStart {address}", sublogIdx, clusterProvider.replicationManager.GetSublogReplicationOffset(sublogIdx));
+                    replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
                 }
             }
             return didWork;
