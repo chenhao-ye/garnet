@@ -33,7 +33,7 @@ namespace Garnet.common
             => timeout == default ? Timeout.InfiniteTimeSpan : timeout;
 
         /// <summary>
-        /// Leader: Waits for all participants to complete, then resets for next cycle.
+        /// Leader: Waits for all participants to complete.
         /// </summary>
         public bool WaitCompleted(TimeSpan timeout = default, CancellationToken cancellationToken = default)
         {
@@ -43,10 +43,14 @@ namespace Garnet.common
                 if (!workCompleted.Wait(waitTimeout, cancellationToken))
                     return false;
             }
-
-            resetReady.Release(participantCount);
             return true;
         }
+
+        /// <summary>
+        /// Leader: Release participants that are waiting inside <see cref="SignalCompleted"/>
+        /// so they can proceed to the next cycle.
+        /// </summary>
+        public void Release() => resetReady.Release(participantCount);
 
         /// <summary>
         /// Participant: Waits for work signal from leader.

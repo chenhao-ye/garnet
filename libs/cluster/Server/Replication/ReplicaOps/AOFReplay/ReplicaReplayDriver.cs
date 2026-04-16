@@ -33,9 +33,7 @@ namespace Garnet.cluster
         internal readonly ReplayBatchContext replayBatchContext;
         readonly ReplicaReplayTask[] replayTasks;
         readonly TsavoriteLog physicalSublog;
-        readonly bool useChannels = false;
-
-        internal readonly ActiveWorkerMonitor batchWorkerMonitor;
+        readonly bool useChannels = true;
 
         public bool ResumeReplay() => activeWorkerMonitor.TryEnter();
 
@@ -60,7 +58,6 @@ namespace Garnet.cluster
             replicationManager = clusterProvider.replicationManager;
             replayIterator = null;
             activeWorkerMonitor = new();
-            batchWorkerMonitor = new();
             physicalSublog = appendOnlyFile.Log.GetSubLog(physicalSublogIdx);
             this.cts = cts;
             this.logger = logger;
@@ -143,8 +140,9 @@ namespace Garnet.cluster
             // Set replication offset currentAddress
             replicationManager.SetSublogReplicationOffset(physicalSublogIdx, currentAddress);
 
-            // Wait for replay to complete.
+            // Wait for replay to complete, then release participants for next cycle.
             replayBatchContext.LeaderFollowerBarrier.WaitCompleted(serverOptions.ReplicaSyncTimeout, cts.Token);
+            replayBatchContext.LeaderFollowerBarrier.Release();
 
             // Advertise new replicaton offset after replay completes
             replicationManager.SetSublogReplicationOffset(physicalSublogIdx, nextAddress);
@@ -167,13 +165,7 @@ namespace Garnet.cluster
                 {
                     var entryPtr = ptr + entryLength;
                     var replayTaskIdx = replicationManager.AofProcessor.GetReplayTaskIdx(entryPtr);
-                    // Signal one worker item;
-                    _ = batchWorkerMonitor.TryEnter();
-                    replayTasks[replayTaskIdx].AddRecord(new ReplayRecord()
-                    {
-                        entryPtr = entryPtr,
-                        payloadLength = payloadLength
-                    });
+                    replayTasks[replayTaskIdx].AddRecord(ptr);
                     entryLength += TsavoriteLog.UnsafeAlign(payloadLength);
                 }
                 else if (payloadLength < 0)
@@ -191,7 +183,22 @@ namespace Garnet.cluster
                 replicationOffset += entryLength;
             }
 
-            batchWorkerMonitor.TryClose();
+            // Mark batch-end on every ring (flushes Tail + sets Completed=1).
+            foreach (var t in replayTasks)
+                t.CompleteBatch();
+
+            // Wait for every task to drain its ring and signal on the barrier.
+            if (!replayBatchContext.LeaderFollowerBarrier.WaitCompleted(serverOptions.ReplicaSyncTimeout, cts.Token))
+            {
+                throw new GarnetException("Timed out draining replay batch", LogLevel.Warning, clientResponse: false);
+            }
+
+            // Clear each ring's Completed flag BEFORE releasing tasks so the next
+            // batch starts fresh; tasks are still parked on resetReady at this point.
+            foreach (var t in replayTasks)
+                t.ResetBatch();
+            replayBatchContext.LeaderFollowerBarrier.Release();
+
             replicationManager.SetSublogReplicationOffset(physicalSublogIdx, replicationOffset);
             // logger?.LogError("[{physicalSublogIdx}] = {currentAddress} -> {nextAddress}", physicalSublogIdx, currentAddress, nextAddress);
 
@@ -200,10 +207,6 @@ namespace Garnet.cluster
                 logger?.LogError("ReplicaReplayTask.Consume NextAddress Mismatch sublogIdx: {sublogIdx}; recordLength:{recordLength}; currentAddress:{currentAddress}; nextAddress:{nextAddress}; replicationOffset:{ReplicationOffset}", physicalSublogIdx, recordLength, currentAddress, nextAddress, replicationManager.ReplicationOffset[physicalSublogIdx]);
                 throw new GarnetException("Failed validating integrity of replay", LogLevel.Warning, clientResponse: false);
             }
-
-            // Initialize monitor to wait until batch is processed
-            if (!batchWorkerMonitor.TryOpen())
-                ExceptionUtils.ThrowException(new GarnetException("Failed to TryOpen batchWorkerMonitor"));
         }
 
         /// <summary>

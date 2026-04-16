@@ -87,6 +87,16 @@ namespace Garnet.server
         public int AofReplayTaskCount = 1;
 
         /// <summary>
+        /// Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.
+        /// </summary>
+        public int AofReplayRingSize = 16384;
+
+        /// <summary>
+        /// Number of records the producer batches into the replay ring buffer before publishing the tail to the consumer.
+        /// </summary>
+        public int AofReplayRingBatch = 8;
+
+        /// <summary>
         /// When true, use the Timestamp (prefix-consistent) read protocol on replicas.
         /// When false, use the Snapshot read protocol.
         /// </summary>

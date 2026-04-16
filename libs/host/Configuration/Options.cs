@@ -212,6 +212,14 @@ namespace Garnet
         [Option("aof-replay-task-count", Required = false, HelpText = "Number of replay tasks per physical sublog at the replica.")]
         public int AofReplayTaskCount { get; set; }
 
+        [IntRangeValidation(64, 1 << 20, isRequired: false)]
+        [Option("aof-replay-ring-size", Required = false, HelpText = "Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.")]
+        public int AofReplayRingSize { get; set; }
+
+        [IntRangeValidation(1, 1024, isRequired: false)]
+        [Option("aof-replay-ring-batch", Required = false, HelpText = "Number of records the producer batches into the replay ring buffer before publishing the tail to the consumer.")]
+        public int AofReplayRingBatch { get; set; }
+
         [IntRangeValidation(0, int.MaxValue)]
         [Option("aof-tail-witness-freq", Required = false, HelpText = "Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).")]
         public int AofTailWitnessFreq { get; set; }
@@ -857,6 +865,8 @@ namespace Garnet
                 AofPageSize = AofPageSize,
                 AofPhysicalSublogCount = AofPhysicalSublogCount,
                 AofReplayTaskCount = AofReplayTaskCount,
+                AofReplayRingSize = AofReplayRingSize,
+                AofReplayRingBatch = AofReplayRingBatch,
                 AofTailWitnessFreq = AofTailWitnessFreq,
                 AofReadWithTimestamp = string.IsNullOrEmpty(AofReadProtocol) || AofReadProtocol.Equals("timestamp", StringComparison.OrdinalIgnoreCase),
                 AofSnapshotFreq = AofSnapshotFreq > 0 ? AofSnapshotFreq : 5,
