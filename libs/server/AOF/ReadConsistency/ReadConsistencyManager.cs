@@ -97,18 +97,13 @@ namespace Garnet.server
         /// <param name="sequenceNumber"></param>
         public void UpdateVirtualSublogMaxSequenceNumber(int virtualSublogIdx, long sequenceNumber)
             => vsrs[virtualSublogIdx].UpdateMaxSequenceNumber(sequenceNumber);
-
         /// <summary>
-        /// Update key sequence number of virtual sublog associated with the specified virtual sublogIdx.
+        /// Update key sequence number when both the virtual sublog index and unmasked key hash are already known.
+        /// Caller must guarantee virtualSublogIdx == (keyHash &amp; long.MaxValue) % AofVirtualSublogCount.
         /// </summary>
-        /// <param name="virtualSublogIdx"></param>
-        /// <param name="key"></param>
-        /// <param name="sequenceNumber"></param>
-        public void UpdateVirtualSublogKeySequenceNumber(int virtualSublogIdx, ReadOnlySpan<byte> key, long sequenceNumber)
-        {
-            var keyHash = GarnetLog.HASH(key);
-            vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void UpdateVirtualSublogKeySequenceNumber(int virtualSublogIdx, long keyHash, long sequenceNumber)
+            => vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
 
         /// <summary>
         /// Update key sequence number of virtual sublog associated with the specified keyHash.
@@ -116,10 +111,7 @@ namespace Garnet.server
         /// <param name="keyHash"></param>
         /// <param name="sequenceNumber"></param>
         public void UpdateVirtualSublogKeySequenceNumber(long keyHash, long sequenceNumber)
-        {
-            var virtualSublogIdx = (byte)(keyHash % serverOptions.AofVirtualSublogCount);
-            vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
-        }
+            => UpdateVirtualSublogKeySequenceNumber((int)(keyHash % serverOptions.AofVirtualSublogCount), keyHash, sequenceNumber);
 
         /// <summary>
         /// Ensures that the specified replica read session context is synchronized with the current session version.
