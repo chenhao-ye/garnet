@@ -240,7 +240,9 @@ namespace Garnet.server
                     }
                     break;
                 default:
-                    _ = ReplayOp(
+                    _ = ReplayOpInternal(
+                        header,
+                        replayContext,
                         virtualSublogIdx,
                         replayContext.StringBasicContext,
                         replayContext.ObjectBasicContext,
@@ -271,8 +273,23 @@ namespace Garnet.server
                 activeVectorManager.WaitForVectorOperationsToComplete();
             }
 
+            return ReplayOpInternal(header, replayContext, sublogIdx, stringContext, objectContext, unifiedContext, entryPtr, length, asReplica);
+        }
+
+        // Caller is responsible for reading the header, fetching the replay context, and
+        // (if opType != StoreRMW) waiting on outstanding vector operations before invoking.
+        private bool ReplayOpInternal<TStringContext, TObjectContext, TUnifiedContext>(
+                AofHeader header,
+                AofReplayContext replayContext,
+                int sublogIdx,
+                TStringContext stringContext, TObjectContext objectContext, TUnifiedContext unifiedContext,
+                byte* entryPtr, int length, bool asReplica)
+            where TStringContext : ITsavoriteContext<FixedSpanByteKey, StringInput, StringOutput, long, MainSessionFunctions, StoreFunctions, StoreAllocator>
+            where TObjectContext : ITsavoriteContext<FixedSpanByteKey, ObjectInput, ObjectOutput, long, ObjectSessionFunctions, StoreFunctions, StoreAllocator>
+            where TUnifiedContext : ITsavoriteContext<FixedSpanByteKey, UnifiedInput, UnifiedOutput, long, UnifiedSessionFunctions, StoreFunctions, StoreAllocator>
+        {
             // Skips (1) entries with versions that were part of prior checkpoint; and (2) future entries in fuzzy region
-            if (SkipRecord(sublogIdx, replayContext.inFuzzyRegion, entryPtr, length, asReplica))
+            if (SkipRecord(sublogIdx, replayContext.inFuzzyRegion, header, entryPtr, length, asReplica))
                 return false;
 
             var bufferPtr = (byte*)Unsafe.AsPointer(ref replayContext.objectOutputBuffer[0]);
@@ -544,9 +561,8 @@ namespace Garnet.server
         /// <param name="asReplica"></param>
         /// <returns></returns>
         /// <exception cref="GarnetException"></exception>
-        bool SkipRecord(int sublogIdx, bool inFuzzyRegion, byte* entryPtr, int length, bool asReplica)
+        bool SkipRecord(int sublogIdx, bool inFuzzyRegion, AofHeader header, byte* entryPtr, int length, bool asReplica)
         {
-            var header = *(AofHeader*)entryPtr;
             return (asReplica && inFuzzyRegion) ? // Buffer logic only for AOF version > 1
                 BufferNewVersionRecord(sublogIdx, header, entryPtr, length) :
                 IsOldVersionRecord(header);
