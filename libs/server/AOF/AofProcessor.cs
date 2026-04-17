@@ -367,7 +367,7 @@ namespace Garnet.server
                 var keyPtr = entryPtr + sizeof(AofShardedHeader);
                 key = SpanByte.FromLengthPrefixedPinnedPointer(keyPtr);
                 postKeyPtr = keyPtr + key.TotalSize();
-                var hash = GarnetKeyComparer.StaticGetHashCode64((FixedSpanByteKey)key);
+                var hash = GarnetLog.HASH(key);
                 var seqNum = ((AofShardedHeader*)entryPtr)->sequenceNumber;
                 storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogKeySequenceNumber(sublogIdx, hash, seqNum);
                 keyHash = hash;
@@ -586,8 +586,7 @@ namespace Garnet.server
                 case AofHeaderType.ShardedHeader:
                     var shardedHeader = *(AofShardedHeader*)ptr;
                     sequenceNumber = shardedHeader.sequenceNumber;
-                    var _replayTaskIdx = header.replayTag % storeWrapper.serverOptions.AofReplayTaskCount;
-                    return replayTaskIdx == _replayTaskIdx;
+                    return replayTaskIdx == storeWrapper.appendOnlyFile.Log.GetReplayTaskIdxFromTag(header.replayTag);
                 // If no key to inspect, check bit vector for participating replay tasks in the transaction
                 // NOTE: HeaderType transactions include MULTI-EXEC transactions, custom txn procedures, and any operation that executes across physical and virtual sublogs (e.g. checkpoint, flushdb)
                 case AofHeaderType.TransactionHeader:
@@ -614,7 +613,7 @@ namespace Garnet.server
             {
                 // Extract replay tag from header to determine target replay task
                 case AofHeaderType.ShardedHeader:
-                    return header.replayTag % storeWrapper.serverOptions.AofReplayTaskCount;
+                    return storeWrapper.appendOnlyFile.Log.GetReplayTaskIdxFromTag(header.replayTag);
                 // If no key to inspect, check bit vector for participating replay tasks in the transaction
                 // NOTE: HeaderType transactions include MULTI-EXEC transactions, custom txn procedures, and any operation that executes across physical and virtual sublogs (e.g. checkpoint, flushdb)
                 case AofHeaderType.TransactionHeader:

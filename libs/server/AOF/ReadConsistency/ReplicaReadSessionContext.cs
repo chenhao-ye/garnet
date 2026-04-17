@@ -147,7 +147,7 @@ namespace Garnet.server
             try
             {
                 ResetTimeoutCts();
-                appendOnlyFile.readConsistencyManager.BeforeConsistentReadKey(hash & long.MaxValue, ref replicaReadContext, timeoutCts.Token);
+                appendOnlyFile.readConsistencyManager.BeforeConsistentReadKey(hash, ref replicaReadContext, timeoutCts.Token);
             }
             finally
             {
