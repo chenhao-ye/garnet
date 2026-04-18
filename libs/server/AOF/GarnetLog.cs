@@ -83,7 +83,33 @@ namespace Garnet.server
         /// <returns></returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static long HASH(ReadOnlySpan<byte> key)
-            => GarnetKeyComparer.Instance.GetHashCode64((FixedSpanByteKey)key) & long.MaxValue;
+            => GarnetKeyComparer.StaticGetHashCode64((FixedSpanByteKey)key);
+
+        // Routing decomposes the hash into two independent dimensions:
+        //   physicalSublogIdx = hash % physicalCount       (low part)
+        //   replayTag         = (hash / physicalCount) & 0x3F  (next 6 bits, encoded in AOF header)
+        //   replayTaskIdx     = replayTag % replayCount    (replica derives this from header)
+        //   virtualSublogIdx  = physicalSublogIdx * replayCount + replayTaskIdx
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetPhysicalSublogIdx(long hash) => (int)((ulong)hash % (ulong)serverOptions.AofPhysicalSublogCount);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public byte GetReplayTag(long hash) => (byte)(((ulong)hash / (ulong)serverOptions.AofPhysicalSublogCount) & AofHeader.ReplayTagMask);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetReplayTaskIdx(long hash) => GetReplayTaskIdxFromTag(GetReplayTag(hash));
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetVirtualSublogIdx(long hash) => GetPhysicalSublogIdx(hash) * serverOptions.AofReplayTaskCount + GetReplayTaskIdx(hash);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetPhysicalSublogIdx(ReadOnlySpan<byte> key) => GetPhysicalSublogIdx(HASH(key));
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public byte GetReplayTag(ReadOnlySpan<byte> key) => GetReplayTag(HASH(key));
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetReplayTaskIdx(ReadOnlySpan<byte> key) => GetReplayTaskIdx(HASH(key));
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetVirtualSublogIdx(ReadOnlySpan<byte> key) => GetVirtualSublogIdx(HASH(key));
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetReplayTaskIdxFromTag(byte replayTag) => replayTag % serverOptions.AofReplayTaskCount;
 
         public AofAddress BeginAddress
         {
@@ -560,7 +586,7 @@ namespace Garnet.server
             else
             {
                 var hash = HASH(key);
-                var replayTag = (byte)((hash / serverOptions.AofPhysicalSublogCount) & AofHeader.ReplayTagMask);
+                var replayTag = GetReplayTag(hash);
                 var shardedHeader = new AofShardedHeader
                 {
                     basicHeader = new AofHeader
@@ -586,7 +612,7 @@ namespace Garnet.server
                 // Multi physical sublogs and multi-replay support
                 else
                 {
-                    var physicalSublogIdx = hash % serverOptions.AofPhysicalSublogCount;
+                    var physicalSublogIdx = GetPhysicalSublogIdx(hash);
                     shardedLog.sublog[physicalSublogIdx].Enqueue(
                         shardedHeader,
                         key,
@@ -627,7 +653,7 @@ namespace Garnet.server
             else
             {
                 var hash = HASH(key);
-                var replayTag = (byte)((hash / serverOptions.AofPhysicalSublogCount) & AofHeader.ReplayTagMask);
+                var replayTag = GetReplayTag(hash);
                 var shardedHeader = new AofShardedHeader
                 {
                     basicHeader = new AofHeader
@@ -652,7 +678,7 @@ namespace Garnet.server
                 // Multi physical sublogs and multi-replay support
                 else
                 {
-                    var physicalSublogIdx = hash % serverOptions.AofPhysicalSublogCount;
+                    var physicalSublogIdx = GetPhysicalSublogIdx(hash);
                     shardedLog.sublog[physicalSublogIdx].Enqueue(
                         shardedHeader,
                         key,
@@ -691,7 +717,7 @@ namespace Garnet.server
             else
             {
                 var hash = HASH(key);
-                var replayTag = (byte)((hash / serverOptions.AofPhysicalSublogCount) & AofHeader.ReplayTagMask);
+                var replayTag = GetReplayTag(hash);
                 var shardedHeader = new AofShardedHeader
                 {
                     basicHeader = new AofHeader
@@ -716,7 +742,7 @@ namespace Garnet.server
                 // Multi physical sublogs and multi-replay support
                 else
                 {
-                    var physicalSublogIdx = hash % serverOptions.AofPhysicalSublogCount;
+                    var physicalSublogIdx = GetPhysicalSublogIdx(hash);
                     shardedLog.sublog[physicalSublogIdx].Enqueue(
                         shardedHeader,
                         key,

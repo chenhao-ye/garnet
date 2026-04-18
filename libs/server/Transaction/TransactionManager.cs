@@ -519,8 +519,8 @@ namespace Garnet.server
             {
                 // Used with parallel replay, this BitVector will track which replay tasks should participate in the parallel replay of this custom proc.
                 proc.replayTaskAccessVector ??= [.. Enumerable.Range(0, appendOnlyFile.Log.Size).Select(_ => new BitVector(AofTransactionHeader.ReplayTaskAccessVectorBytes))];
-                var physicalSublogIdx = (int)(hash % appendOnlyFile.Log.Size);
-                var replayIdx = (int)(hash % appendOnlyFile.Log.ReplayTaskCount);
+                var physicalSublogIdx = appendOnlyFile.Log.GetPhysicalSublogIdx(hash);
+                var replayIdx = appendOnlyFile.Log.GetReplayTaskIdx(hash);
 
                 // Mark physical sublog participating in custom txn proc to help with replay coordination.
                 proc.physicalSublogAccessVector |= 1UL << physicalSublogIdx;
@@ -559,8 +559,8 @@ namespace Garnet.server
             {
                 ref var key = ref txnKeysParseState.GetArgSliceByRef(i);
                 var hash = GarnetLog.HASH(key.ReadOnlySpan);
-                var physicalSublogIdx = (int)(hash % appendOnlyFile.Log.Size);
-                var replayIdx = (int)(hash % appendOnlyFile.Log.ReplayTaskCount);
+                var physicalSublogIdx = appendOnlyFile.Log.GetPhysicalSublogIdx(hash);
+                var replayIdx = appendOnlyFile.Log.GetReplayTaskIdx(hash);
                 physicalSublogAccessVector |= 1UL << physicalSublogIdx;
                 // Calculate sublog access vector for participating replay tasks
                 participantCount += virtualSublogAccessVector[physicalSublogIdx].SetBit(replayIdx) ? 1 : 0;

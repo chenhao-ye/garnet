@@ -94,8 +94,7 @@ namespace Resp.benchmark
             while (true)
             {
                 var keyData = Encoding.ASCII.GetBytes(Generator.CreateHexId(size: Math.Max(options.KeyLength, 8)));
-                var hash = GarnetLog.HASH(keyData.AsSpan());
-                var physicalSublogIdx = (int)(hash % garnetLog.Size);
+                var physicalSublogIdx = garnetLog.GetPhysicalSublogIdx(keyData.AsSpan());
                 if (physicalSublogIdx == threadId) return keyData;
             }
         }
@@ -211,8 +210,7 @@ namespace Resp.benchmark
                                 }
                                 else
                                 {
-                                    var hash = GarnetLog.HASH(new ReadOnlySpan<byte>(keyPtr, keyData.Length));
-                                    var replayTag = (byte)((hash / options.AofPhysicalSublogCount) & AofHeader.ReplayTagMask);
+                                    var replayTag = garnetLog.GetReplayTag(new ReadOnlySpan<byte>(keyPtr, keyData.Length));
                                     var extendedAofHeader = new AofShardedHeader
                                     {
                                         basicHeader = new AofHeader

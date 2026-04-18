@@ -61,10 +61,7 @@ namespace Garnet.server
         /// <param name="keyHash"></param>
         /// <returns></returns>
         long GetSublogFrontierSequenceNumber(long keyHash)
-        {
-            var sublogIdx = (byte)(keyHash % serverOptions.AofVirtualSublogCount);
-            return vsrs[sublogIdx].GetFrontierSequenceNumber(keyHash);
-        }
+            => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].GetFrontierSequenceNumber(keyHash);
 
         /// <summary>
         /// Get key specific sequence number for provided hash
@@ -72,10 +69,7 @@ namespace Garnet.server
         /// <param name="keyHash"></param>
         /// <returns></returns>
         long GetKeySequenceNumber(long keyHash)
-        {
-            var sublogIdx = (byte)(keyHash % serverOptions.AofVirtualSublogCount);
-            return vsrs[sublogIdx].GetKeySequenceNumber(keyHash);
-        }
+            => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].GetKeySequenceNumber(keyHash);
 
         /// <summary>
         /// Update physical sublog max sequence number
@@ -97,18 +91,13 @@ namespace Garnet.server
         /// <param name="sequenceNumber"></param>
         public void UpdateVirtualSublogMaxSequenceNumber(int virtualSublogIdx, long sequenceNumber)
             => vsrs[virtualSublogIdx].UpdateMaxSequenceNumber(sequenceNumber);
-
         /// <summary>
-        /// Update key sequence number of virtual sublog associated with the specified virtual sublogIdx.
+        /// Update key sequence number when both the virtual sublog index and key hash are already known.
+        /// Caller must guarantee virtualSublogIdx == appendOnlyFile.Log.GetVirtualSublogIdx(keyHash).
         /// </summary>
-        /// <param name="virtualSublogIdx"></param>
-        /// <param name="key"></param>
-        /// <param name="sequenceNumber"></param>
-        public void UpdateVirtualSublogKeySequenceNumber(int virtualSublogIdx, ReadOnlySpan<byte> key, long sequenceNumber)
-        {
-            var keyHash = GarnetLog.HASH(key);
-            vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void UpdateVirtualSublogKeySequenceNumber(int virtualSublogIdx, long keyHash, long sequenceNumber)
+            => vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
 
         /// <summary>
         /// Update key sequence number of virtual sublog associated with the specified keyHash.
@@ -116,10 +105,7 @@ namespace Garnet.server
         /// <param name="keyHash"></param>
         /// <param name="sequenceNumber"></param>
         public void UpdateVirtualSublogKeySequenceNumber(long keyHash, long sequenceNumber)
-        {
-            var virtualSublogIdx = (byte)(keyHash % serverOptions.AofVirtualSublogCount);
-            vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
-        }
+            => UpdateVirtualSublogKeySequenceNumber(appendOnlyFile.Log.GetVirtualSublogIdx(keyHash), keyHash, sequenceNumber);
 
         /// <summary>
         /// Ensures that the specified replica read session context is synchronized with the current session version.
@@ -148,7 +134,7 @@ namespace Garnet.server
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void VerifyKeyFreshness(long hash, ref ReplicaReadSessionContext replicaReadSessionContext, CancellationToken ct)
         {
-            var virtualSublogIdx = (short)(hash % serverOptions.AofVirtualSublogCount);
+            var virtualSublogIdx = (short)appendOnlyFile.Log.GetVirtualSublogIdx(hash);
 
             // Here we have to wait for replay to catch up
             // Don't have to wait if reading from same sublog or maximumSessionTimestamp is behind the sublog frontier timestamp
