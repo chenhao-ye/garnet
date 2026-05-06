@@ -240,3 +240,5 @@ In addition to the correct read atomicity, the proposed new read protocol has so
 **1. No special txn replay protocol with blocking/lock holding**: A write txn is replayed just like a batch of log records stamped at the commit timestamp. One sublog does not need to wait on other participating sublogs, nor does it need to hold locking until all participating sublogs done. Replay threads remain never blocked by readers.
 
 **2. The atomic reads do not need a physically/materially consistent replica image**: We read a value whenever it is ready; that value can be overwritten by replay threads after our reads. We don't need a wallclock moment that all keys are consistent at a timestamp. Everything in replica remains barrier-free.
+
+**3. No deadlock issues at all**: We read keys one by one, with only a bucket latch to protect each read's integrity. We never hold a batch of keys's locks together. The atomicity of the read transaction is protected by the timestamps, not by the locks.
