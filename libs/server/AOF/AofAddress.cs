@@ -5,6 +5,8 @@ using System;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Garnet.server
@@ -29,13 +31,8 @@ namespace Garnet.server
         /// </summary>
         public Span<byte> Span
         {
-            get
-            {
-                fixed (long* ptr = addresses)
-                {
-                    return new Span<byte>((byte*)ptr, sizeof(long) * length);
-                }
-            }
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => MemoryMarshal.CreateSpan(ref Unsafe.As<long, byte>(ref addresses[0]), sizeof(long) * length);
         }
 
         /// <summary>
