@@ -197,39 +197,42 @@ ReadBatch(session, K_1, ..., K_n):
     # now we only need to care about read atomicity
 
   retry:
-    T_min := max(SCT, max( KRT(K_i) for i := 1..n ))   # lower bound
-    T_max := +inf                                      # upper bound
+    # Per-batch state: snapshot range and read buffer.
+    Txn.T_min := max(SCT, max( KRT(K_i) for i := 1..n ))
+    Txn.T_max := +inf
+    Txn.val_buffer := {}
 
     # -- READ READY KEYS --
-    # remember keys whose sublogs are not yet past T_min; read them later
-    pending_sublogs := {}    # maps L to list of (i, K)
-    for i := 1..n:
+    # remember keys whose sublogs are not yet past Txn.T_min; read them later
+    pending_sublogs := {}    # maps L to list of K
+    for K_i in {K_1, ..., K_n}:
         L_i := get_sublog(K_i)
         T_L := LRT(L_i)
-        if T_L > T_min:                                 # ready to read
-            val_buffer[i] := store_read(K_i)
-            T_max := min(T_max, T_L)                    # tighten upper bound
-            T_min := max(T_min, KRT(K_i))               # tighten lower bound
-            if T_min >= T_max: goto retry               # range collapsed
+        if T_L > Txn.T_min:                             # ready to read
+            if not read_and_tighten(Txn, K_i, T_L): goto retry
         else:
-            pending_sublogs[L_i].add(i, K_i)
+            pending_sublogs[L_i].add(K_i)
 
     # -- READ PENDING KEYS --
     while pending_sublogs is not empty:
-        wait on L_j in pending_sublogs: wake up if ( T_L := LRT(L_j) ) > T_min:
-            for i, K_i in pending_sublogs[L_j]:
-                val_buffer[i] := store_read(K_i)
-                T_max := min(T_max, T_L)
-                T_min := max(T_min, KRT(K_i))
-                if T_min >= T_max: goto retry
+        wait on L_j in pending_sublogs: wake up if ( T_L := LRT(L_j) ) > Txn.T_min:
+            for K_i in pending_sublogs[L_j]:
+                if not read_and_tighten(Txn, K_i, T_L): goto retry
             pending_sublogs.remove(L_j)
 
     # -- UPDATE SESSION STATE --
-    # any t in (T_min, T_max) is a valid T_txn; use T_min as the new SCT lower bound
-    S.SCT := T_min
+    # any t in (Txn.T_min, Txn.T_max) is a valid T_txn; use T_min as the new SCT lower bound
+    S.SCT := Txn.T_min
     S.lastL := any participating L_i  # we can actually make lastL a bitmask
 
-    return val_buffer
+    return Txn.val_buffer
+
+# Read one key, tighten Txn's snapshot range. Return false if the range collapsed.
+read_and_tighten(Txn, K_i, T_L):
+    Txn.val_buffer[K_i] := store_read(K_i)
+    Txn.T_max := min(Txn.T_max, T_L)        # tighten upper bound (T_L sampled before store_read)
+    Txn.T_min := max(Txn.T_min, KRT(K_i))   # tighten lower bound (KRT sampled after store_read)
+    return Txn.T_min < Txn.T_max
 ```
 
 The tightening is straightforward: for each `store_read` returning `V_i`, the value's validity window is `(KRT(K_i), LRT(L_i))` at read time. Acquiring `LRT` before the read gives a conservative `T_max` bound (LRT only grows, so `T_L` is at most the actual read-time LRT). Acquiring `KRT` after the read catches concurrent replay updates: if a replay applied a new record on `K_i` concurrently with store_read, `KRT(K_i)` rises, and `T_min` rises with it.
