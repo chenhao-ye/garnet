@@ -2,7 +2,7 @@
 
 ## 0. Terminology
 
-We use the terminlogy as defined in the paper.
+We use the terminology as defined in the paper.
 
 | Name     | Full name                             | Code alias                               |
 |----------|---------------------------------------|------------------------------------------|
@@ -13,13 +13,13 @@ We use the terminlogy as defined in the paper.
 ### validity window
 
 Recall in the single-key read protocol, we define **validity window**:
-For each key `K` on virtual sublog `L`, the validity window of `K`'s current value is `(KRT(K), LRT(L))`. The bounds are exclusive, i.e., `KRT(K) < t < LRT(L)`, because the timestamp is not unique, and we cannot differentiate the order of mutation happened in the same timestamp.
+For each key `K` on virtual sublog `L`, the validity window of `K`'s current value is `(KRT(K), LRT(L))`. The bounds are exclusive, i.e., `KRT(K) < t < LRT(L)`, because timestamps are not unique, and we cannot differentiate the order of mutations that happen at the same timestamp.
 
-```
+```text
    logical time -->
             KRT(K)              LRT(L)
               |                    |
-   -----------|--------------------|
+   -----------x------------------->|
               ^                    ^
             current             applied up to here
             value set           (no other new version of this key up to here)
@@ -83,7 +83,7 @@ retry:
 
     # -- READ --
     for i := 1..n:
-        v_i := store_read(K_i)          # acquires per-key latch internally
+        V_i := store_read(K_i)          # acquires per-key latch internally
 
     # -- VALIDATE --
     if exists i such that KRT(K_i) > S.SCT:
@@ -98,7 +98,7 @@ retry:
 ### 2.2 Why This Does Not Read at a Single `T_txn`
 
 `S.SCT` is the running maximum of `KRT(K_i)`, whose value is incremented when iterating over keys.
-*After `S.SCT` is finalized, it is not validated against every key's `LRT` to confirm it falls within an overlape of all keys' validity window (i.e., `S.SCT` is still smaller than every key's `LRT`).*
+*After `S.SCT` is finalized, it is not validated against every key's `LRT` to confirm it falls within an overlap of all keys' validity windows (i.e., `S.SCT` is still smaller than every key's `LRT`).*
 The current validation phase is only to validate against KRT again to ensure no concurrent replay updating the key.
 
 ```text
@@ -129,9 +129,9 @@ Replica state: `L_A` is slow and has not yet applied the update to `K_A`; `L_B` 
                                                              ^T_b (K_B := new_b applied)
 ```
 
-The validity windows of the current values `{old_a, new_b}` have no overlap, so if a transactional read on `K_A` and `K_B` see these two value, it should detect non-atomicity and rejected the values:
+The validity windows of the current values `{old_a, new_b}` have no overlap, so if a transactional read on `K_A` and `K_B` sees these two values, it should detect non-atomicity and reject the values:
 
-```
+```text
    K_A validity:    (=========)
                     |         |
                     ^T_old    ^LRT(L_A) < T_a
@@ -150,10 +150,10 @@ PREPARE:
         S.SCT := KRT(K_A) = T_old;   lastL := L_A
                                                     # now S.SCT is T_old
   K_B:  lastL = L_A != L_B => check
-            check pass w/o wat: S.SCT < LRT(L_B)
+            S.SCT < LRT(L_B) => check passes w/o waiting
                                                     # advance S.SCT to T_b
-                                                    # however, this S.SCT as T_b is invalid 
-                                                    # for old_a's window (T_old, LRT(L_A))
+                                                    # however, this S.SCT = T_b is outside
+                                                    # old_a's validity window (T_old, LRT(L_A))
 READ:    K_A = old_a,   K_B = new_b
 RETURN:  {K_A = old_a, K_B = new_b}
 ```
@@ -161,14 +161,14 @@ RETURN:  {K_A = old_a, K_B = new_b}
 The returned values `{old_a, new_b}` is not a valid state on the primary.
 Recall the only valid results are: `{old_a, old_b}`, `{new_a, old_b}`, `{new_a, new_b}`.
 
-### 2.3 Locks on Txn Replay Is Only a Partial Fix
+### 2.3 Locks on Txn Replay Are Only a Partial Fix
 
-Existing transaction replay protocol holds the locks until all sublogs finish replay.
-Such lock holding can help ensure that this write transaction itself is visible atomically, but it does not ensures the read protocol see the system states atomically.
-Note a point-write is also equivalent to a transaction with a single key, so the above example of two point writes can be replaced with two write transactions.
-Despite each of write transaction is visible atomically, the read see an inconsistent state.
+The existing transaction replay protocol holds locks until every participating sublog finishes replay.
+Such lock holding can help align the validity windows of the transaction's keys on a single timestamp `T_X`, but it does not ensure the read protocol sees the system state atomically.
+Note that a point-write is equivalent to a single-key transaction, so the example above of two point writes can be replaced with two write transactions.
+Even though each write transaction is itself committed atomically on the replica, the reader still sees an inconsistent state.
 
-More fundamentally, we argue that replaying a write transaction should not do anything special other than replaying all records at the commit marker's timestamp. No cross-sublog waiting or extra lock holding.
+More fundamentally, we argue that replaying a write transaction should not do anything special beyond replaying all records as if they were independent writes. No cross-sublog waiting, no extra lock holding.
 
 Consider the following two cases:
 
@@ -177,68 +177,74 @@ Consider the following two cases:
 
 The two cases above are equivalent as if two writes happen exactly at `T_X`. Therefore, the replay protocol should not treat them differently. Replaying txn log records (case 1) should the same as replaying two regular log records stamped at `T_X` (case 2).
 
-The transaction read require a different fix instead of relying on txn-replay threads to hold the locks.
+The transactional read protocol requires a different fix instead of relying on txn-replay threads to hold locks.
 
 ## 3. Proposed Read Transaction Protocol
 
-We now propose a different read protocol that can ensure the atomicty of a read transaction. This protocol is still based on the validity window.
+We now propose a different read protocol that ensures the atomicity of a read transaction.
+The goal is the same as before: read every key at a single timestamp `T_txn` (atomicity), with `T_txn > SCT` (prefix-consistency against previous session reads).
 
-The goal is to read every keys at a timestamp `T_txn` (atomicity), and this timestamp must be larger than session's `SCT` (prefix-consistency against previous session operations).
+The protocol is still based on the validity window.
+It tracks a time window for `T_txn`, denoted as `(T_min, T_max)`. The transaction fails and must retry if such a window collapses (i.e., `T_min >= T_max`, so no `T_txn` possible).
 
 ```text
 ReadBatch(session, K_1, ..., K_n):
-    # -- PREPRAE --
-    # wait until every participating sublogs are replayed over SCT for prefix-consistency
+    # -- PREPARE --
+    # wait until every participating sublog has replayed past SCT for prefix-consistency
     for i := 1..n:
         L_i := get_sublog(K_i)
-        wait L_i replayed until LRT(L_i) > SCT
+        wait until LRT(L_i) > SCT
     # now we only need to care about read atomicity
 
   retry:
-    # find max KRT:
-    # note this for-loop is not merged with the previous for-loop 
-    # because the previous one can wait, and KRT may be updated during waiting
-    T_txn := max(SCT, max( KRT(K_i) for i := 1..n ))  # aim to execute the reads at T_txn
-    
+    T_min := max(SCT, max( KRT(K_i) for i := 1..n ))   # lower bound
+    T_max := +inf                                      # upper bound
+
     # -- READ READY KEYS --
-    # remember keys that are not replayed to T_txn yet; read them later
-    pending_sublogs := {}  # maps L to (i, K) 
+    # remember keys whose sublogs are not yet past T_min; read them later
+    pending_sublogs := {}    # maps L to list of (i, K)
     for i := 1..n:
         L_i := get_sublog(K_i)
-        if LRT(L_i) > T_txn:  # ready to read
-            val_buffer[i] = store_read(K_i)
-            if KRT(K_i) > T_txn:  # validate KRT is not updated
-              goto retry                           # must retry with a new T_txn
+        T_L := LRT(L_i)
+        if T_L > T_min:                                 # ready to read
+            val_buffer[i] := store_read(K_i)
+            T_max := min(T_max, T_L)                    # tighten upper bound
+            T_min := max(T_min, KRT(K_i))               # tighten lower bound
+            if T_min >= T_max: goto retry               # range collapsed
         else:
             pending_sublogs[L_i].add(i, K_i)
-    
+
     # -- READ PENDING KEYS --
-    wait on L_j in pending_sublogs: wake up if LRT(L_j) > T_txn:
-        # do the same key read
-        for i, K_i in pending_sublogs[L_j]:
-            val_buffer[i] = store_read(K_i)
-            if KRT(K_i) > T_txn:
-                goto retry                         # must retry with a new T_txn
-    
+    while pending_sublogs is not empty:
+        wait on L_j in pending_sublogs: wake up if ( T_L := LRT(L_j) ) > T_min:
+            for i, K_i in pending_sublogs[L_j]:
+                val_buffer[i] := store_read(K_i)
+                T_max := min(T_max, T_L)
+                T_min := max(T_min, KRT(K_i))
+                if T_min >= T_max: goto retry
+            pending_sublogs.remove(L_j)
+
     # -- UPDATE SESSION STATE --
-    S.SCT := T_max
-    S.lastL <- can be any L_i (we can actually make lastL a bitmask)
+    # any t in (T_min, T_max) is a valid T_txn; use T_min as the new SCT lower bound
+    S.SCT := T_min
+    S.lastL := any participating L_i  # we can actually make lastL a bitmask
 
     return val_buffer
 ```
 
-Note the above two abort only happen if a concurrent replay thread overwrite the desired value (at `T_txn`) before we complete reads.
-We need to figure out a new `T_txn` for this transaction.
-As a future optimization, the abort can be a partial redo instead of redo everything, but that requires more metadata bookkeeping (basically we remember every key's windows) to determine which values are required. *(Probably not worth for the complexity, given the minor gain only at a concurrent race.)*
+The tightening is straightforward: for each `store_read` returning `V_i`, the value's validity window is `(KRT(K_i), LRT(L_i))` at read time. Acquiring `LRT` before the read gives a conservative `T_max` bound (LRT only grows, so `T_L` is at most the actual read-time LRT). Acquiring `KRT` after the read catches concurrent replay updates: if a replay applied a new record on `K_i` concurrently with store_read, `KRT(K_i)` rises, and `T_min` rises with it.
+If `T_min >= T_max`, no `T_txn` is consistent with every read so far; we retry with fresh samples.
 
-Also note the wait on pending_sublogs: for lower abort rate upon race, it should not be a sequential scan for every sublog (wait `L_1`, then wait `L_2`, etc). It should be wake up for *any* sublog that goes beyond `T_txn` and execute the reads the values immediately before those desired values are overwritten by replay threads.
+The retry restarts the whole batch. As a future optimization, the abort can be a partial redo instead of redoing everything, but that requires more metadata bookkeeping (basically remembering every key's read window) to determine which values are still usable. *(Probably not worth the complexity, given the gain is only at a concurrent race.)*
+
+Also note the wait on `pending_sublogs`: for a lower abort rate under contention, it should not be a sequential scan (wait `L_1`, then wait `L_2`, ...). It should wake up for *any* sublog whose `LRT` goes past `T_min` and read the values immediately, before those values are overwritten by replay threads.
 
 ### 3.1 Discussion and Analysis
 
 In addition to the correct read atomicity, the proposed new read protocol has some very nice properties:
 
-**1. No special txn replay protocol with blocking/lock holding**: A write txn is replayed just like a batch of log records stamped at the commit timestamp. One sublog does not need to wait on other participating sublogs, nor does it need to hold locking until all participating sublogs done. Replay threads remain never blocked by readers.
+**1. No special txn-replay protocol with blocking/lock holding**: A write transaction is replayed just like a batch of log records stamped at the commit timestamp. One sublog does not need to wait on other participating sublogs, nor does it need to hold locks until all participating sublogs are done. Replay threads are never blocked by readers.
 
-**2. The atomic reads do not need a physically/materially consistent replica image**: We read a value whenever it is ready; that value can be overwritten by replay threads after our reads. We don't need a wallclock moment that all keys are consistent at a timestamp. Everything in replica remains barrier-free.
+**2. The atomic reads do not need a wall-clock-consistent replica image**: We read a value whenever it is ready; that value can be overwritten by replay threads after our read. We don't need a wall-clock moment when all keys hold their snapshot values simultaneously. Everything on the replica remains barrier-free.
 
-**3. No deadlock issues at all**: We read keys one by one, with only a bucket latch to protect each read's integrity. We never hold a batch of keys's locks together. The atomicity of the read transaction is protected by the timestamps, not by the locks.
+**3. No deadlock issues at all**: We read keys one by one, with only a bucket latch protecting each individual read. We never hold a batch of keys' locks together. Atomicity is protected by timestamps, not by locks.
