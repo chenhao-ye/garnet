@@ -248,14 +248,6 @@ namespace Garnet
         public int AofSizeLimitEnforceFrequencySecs { get; set; }
 
         [IntRangeValidation(0, int.MaxValue)]
-        [Option("aof-refresh-freq", Required = false, HelpText = "AOF replication (safe tail address) refresh frequency in milliseconds. 0 = auto refresh after every enqueue.")]
-        public int AofReplicationRefreshFrequencyMs { get; set; }
-
-        [IntRangeValidation(0, int.MaxValue)]
-        [Option("subscriber-refresh-freq", Required = false, HelpText = "Subscriber (safe tail address) refresh frequency in milliseconds (for pub-sub). 0 = auto refresh after every enqueue.")]
-        public int SubscriberRefreshFrequencyMs { get; set; }
-
-        [IntRangeValidation(0, int.MaxValue)]
         [Option("compaction-freq", Required = false, HelpText = "Background hybrid log compaction frequency in seconds. 0 = disabled (compaction performed before checkpointing instead)")]
         public int CompactionFrequencySecs { get; set; }
 
@@ -870,7 +862,6 @@ namespace Garnet
                 AofTailWitnessFreq = AofTailWitnessFreq,
                 AofReadWithTimestamp = string.IsNullOrEmpty(AofReadProtocol) || AofReadProtocol.Equals("timestamp", StringComparison.OrdinalIgnoreCase),
                 AofSnapshotFreq = AofSnapshotFreq > 0 ? AofSnapshotFreq : 5,
-                AofReplicationRefreshFrequencyMs = AofReplicationRefreshFrequencyMs,
                 CommitFrequencyMs = CommitFrequencyMs,
                 WaitForCommit = WaitForCommit.GetValueOrDefault(),
                 AofSizeLimit = AofSizeLimit,
