@@ -2,9 +2,8 @@
 // Licensed under the MIT license.
 
 using System.Net;
-using Embedded.server;
 using Garnet.client;
-using Garnet.cluster;
+using Garnet.common;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using Tsavorite.core;
@@ -25,10 +24,9 @@ namespace Resp.benchmark
         bool initialized = false;
         readonly ILogger logger = null;
 
-        // Direct replay mode (InProc): bypass RESP, call ReplicaReplayDriver directly
-        ReplicaReplayDriver replayDriver;
-
         public long Size => previousAddress - startAddress;
+
+        public byte[] buffer;
 
         public AofSync(AofBench aofBench, int threadId, long startAddress, Options options, AofGen aofGen)
         {
@@ -40,7 +38,14 @@ namespace Resp.benchmark
             this.startAddress = startAddress;
             previousAddress = startAddress;
 
-            if (options.Client != ClientType.InProc)
+            if (options.Client == ClientType.InProc)
+            {
+                buffer = GC.AllocateArray<byte>(2 << options.AofPageSizeBits(), pinned: true);
+                primaryId = aofBench.primaryId;
+                if (options.EnableCluster)
+                    aofBench.sessions[0].clusterSession.UnsafeSetConfig(replicaOf: primaryId);
+            }
+            else
             {
                 // Get replica information
                 var replicaNode = GetClusterNodes(options);
@@ -60,7 +65,6 @@ namespace Resp.benchmark
 
         public void Dispose()
         {
-            replayDriver?.SuspendReplay();
             cts.Cancel();
             cts.Dispose();
         }
@@ -96,16 +100,24 @@ namespace Resp.benchmark
             return replicaNode;
         }
 
-        void InitializeReplayStream()
+        unsafe void InitializeReplayStream()
         {
             if (options.Client == ClientType.InProc)
             {
-                // Direct mode: initialize ReplicaReplayDriver without going through RESP
-                var clusterProvider = (ClusterProvider)aofBench.server.StoreWrapper.clusterProvider;
-                var networkSender = new EmbeddedNetworkSender();
-                clusterProvider.replicationManager.InitializeReplicaReplayDriver(threadId, networkSender);
-                replayDriver = clusterProvider.replicationManager.ReplicaReplayDriverStore.GetReplayDriver(threadId);
-                replayDriver.ResumeReplay();
+                fixed (byte* ptr = buffer)
+                {
+                    var respMessageSize = WriterClusterAppendLog(
+                        ptr,
+                        buffer.Length,
+                        nodeId: primaryId,
+                        physicalSublogIdx: threadId,
+                        previousAddress: -1,
+                        currentAddress: -1,
+                        nextAddress: -1,
+                        payloadPtr: -1,
+                        payloadLength: 0);
+                    _ = aofBench.sessions[threadId].TryConsumeMessages(ptr, respMessageSize);
+                }
             }
             else
             {
@@ -121,6 +133,56 @@ namespace Resp.benchmark
             }
         }
 
+        unsafe int WriterClusterAppendLog(
+            byte* bufferPtr,
+            int bufferLength,
+            string nodeId,
+            int physicalSublogIdx,
+            long previousAddress,
+            long currentAddress,
+            long nextAddress,
+            long payloadPtr,
+            int payloadLength)
+        {
+            var CLUSTER = "$7\r\nCLUSTER\r\n"u8;
+            var appendLog = "APPENDLOG"u8;
+
+            var curr = bufferPtr;
+            var end = bufferPtr + bufferLength;
+
+            var arraySize = 8;
+
+            // 
+            if (!RespWriteUtils.TryWriteArrayLength(arraySize, ref curr, end))
+                throw new GarnetException("Not enough space in buffer");
+            // 1
+            if (!RespWriteUtils.TryWriteDirect(CLUSTER, ref curr, end))
+                throw new GarnetException("Not enough space in buffer");
+            // 2
+            if (!RespWriteUtils.TryWriteBulkString(appendLog, ref curr, end))
+                throw new GarnetException("Not enough space in buffer");
+            // 3
+            if (!RespWriteUtils.TryWriteAsciiBulkString(nodeId, ref curr, end))
+                throw new GarnetException("Not enough space in buffer");
+            // 4
+            if (!RespWriteUtils.TryWriteArrayItem(physicalSublogIdx, ref curr, end))
+                throw new GarnetException("Not enough space in buffer");
+            // 5
+            if (!RespWriteUtils.TryWriteArrayItem(previousAddress, ref curr, end))
+                throw new GarnetException("Not enough space in buffer");
+            // 6
+            if (!RespWriteUtils.TryWriteArrayItem(currentAddress, ref curr, end))
+                throw new GarnetException("Not enough space in buffer");
+            // 7
+            if (!RespWriteUtils.TryWriteArrayItem(nextAddress, ref curr, end))
+                throw new GarnetException("Not enough space in buffer");
+            // 8
+            if (!RespWriteUtils.TryWriteBulkString(new Span<byte>((void*)payloadPtr, payloadLength), ref curr, end))
+                throw new GarnetException("Not enough space in buffer");
+
+            return (int)(curr - bufferPtr);
+        }
+
         public unsafe void Consume(byte* payloadPtr, int payloadLength, long currentAddress, long nextAddress, bool isProtected)
         {
             try
@@ -133,8 +195,20 @@ namespace Resp.benchmark
 
                 if (options.Client == ClientType.InProc)
                 {
-                    // Direct replay: bypass RESP serialization entirely
-                    replayDriver.Consume(payloadPtr, payloadLength, currentAddress, nextAddress, isProtected: false);
+                    fixed (byte* ptr = buffer)
+                    {
+                        var respMessageSize = WriterClusterAppendLog(
+                            ptr,
+                            buffer.Length,
+                            nodeId: primaryId,
+                            physicalSublogIdx: threadId,
+                            previousAddress,
+                            currentAddress,
+                            nextAddress,
+                            (long)payloadPtr,
+                            payloadLength);
+                        _ = aofBench.sessions[threadId].TryConsumeMessages(ptr, respMessageSize);
+                    }
                 }
                 else
                 {

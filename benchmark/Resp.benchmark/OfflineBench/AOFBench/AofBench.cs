@@ -5,7 +5,6 @@ using System.Diagnostics;
 using System.Net;
 using System.Text;
 using Embedded.server;
-using Garnet.cluster;
 using Garnet.common;
 using Garnet.server;
 using Tsavorite.core;
@@ -48,6 +47,7 @@ namespace Resp.benchmark
         long total_records_enqueued = 0;
 
         internal EmbeddedRespServer server;
+        internal RespServerSession[] sessions;
 
         volatile bool done = false;
 
@@ -70,16 +70,7 @@ namespace Resp.benchmark
             }
 
             server = new EmbeddedRespServer(serverOptions, Program.loggerFactory, new GarnetServerEmbedded());
-
-            // Configure node as replica directly via ClusterProvider (bypasses RESP)
-            if (options.Client == ClientType.InProc && options.EnableCluster && options.AofBenchType == AofBenchType.Replay)
-            {
-                var clusterProvider = (ClusterProvider)server.StoreWrapper.clusterProvider;
-                var config = clusterProvider.clusterManager.CurrentConfig.MakeReplicaOf(primaryId);
-                clusterProvider.clusterManager.UnsafeSetConfig(config);
-                clusterProvider.replicationManager.ResetReplicaReplayDriverStore();
-            }
-
+            sessions = server.GetRespSessions(options.AofPhysicalSublogCount);
             aofGen = new AofGen(options);
             aofSync = [.. Enumerable.Range(0, options.AofPhysicalSublogCount).Select(x => new AofSync(this, threadId: x, startAddress: 64, options, aofGen))];
         }
