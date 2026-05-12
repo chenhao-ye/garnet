@@ -232,13 +232,18 @@ namespace Garnet.common
         }
 
         /// <summary>
-        /// Producer-side: clear the completion flag so the channel can be reused
-        /// for a new batch. Caller must ensure no consumer is currently observing
-        /// <see cref="IsCompleted"/> (e.g. all consumers parked on a barrier).
+        /// Producer-side: reset the channel for a new batch. Caller must ensure no
+        /// consumer is currently reading (e.g. all consumers parked on a barrier
+        /// before Reset is called).
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Reset()
         {
+            producer->CachedHead = 0;
+            producer->BufferTail = 0;
+            Volatile.Write(ref producer->Tail, 0);
+            consumer->CachedTail = 0;
+            Volatile.Write(ref consumer->Head, 0);
             Volatile.Write(ref consumer->Completed, 0);
         }
 
