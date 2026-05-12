@@ -189,7 +189,7 @@ namespace Garnet.common
         {
             // Fast path: record available, or batch already completed and empty.
             if (TryRead(out record)) return true;
-            if (Volatile.Read(ref consumer->Completed) != 0) return false;
+            if (Volatile.Read(ref consumer->Completed) != 0) return TryRead(out record);
 
             // Slow path: spin until either a record is available or the channel is completed.
             var spinner = new SpinWait();
@@ -198,7 +198,7 @@ namespace Garnet.common
                 spinner.SpinOnce();
                 if (TryRead(out record)) return true;
             } while (Volatile.Read(ref consumer->Completed) == 0);
-            return false;
+            return TryRead(out record);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
