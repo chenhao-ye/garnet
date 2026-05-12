@@ -225,3 +225,4 @@ BenchmarkDotNet.Artifacts/
 .cr-release-packages/
 result/
 **.pyc
+libs/native/bftree-garnet/target/

@@ -91,7 +91,7 @@ namespace Resp.benchmark
             Console.WriteLine($"minCompletionPortThreads: {minCompletionPortThreads}");
             Console.WriteLine("----------------------------------");
 
-            if (opts.Client == ClientType.InProc)
+            if (opts.Client == ClientType.InProc || opts.AofBench)
             {
                 Console.WriteLine("------EMBEDDED-SERVER-CONFIG------");
                 Console.WriteLine($"aof:{opts.EnableAOF || opts.AofBench}");
@@ -184,7 +184,7 @@ namespace Resp.benchmark
 
             loggerFactory = CreateLoggerFactory(opts);
 
-            if (opts.Client != ClientType.InProc)
+            if (!(opts.Client == ClientType.InProc || opts.AofBench))
                 WaitForServer(opts);
 
             if (opts.SaveFreqSecs > 0)
@@ -268,7 +268,7 @@ namespace Resp.benchmark
             }
             else if (opts.AofBench)
             {
-                if (opts.AofBenchType == AofBenchType.Replay)
+                if (opts.IsReplayEnabled)
                 {
                     var bench = new AofBench(opts);
                     bench.GenerateData();

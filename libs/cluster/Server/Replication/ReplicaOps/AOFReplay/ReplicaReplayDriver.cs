@@ -35,8 +35,10 @@ namespace Garnet.cluster
         readonly TsavoriteLog physicalSublog;
         readonly bool useChannels = true;
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool ResumeReplay() => activeWorkerMonitor.TryEnter();
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SuspendReplay() => _ = activeWorkerMonitor.Exit();
 
         /// <summary>

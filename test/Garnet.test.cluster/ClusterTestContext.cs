@@ -10,6 +10,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Garnet.common;
 using Garnet.server;
 using Garnet.server.Auth.Settings;
 using Microsoft.Extensions.Logging;
@@ -30,6 +31,7 @@ namespace Garnet.test.cluster
         public EndPointCollection endpoints;
         public TextWriter logTextWriter = TestContext.Progress;
         public ILoggerFactory loggerFactory;
+        public NUnitLoggerProvider loggerProvider;
         public ILogger logger;
 
         public int defaultShards = 3;
@@ -44,6 +46,12 @@ namespace Garnet.test.cluster
 
         public CancellationTokenSource cts;
 
+        public void EnableGarnetLoggingEvents(GarnetTestLoggingEventType[] events)
+        {
+            foreach (var e in events)
+                loggerProvider.GarnetTestLoggingEvents[(int)e] = true;
+        }
+
         public void Setup(Dictionary<string, LogLevel> monitorTests, int testTimeoutSeconds = 60)
         {
             cts = new CancellationTokenSource(TimeSpan.FromSeconds(testTimeoutSeconds));
@@ -52,7 +60,7 @@ namespace Garnet.test.cluster
             var logLevel = LogLevel.Warning;
             if (!string.IsNullOrEmpty(TestContext.CurrentContext.Test.MethodName) && monitorTests.TryGetValue(TestContext.CurrentContext.Test.MethodName, out var value))
                 logLevel = value;
-            loggerFactory = TestUtils.CreateLoggerFactoryInstance(logTextWriter, logLevel, scope: TestContext.CurrentContext.Test.FullName);
+            (loggerFactory, loggerProvider) = TestUtils.CreateLoggerFactoryInstance(logTextWriter, logLevel, scope: TestContext.CurrentContext.Test.FullName);
             logger = loggerFactory.CreateLogger(TestContext.CurrentContext.Test.FullName);
             logger.LogDebug("0. Setup >>>>>>>>>>>>");
             r = new Random(674386);
@@ -245,6 +253,7 @@ namespace Garnet.test.cluster
         /// <param name="expiredObjectCollectionFrequencySecs"></param>
         /// <param name="clusterPreferredEndpointType"></param>
         /// <param name="useClusterAnnounceHostname"></param>
+        /// <param name="vectorSetReplayTaskCount"></param>
         public void CreateInstances(
             int shards,
             bool enableCluster = true,
@@ -297,7 +306,9 @@ namespace Garnet.test.cluster
             int aofSnapshotFreq = 5,
             int expiredObjectCollectionFrequencySecs = 0,
             ClusterPreferredEndpointType clusterPreferredEndpointType = ClusterPreferredEndpointType.Ip,
-            bool useClusterAnnounceHostname = false)
+            bool useClusterAnnounceHostname = false,
+            int vectorSetReplayTaskCount = 0,
+            int threadPoolMinIOCompletionThreads = 0)
         {
             var ipAddress = IPAddress.Loopback;
             TestUtils.EndPoint = new IPEndPoint(ipAddress, 7000);
@@ -358,7 +369,9 @@ namespace Garnet.test.cluster
                 aofSnapshotFreq: aofSnapshotFreq,
                 expiredObjectCollectionFrequencySecs: expiredObjectCollectionFrequencySecs,
                 clusterPreferredEndpointType: clusterPreferredEndpointType,
-                clusterAnnounceHostname: useClusterAnnounceHostname ? "localhost" : null);
+                clusterAnnounceHostname: useClusterAnnounceHostname ? "localhost" : null,
+                vectorSetReplayTaskCount: vectorSetReplayTaskCount,
+                threadPoolMinIOCompletionThreads: threadPoolMinIOCompletionThreads);
 
             foreach (var node in nodes)
                 node.Start();
@@ -393,6 +406,7 @@ namespace Garnet.test.cluster
         /// <param name="useAcl"></param>
         /// <param name="asyncReplay"></param>
         /// <param name="sublogCount"></param>
+        /// <param name="vectorSetReplayTaskCount"></param>
         /// <param name="clusterAnnounceEndpoint"></param>
         /// <param name="certificates"></param>
         /// <param name="clusterCreds"></param>
@@ -422,6 +436,7 @@ namespace Garnet.test.cluster
             bool useAcl = false,
             bool asyncReplay = false,
             int sublogCount = 1,
+            int vectorSetReplayTaskCount = 0,
             EndPoint clusterAnnounceEndpoint = null,
             X509CertificateCollection certificates = null,
             ServerCredential clusterCreds = new ServerCredential())
@@ -459,7 +474,8 @@ namespace Garnet.test.cluster
                 authUsername: clusterCreds.user,
                 authPassword: clusterCreds.password,
                 certificates: certificates,
-                clusterAnnounceEndpoint: clusterAnnounceEndpoint);
+                clusterAnnounceEndpoint: clusterAnnounceEndpoint,
+                vectorSetReplayTaskCount: vectorSetReplayTaskCount);
 
             return new GarnetServer(opts, loggerFactory);
         }

@@ -107,9 +107,16 @@ namespace Tsavorite.core
         ObjectIdMap TransientObjectIdMap { get; }
 
         /// <summary>Dispose an in-memory log record</summary>
-        void DisposeRecord(ref LogRecord logRecord, DisposeReason disposeReason);
+        void OnDispose(ref LogRecord logRecord, DisposeReason disposeReason);
 
         /// <summary>Dispose an on-disk log record</summary>
-        void DisposeRecord(ref DiskLogRecord logRecord, DisposeReason disposeReason);
+        void OnDispose(ref DiskLogRecord logRecord, DisposeReason disposeReason);
+
+        /// <summary>
+        /// Iterate records in the given logical address range and invoke the application-level
+        /// <see cref="IRecordTriggers.OnEvict"/> hook for each valid, non-tombstoned record.
+        /// Used during page eviction to allow cleanup of external resources.
+        /// </summary>
+        void EvictRecordsInRange(long startAddress, long endAddress);
     }
 }

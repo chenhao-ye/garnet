@@ -152,6 +152,9 @@ namespace Resp.benchmark
         [Option("aof-page-size", Required = false, Default = "4m", HelpText = "Size of each AOF page in bytes(rounds down to power of 2)")]
         public string AofPageSize { get; set; }
 
+        [Option("aof-tail-ref-freq", Required = false, Default = 100, HelpText = "Aof Tail Refresh Frequency.")]
+        public int AofReplicationRefreshFrequencyMs { get; set; }
+
         /// <summary>
         /// Parse size from string specification
         /// </summary>
@@ -217,5 +220,8 @@ namespace Resp.benchmark
             v |= v >> 32;
             return v - (v >> 1);
         }
+
+        public bool IsReplayEnabled
+            => AofBenchType is AofBenchType.Replay or AofBenchType.ReplayNoResp or AofBenchType.ReplayDirect;
     }
 }
