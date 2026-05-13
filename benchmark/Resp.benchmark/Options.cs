@@ -122,6 +122,9 @@ namespace Resp.benchmark
         [Option("aof-gen-pages", Required = false, Default = 64, HelpText = "DB size")]
         public int AofGenPages { get; set; }
 
+        [Option("aof-gen-records", Required = false, Default = 0, HelpText = "Per-thread KV pair buffer length for AOF enqueue bench (0 = 10 * --dbsize).")]
+        public int AofGenRecords { get; set; }
+
         /*
          * InProc/AofBench server options
          */
