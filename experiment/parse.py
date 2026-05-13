@@ -501,7 +501,7 @@ def _collect_runs(run_dirs: list, warmup: int) -> tuple[dict, dict[str, list]]:
     return runs, sweep_params
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
         description="Parse Garnet benchmark outputs into result.yaml"
     )
@@ -518,7 +518,7 @@ def main():
         default=2,
         help="Number of initial samples to discard as warmup (default: 2)",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     spec = load_experiment_spec(
         args.config

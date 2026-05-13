@@ -30,6 +30,7 @@ from pathlib import Path
 
 import yaml
 from config import REPO_ROOT, load_experiment_spec, resolve_run_spec, result_dir
+from parse import main as parse_main
 
 SERVER_READY_TIMEOUT = 60
 SERVER_READY_INTERVAL = 0.5
@@ -352,6 +353,11 @@ def main():
         )
 
     logger.info(f"All runs complete. Results in: {exp_dir}")
+
+    parse_argv = [args.experiment]
+    if args.config:
+        parse_argv += ["--config", args.config]
+    parse_main(parse_argv)
 
 
 if __name__ == "__main__":
