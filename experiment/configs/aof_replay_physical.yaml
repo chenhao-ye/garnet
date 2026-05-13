@@ -5,14 +5,14 @@
 # No external Garnet server is needed - AofBench creates an embedded server.
 
 name: aof_replay_physical
-description: "Scale AOF physical sublog count (1-32) for replay with main-memory replication (null device, InProc)"
+description: "Scale AOF physical sublog count (1-64) for replay with main-memory replication (null device, InProc)"
 benchmark: aof
 no_server: true
 
 base:
   client_params:
     aof_bench: true
-    aof_bench_type: Replay
+    aof_bench_type: ReplayDirect
     cluster: true
     aof_null_device: true
     client: InProc
@@ -20,4 +20,4 @@ base:
 
 sweep:
   client_params:
-    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32]
+    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32, 64]
