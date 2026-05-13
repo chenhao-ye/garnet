@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 
 import yaml
-from config import REPO_ROOT, RESULT_ROOT, load_experiment_spec, resolve_run_spec
+from config import REPO_ROOT, load_experiment_spec, resolve_run_spec, result_dir
 
 SERVER_READY_TIMEOUT = 60
 SERVER_READY_INTERVAL = 0.5
@@ -319,7 +319,7 @@ def main():
     if not spec.base_server_params:
         logger.warning("empty base.server_params")
 
-    exp_dir = RESULT_ROOT / spec.name
+    exp_dir = result_dir(spec.name)
 
     logger.debug("Killing leftover processes...")
     killall_leftover(spec.server_project, spec.benchmark_project)

@@ -7,7 +7,11 @@ from typing import Any
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-RESULT_ROOT = REPO_ROOT / "result"
+_RESULT_ROOT = REPO_ROOT / "result"
+
+
+def result_dir(name: str) -> Path:
+    return _RESULT_ROOT / name
 
 DEFAULT_BENCHMARK_PROJECT = "benchmark/Resp.benchmark/Resp.benchmark.csproj"
 DEFAULT_SERVER_PROJECT = "main/GarnetServer/GarnetServer.csproj"

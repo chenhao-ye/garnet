@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 import yaml
-from config import RESULT_ROOT, expected_run_dirs
+from config import REPO_ROOT, load_experiment_spec, resolve_run_spec, result_dir
 
 ONLINE_COLUMNS = [
     "min_us",
@@ -233,9 +233,7 @@ def _parse_offline_output(
 
             if name == "Total time":
                 current["time_ms"] = _parse_number(value)
-                ops_match = re.search(
-                    r"for\s+([-+]?\d[\d,]*(?:\.\d+)?)\s+ops", value
-                )
+                ops_match = re.search(r"for\s+([-+]?\d[\d,]*(?:\.\d+)?)\s+ops", value)
                 current["total_ops"] = (
                     float(ops_match.group(1).replace(",", ""))
                     if ops_match is not None
@@ -388,7 +386,9 @@ def _render_text_table(rows: list[dict[str, str]], columns: list[str]) -> str:
     return "\n".join([header, separator, *body])
 
 
-def _write_summary_file(exp_dir: Path, experiment_name: str, warmup: int, runs: dict) -> Path:
+def _write_summary_file(
+    exp_dir: Path, experiment_name: str, warmup: int, runs: dict
+) -> Path:
     grouped_rows = _build_summary_rows(runs)
     lines = [
         f"Experiment: {experiment_name}",
@@ -396,9 +396,23 @@ def _write_summary_file(exp_dir: Path, experiment_name: str, warmup: int, runs: 
     ]
 
     benchmark_column_order = {
-        "aof": ["run", "samples", "throughput_mrec_s", "bandwidth_gib_s", "time_ms", "bytes"],
+        "aof": [
+            "run",
+            "samples",
+            "throughput_mrec_s",
+            "bandwidth_gib_s",
+            "time_ms",
+            "bytes",
+        ],
         "offline": ["run", "samples", "throughput_mops_s", "total_ops", "time_ms"],
-        "online": ["run", "samples", "throughput_mops_s", "median_us", "p95_us", "p99_us"],
+        "online": [
+            "run",
+            "samples",
+            "throughput_mops_s",
+            "median_us",
+            "p95_us",
+            "p99_us",
+        ],
     }
 
     for benchmark in sorted(grouped_rows):
@@ -412,7 +426,11 @@ def _write_summary_file(exp_dir: Path, experiment_name: str, warmup: int, runs: 
                 and key not in set(benchmark_column_order.get(benchmark, []))
             }
         )
-        ordered_columns = ["run", *sweep_columns, *benchmark_column_order.get(benchmark, ["samples"])[1:]]
+        ordered_columns = [
+            "run",
+            *sweep_columns,
+            *benchmark_column_order.get(benchmark, ["samples"])[1:],
+        ]
         lines.extend(
             [
                 "",
@@ -447,7 +465,9 @@ def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
 
     benchmark = config.get("benchmark")
     if benchmark is None:
-        raise ValueError(f"Config '{config_path}' is missing required field 'benchmark'")
+        raise ValueError(
+            f"Config '{config_path}' is missing required field 'benchmark'"
+        )
     samples, metric_columns = parse_output(
         output_path,
         benchmark=benchmark,
@@ -485,7 +505,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="Parse Garnet benchmark outputs into result.yaml"
     )
-    parser.add_argument("experiment", help="Experiment name (subdirectory of result/)")
+    parser.add_argument(
+        "experiment", help="Experiment name (looks up experiment/configs/<name>.yaml)"
+    )
+    parser.add_argument(
+        "--config",
+        help="Override config path (default: experiment/configs/<name>.yaml)",
+    )
     parser.add_argument(
         "--warmup",
         type=int,
@@ -494,18 +520,26 @@ def main():
     )
     args = parser.parse_args()
 
-    exp_dir = RESULT_ROOT / args.experiment
+    spec = load_experiment_spec(
+        args.config
+        or str(REPO_ROOT / "experiment" / "configs" / f"{args.experiment}.yaml"),
+        default_name=args.experiment,
+    )
+
+    exp_dir = result_dir(spec.name)
     if not exp_dir.exists():
         raise FileNotFoundError(f"Experiment directory not found: {exp_dir}")
 
-    run_dirs = expected_run_dirs(exp_dir)
+    run_dirs = [
+        exp_dir / resolve_run_spec(spec, combo).run_name for combo in spec.combos
+    ]
     if not run_dirs:
         raise ValueError(f"No run directories found in {exp_dir}")
 
     runs, sweep_params = _collect_runs(run_dirs, args.warmup)
 
     result = {
-        "experiment_name": args.experiment,
+        "experiment_name": spec.name,
         "sweep_params": sweep_params,
         "warmup_rows_discarded": args.warmup,
         "runs": runs,
@@ -514,7 +548,7 @@ def main():
     out_path = exp_dir / "result.yaml"
     with open(out_path, "w") as f:
         yaml.dump(result, f)
-    summary_path = _write_summary_file(exp_dir, args.experiment, args.warmup, runs)
+    summary_path = _write_summary_file(exp_dir, spec.name, args.warmup, runs)
     print(f"\nResult written to: {out_path}")
     print(f"Summary written to: {summary_path}")
 
