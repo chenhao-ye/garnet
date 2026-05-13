@@ -327,7 +327,8 @@ def validate_aof_mode(
         str(value)
         for value in param_values(base_params, sweep_client_params, "aof_bench_type")
     }
-    if "Replay" in replay_types and "threads" in specified_keys:
+    replay_bench_types = {"Replay", "ReplayNoResp", "ReplayDirect"}
+    if (replay_types & replay_bench_types) and "threads" in specified_keys:
         add_issue(
             issues,
             "WARNING",
