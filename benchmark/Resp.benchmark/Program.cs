@@ -184,6 +184,13 @@ namespace Resp.benchmark
 
             loggerFactory = CreateLoggerFactory(opts);
 
+            if (opts.ReplBench)
+            {
+                var bench = new Resp.benchmark.ReplicationBenchImpl.ReplicationBench(opts);
+                bench.Run();
+                return;
+            }
+
             if (!(opts.Client == ClientType.InProc || opts.AofBench))
                 WaitForServer(opts);
 

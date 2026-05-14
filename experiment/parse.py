@@ -273,7 +273,83 @@ def parse_output(
         return _parse_online_output(path, warmup_rows=warmup_rows)
     if benchmark == "offline":
         return _parse_offline_output(path, expected_op=expected_op)
+    if benchmark == "replication":
+        return _parse_replication_output(path)
     raise ValueError(f"Unsupported benchmark: {benchmark}")
+
+
+REPL_COLUMNS = [
+    "writer_ops",
+    "writer_tput",
+    "reader_ops",
+    "reader_tput",
+    "reader_lat_p50_us",
+    "reader_lat_p99_us",
+    "reader_lat_p999_us",
+    "reader_lat_max_us",
+    "fresh_samples",
+    "fresh_p50_us",
+    "fresh_p99_us",
+    "fresh_p999_us",
+    "fresh_max_us",
+    # Compatibility aliases — the generic summary path expects these key names.
+    "tpt_kops",
+    "median_us",
+    "p95_us",
+    "p99_us",
+]
+
+
+def _parse_replication_output(path: Path) -> tuple[list[dict], list[str]]:
+    """Parse the single-block summary emitted by --repl-bench."""
+    sample: dict[str, float | None] = {col: None for col in REPL_COLUMNS}
+    pct_re = re.compile(
+        r"p50=([0-9.,]+)\s+p99=([0-9.,]+)\s+p99\.9=([0-9.,]+)\s+max=([0-9.,]+)"
+    )
+
+    with open(path) as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if line.startswith("writer ops"):
+                sample["writer_ops"] = _parse_number(line.split(":", 1)[1])
+            elif line.startswith("writer throughput"):
+                sample["writer_tput"] = _parse_number(line.split(":", 1)[1])
+            elif line.startswith("reader ops"):
+                sample["reader_ops"] = _parse_number(line.split(":", 1)[1])
+            elif line.startswith("reader throughput"):
+                sample["reader_tput"] = _parse_number(line.split(":", 1)[1])
+            elif line.startswith("reader latency (us)"):
+                m = pct_re.search(line)
+                if m is not None:
+                    (
+                        sample["reader_lat_p50_us"],
+                        sample["reader_lat_p99_us"],
+                        sample["reader_lat_p999_us"],
+                        sample["reader_lat_max_us"],
+                    ) = (_parse_number(g) for g in m.groups())
+            elif line.startswith("freshness samples"):
+                sample["fresh_samples"] = _parse_number(line.split(":", 1)[1])
+            elif line.startswith("freshness (us)"):
+                m = pct_re.search(line)
+                if m is not None:
+                    (
+                        sample["fresh_p50_us"],
+                        sample["fresh_p99_us"],
+                        sample["fresh_p999_us"],
+                        sample["fresh_max_us"],
+                    ) = (_parse_number(g) for g in m.groups())
+
+    # Expose throughput/latency in the canonical keys used by the generic summary path.
+    sample["tpt_kops"] = (
+        sample["reader_tput"] / 1000.0 if sample["reader_tput"] is not None else None
+    )
+    sample["median_us"] = sample["reader_lat_p50_us"]
+    sample["p95_us"] = sample["reader_lat_p99_us"]
+    sample["p99_us"] = sample["reader_lat_p99_us"]
+
+    if sample["reader_tput"] is None and sample["writer_tput"] is None:
+        return [], REPL_COLUMNS
+    return [sample], REPL_COLUMNS
 
 
 def _format_summary(

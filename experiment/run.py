@@ -21,8 +21,10 @@ Usage:
 
 import argparse
 import logging
+import os
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import time
@@ -50,6 +52,7 @@ CLIENT_BOOL_PARAMS = {
     "aof_null_device",
     "client_hist",
     "aof_bench",
+    "repl_bench",
 }
 SERVER_BOOL_PARAMS = {"aof", "aof_null_device", "cluster", "tls"}
 
@@ -92,6 +95,7 @@ def build_command(project: str, params: dict, is_server: bool = False) -> list[s
     cmd = [
         "dotnet",
         "run",
+        "--no-build",
         "-c",
         "Release",
         "--framework",
@@ -108,6 +112,25 @@ def build_command(project: str, params: dict, is_server: bool = False) -> list[s
             params, bool_params=CLIENT_BOOL_PARAMS, list_params=CLIENT_LIST_PARAMS
         )
     return cmd
+
+
+def ensure_built(project_relpath: str) -> None:
+    """Pre-build a project so `dotnet run --no-build` can launch it.
+
+    `dotnet run` without `--no-build` invokes an MSBuild check on every invocation,
+    and that path empirically loses captured stdout when the parent's stdout is a
+    Popen-piped file (the bench output ends up empty). `--no-build` avoids that path
+    but requires the binary to already exist; this helper makes sure it does. Cost
+    is paid once per session — dotnet build is a no-op when nothing has changed.
+    """
+    project_path = REPO_ROOT / project_relpath
+    logger.info(f"Build: {project_path}")
+    if dry_run:
+        return
+    subprocess.run(
+        ["dotnet", "build", "-c", "Release", "-f", "net10.0", str(project_path)],
+        check=True,
+    )
 
 
 def killall_leftover(server_project: str, benchmark_project: str) -> None:
@@ -159,11 +182,15 @@ def launch_server(
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_f = open(log_path, "w")
+    # start_new_session=True puts the server (and any children it spawns, e.g. the
+    # GarnetServer apphost forked by `dotnet run`) into a fresh process group so
+    # shutdown_server() can signal the whole group, not just the wrapper.
     return subprocess.Popen(
         cmd,
         stdout=log_f,
         stderr=subprocess.STDOUT,
         cwd=str(log_path.parent),
+        start_new_session=True,
     )
 
 
@@ -193,11 +220,30 @@ def shutdown_server(proc: subprocess.Popen | None) -> None:
     if dry_run or proc is None:
         return
     logger.info("Shutting down server...")
-    proc.terminate()
+    # The wrapper `dotnet run` forks a separate GarnetServer apphost; signalling only
+    # the wrapper leaves the apphost holding the port. Signal the whole process group
+    # we created in launch_server() instead.
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        pgid = None
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except ProcessLookupError:
+        pass
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        try:
+            if pgid is not None:
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except ProcessLookupError:
+            pass
         proc.wait()
     logger.info("Server stopped")
 
@@ -251,6 +297,22 @@ def execute_run(
     prepare_params: dict,
     no_server: bool,
 ) -> None:
+    if benchmark == "replication":
+        execute_replication_run(
+            exp_name=exp_name,
+            benchmark=benchmark,
+            benchmark_project=benchmark_project,
+            server_project=server_project,
+            run_dir=run_dir,
+            run_name=run_name,
+            client_params=client_params,
+            server_params=server_params,
+            sweep_combo=sweep_combo,
+            sweep_params=sweep_params,
+            prepare_params=prepare_params,
+        )
+        return
+
     server_cmd = build_command(server_project, server_params, is_server=True)
     prepare_cmd = (
         build_command(benchmark_project, prepare_params) if prepare_params else None
@@ -288,6 +350,81 @@ def execute_run(
             shutdown_server(server_proc)
 
 
+def execute_replication_run(
+    *,
+    exp_name: str,
+    benchmark: str,
+    benchmark_project: str,
+    server_project: str,
+    run_dir: Path,
+    run_name: str,
+    client_params: dict,
+    server_params: dict,
+    sweep_combo: dict,
+    sweep_params: dict,
+    prepare_params: dict,
+) -> None:
+    """One primary + one replica Garnet subprocess; bench wires them and runs."""
+
+    primary_port = int(server_params.get("port", 7000))
+    # If client_params explicitly sets repl_replica_port, use that; otherwise +1.
+    replica_port = int(client_params.get("repl_replica_port", primary_port + 1))
+
+    primary_params = dict(server_params, port=primary_port)
+    replica_params = dict(server_params, port=replica_port)
+
+    # The bench is client-only and connects to the two endpoints below. We auto-populate
+    # client_params so the YAML does not have to repeat ports already on the server side.
+    client_params = dict(client_params)
+    client_params.setdefault("repl_bench", True)
+    client_params.setdefault("repl_primary_port", primary_port)
+    client_params.setdefault("repl_replica_port", replica_port)
+
+    primary_cmd = build_command(server_project, primary_params, is_server=True)
+    replica_cmd = build_command(server_project, replica_params, is_server=True)
+    benchmark_cmd = build_command(benchmark_project, client_params)
+
+    config_record = {
+        "experiment": exp_name,
+        "benchmark": benchmark,
+        "run_name": run_name,
+        "client_params": client_params,
+        "primary_server_params": primary_params,
+        "replica_server_params": replica_params,
+        "sweep": sweep_combo,
+        "sweep_params": sweep_params,
+        "primary_cmd": shlex.join(primary_cmd),
+        "replica_cmd": shlex.join(replica_cmd),
+        "client_cmd": shlex.join(benchmark_cmd),
+    }
+    dump_config(run_dir / "config.yaml", config_record)
+
+    primary_log = run_dir / "primary" / "_server.log"
+    replica_log = run_dir / "replica" / "_server.log"
+
+    primary_proc: subprocess.Popen | None = None
+    replica_proc: subprocess.Popen | None = None
+    try:
+        primary_proc = launch_server(server_project, primary_params, primary_log)
+        replica_proc = launch_server(server_project, replica_params, replica_log)
+        wait_for_server("127.0.0.1", primary_port, primary_proc)
+        wait_for_server("127.0.0.1", replica_port, replica_proc)
+
+        # The bench performs cluster wiring (CLUSTER ADDSLOTSRANGE / MEET / REPLICATE)
+        # itself; no prepare step is needed for that. Custom user prepare steps
+        # (e.g. data load) still run against the primary.
+        if prepare_params:
+            prepare_cmd = build_command(benchmark_project, prepare_params)
+            run_command(run_dir / "prepare", prepare_cmd, server_proc=primary_proc)
+
+        run_command(run_dir / "benchmark", benchmark_cmd, server_proc=primary_proc)
+    finally:
+        if replica_proc is not None:
+            shutdown_server(replica_proc)
+        if primary_proc is not None:
+            shutdown_server(primary_proc)
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -321,6 +458,10 @@ def main():
         logger.warning("empty base.server_params")
 
     exp_dir = result_dir(spec.name)
+
+    if not spec.no_server:
+        ensure_built(spec.server_project)
+    ensure_built(spec.benchmark_project)
 
     logger.debug("Killing leftover processes...")
     killall_leftover(spec.server_project, spec.benchmark_project)

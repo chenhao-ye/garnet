@@ -155,6 +155,27 @@ namespace Resp.benchmark
         [Option("aof-tail-ref-freq", Required = false, Default = 100, HelpText = "Aof Tail Refresh Frequency.")]
         public int AofReplicationRefreshFrequencyMs { get; set; }
 
+        [Option("repl-bench", Required = false, Default = false, HelpText = "Run MultiLog primary+replica read/write/freshness benchmark.")]
+        public bool ReplBench { get; set; }
+
+        [Option("repl-writers", Required = false, Default = 1, HelpText = "Writer threads on the primary (--repl-bench).")]
+        public int ReplWriters { get; set; }
+
+        [Option("repl-readers", Required = false, Default = 1, HelpText = "Reader threads on the replica (--repl-bench).")]
+        public int ReplReaders { get; set; }
+
+        [Option("repl-primary-port", Required = false, Default = 7000, HelpText = "Primary RESP port (--repl-bench).")]
+        public int ReplPrimaryPort { get; set; }
+
+        [Option("repl-replica-port", Required = false, Default = 7001, HelpText = "Replica RESP port (--repl-bench).")]
+        public int ReplReplicaPort { get; set; }
+
+        [Option("repl-freshness-interval-us", Required = false, Default = 100, HelpText = "Target period between freshness probe writes, microseconds (--repl-bench).")]
+        public int ReplFreshnessIntervalUs { get; set; }
+
+        [Option("repl-warmup-secs", Required = false, Default = 5, HelpText = "Warmup duration before measurement (--repl-bench).")]
+        public int ReplWarmupSecs { get; set; }
+
         /// <summary>
         /// Parse size from string specification
         /// </summary>
