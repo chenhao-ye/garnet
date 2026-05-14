@@ -167,7 +167,7 @@ namespace Resp.benchmark
             }
             else
             {
-                var bufferLen = options.AofGenRecords > 0 ? options.AofGenRecords : 10 * options.DbSize;
+                var bufferLen = options.AofGenRecords > 0 ? options.AofGenRecords : 2 * options.DbSize;
                 Console.WriteLine($"Generated {threads}x{bufferLen} KV pairs in {seconds:N2} secs");
             }
         }
