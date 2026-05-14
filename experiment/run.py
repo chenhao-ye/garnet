@@ -250,7 +250,14 @@ def execute_run(
     sweep_params: dict,
     prepare_params: dict,
     no_server: bool,
+    repeat_threads: int,
 ) -> None:
+    client_params = dict(client_params)
+    if repeat_threads > 1 and "threads" in client_params:
+        threads_val = client_params["threads"]
+        if not isinstance(threads_val, list):
+            client_params["threads"] = [threads_val] * repeat_threads
+
     server_cmd = build_command(server_project, server_params, is_server=True)
     prepare_cmd = (
         build_command(benchmark_project, prepare_params) if prepare_params else None
@@ -265,6 +272,7 @@ def execute_run(
         "server_params": server_params,
         "sweep": sweep_combo,
         "sweep_params": sweep_params,
+        "repeat_threads": repeat_threads,
         "server_cmd": shlex.join(server_cmd),
         "prepare_cmd": shlex.join(prepare_cmd) if prepare_cmd is not None else "",
         "client_cmd": shlex.join(benchmark_cmd),
@@ -350,6 +358,7 @@ def main():
             sweep_params=run_spec.sweep_params,
             prepare_params=spec.prepare_params,
             no_server=spec.no_server,
+            repeat_threads=spec.repeat_threads,
         )
 
     logger.info(f"All runs complete. Results in: {exp_dir}")

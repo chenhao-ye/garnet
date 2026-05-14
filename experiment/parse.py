@@ -12,6 +12,7 @@ Usage:
 import argparse
 import math
 import re
+import statistics
 from pathlib import Path
 
 import yaml
@@ -91,6 +92,29 @@ def _summarize_samples(samples: list[dict], columns: list[str]) -> dict:
     if not samples:
         return {col: _stats([]) for col in columns}
     return {col: _stats([sample.get(col) for sample in samples]) for col in columns}
+
+
+def _column_median(samples: list[dict], col: str) -> float | None:
+    values = [s.get(col) for s in samples if s.get(col) is not None]
+    return statistics.median(values) if values else None
+
+
+def _aggregate_repetitions(
+    samples: list[dict], columns: list[str], repeat_threads: int
+) -> list[dict]:
+    """Split samples evenly into `repeat_threads` chunks; emit one median row per chunk."""
+    if repeat_threads <= 1 or len(samples) < repeat_threads:
+        return samples
+    chunk_size = len(samples) // repeat_threads
+    aggregated: list[dict] = []
+    for i in range(repeat_threads):
+        start = i * chunk_size
+        end = (i + 1) * chunk_size if i < repeat_threads - 1 else len(samples)
+        chunk = samples[start:end]
+        if not chunk:
+            continue
+        aggregated.append({col: _column_median(chunk, col) for col in columns})
+    return aggregated
 
 
 def _format_millions(value: float | None, base_unit: float) -> str:
@@ -480,6 +504,8 @@ def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
         warmup_rows=warmup,
         expected_op=config.get("client_params", {}).get("op"),
     )
+    repeat_threads = int(config.get("repeat_threads", 1) or 1)
+    samples = _aggregate_repetitions(samples, metric_columns, repeat_threads)
     stats = _summarize_samples(samples, metric_columns)
     print(_format_summary(benchmark, stats, len(samples), run_dir.name))
     return {
