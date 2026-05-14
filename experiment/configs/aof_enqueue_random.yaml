@@ -1,0 +1,30 @@
+# Experiment: aof_enqueue_random
+# Scale client thread count (1-64) using the offline AofBench in EnqueueRandom
+# mode with main-memory replication (--aof-null-device, InProc client). Keys
+# are integer-indexed over a 1M-entry keyspace; threads hash keys across all
+# physical sublogs (default 1; raise via base.client_params if needed).
+# No external Garnet server is needed - AofBench creates an embedded server.
+
+name: aof_enqueue_random
+description: "2-D sweep: thread count (1-64) x physical sublog count (1-64) for EnqueueRandom with 1M-key dbsize"
+benchmark: aof
+no_server: true
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: EnqueueRandom
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    aof_tail_ref_freq: -1
+    keylength: 8
+    valuelength: 8
+    dbsize: 1000000
+
+sweep:
+  client_params:
+    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32, 64]
+    threads: [1, 2, 4, 8, 16, 32, 48, 64]
