@@ -50,14 +50,11 @@ namespace Resp.benchmark
         public Page[] GetPageBuffers(int threadIdx) => pageBuffers[threadIdx];
         public KVPairBuffer GetKVPairBuffer(int threadIdx) => kvPairBuffers[threadIdx];
 
-        readonly LightEpoch aofEpoch;
-
         readonly int keyLen;
 
         public AofGen(Options options)
         {
             this.options = options;
-            this.aofEpoch = new LightEpoch();
             this.keyLen = Math.Max(options.KeyLength, NumUtils.NumDigits(options.DbSize));
             if (options.KeyLength > 0 && this.keyLen != options.KeyLength)
                 Console.WriteLine($"[Warning] --keylength {options.KeyLength} is too small for --dbsize {options.DbSize}; expanding to {this.keyLen}.");
@@ -76,7 +73,7 @@ namespace Resp.benchmark
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
                 AofReplayTaskCount = options.AofReplayTaskCount
             };
-            aofServerOptions.GetAofSettings(0, aofEpoch, out var logSettings);
+            aofServerOptions.GetAofSettings(0, out var logSettings);
             appendOnlyFile = new GarnetAppendOnlyFile(aofServerOptions, logSettings, Program.loggerFactory.CreateLogger("AofGen - AOF instance"));
             garnetLog = appendOnlyFile.Log;
 
