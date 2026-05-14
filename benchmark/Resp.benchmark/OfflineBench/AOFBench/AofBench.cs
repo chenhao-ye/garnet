@@ -162,22 +162,25 @@ namespace Resp.benchmark
         unsafe void RunAofEnqueBench(int threadId)
         {
             waiter.Wait();
-            var kvPairs = aofGen.GetKVPairBuffer(threadId);
+            var buf = aofGen.GetKVPairBuffer(threadId);
+            var keys = buf.Keys;
+            var valueBytes = buf.Value;
+            var keyLen = buf.KeyLen;
+            var count = buf.Count;
+            var valueLen = valueBytes.Length;
             var recordsEnqueued = 0L;
             var bytesEnqueued = 0L;
-            while (!done)
+
+            fixed (byte* keysPtr = keys)
+            fixed (byte* valPtr = valueBytes)
             {
-                for (var i = 0; i < kvPairs.Count; i++)
+                var value = SpanByte.FromPinnedPointer(valPtr, valueLen);
+                while (!done)
                 {
-                    if (done) break;
-                    var kvPair = kvPairs[i];
-                    var kb = kvPair.Item1;
-                    var vb = kvPair.Item2;
-                    fixed (byte* keyPtr = kb)
-                    fixed (byte* valPtr = vb)
+                    for (var i = 0; i < count; i++)
                     {
-                        var key = SpanByte.FromPinnedPointer(keyPtr, kb.Length);
-                        var value = SpanByte.FromPinnedPointer(valPtr, vb.Length);
+                        if (done) break;
+                        var key = SpanByte.FromPinnedPointer(keysPtr + i * keyLen, keyLen);
                         StringInput input = default;
                         aofGen.appendOnlyFile.Log.Enqueue(
                             AofEntryType.StoreUpsert,
@@ -189,11 +192,10 @@ namespace Resp.benchmark
                             epoch,
                             out _);
                         bytesEnqueued += sizeof(AofShardedHeader) + key.TotalSize() + value.TotalSize() + input.SerializedLength;
+                        recordsEnqueued++;
                     }
-                    recordsEnqueued++;
+                    if (done) break;
                 }
-
-                if (done) break;
             }
             //Console.WriteLine($"[{threadId}] - Enqueued: {recordsEnqueued:N0} records");
             _ = Interlocked.Add(ref total_records_enqueued, recordsEnqueued);

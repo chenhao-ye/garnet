@@ -17,6 +17,14 @@ namespace Resp.benchmark
         public int recordCount = 0;
     }
 
+    public sealed class KVPairBuffer
+    {
+        public byte[] Keys;
+        public byte[] Value;
+        public int KeyLen;
+        public int Count;
+    }
+
     public sealed class AofGen
     {
         readonly GarnetLog garnetLog;
@@ -32,15 +40,15 @@ namespace Resp.benchmark
         Page[][] pageBuffers;
 
         /// <summary>
-        /// DBSize kv pairs
+        /// Per-thread flat key buffer + shared value (one entry per thread).
         /// </summary>
-        List<(byte[], byte[])>[] kvPairBuffers;
+        KVPairBuffer[] kvPairBuffers;
 
         long total_number_of_aof_records = 0L;
         long total_number_of_aof_bytes = 0L;
 
         public Page[] GetPageBuffers(int threadIdx) => pageBuffers[threadIdx];
-        public List<(byte[], byte[])> GetKVPairBuffer(int threadIdx) => kvPairBuffers[threadIdx];
+        public KVPairBuffer GetKVPairBuffer(int threadIdx) => kvPairBuffers[threadIdx];
 
         readonly LightEpoch aofEpoch;
 
@@ -78,7 +86,7 @@ namespace Resp.benchmark
             }
             else
             {
-                kvPairBuffers = new List<(byte[], byte[])>[options.NumThreads.Max()];
+                kvPairBuffers = new KVPairBuffer[options.NumThreads.Max()];
             }
 
             if (options.AofPhysicalSublogCount != options.NumThreads.Max() && options.AofBenchType == AofBenchType.EnqueueSharded)
@@ -261,12 +269,50 @@ namespace Resp.benchmark
 
         void GenerateKeys(int threadId)
         {
-            var count = options.AofGenRecords > 0 ? options.AofGenRecords : 10 * options.DbSize;
-            kvPairBuffers[threadId] = GenerateKVPairs(
-                threadId,
-                options.AofBenchType == AofBenchType.EnqueueRandom,
-                count);
-            //Console.WriteLine($"[{threadId}] - Generated {kvPairBuffers[threadId].Count} KV pairs for {options.AofBenchType}");
+            var count = options.AofGenRecords > 0 ? options.AofGenRecords : 2 * options.DbSize;
+            var rng = new Random(789110123 + threadId);
+            var zipf = options.Zipf
+                ? new ZipfGenerator(new RandomGenerator((uint)(789110123 + threadId)), options.DbSize, 0.99)
+                : null;
+            var isRandom = options.AofBenchType == AofBenchType.EnqueueRandom;
+
+            var keys = GC.AllocateArray<byte>(count * keyLen, pinned: true);
+            var keysSpan = keys.AsSpan();
+            for (var i = 0; i < count; i++)
+            {
+                var slot = keysSpan.Slice(i * keyLen, keyLen);
+                while (true)
+                {
+                    int k = zipf != null ? zipf.Next() : rng.Next(options.DbSize);
+                    WriteKeyBytes(slot, k);
+                    if (isRandom) break;
+                    if (garnetLog.GetPhysicalSublogIdx(slot) == threadId) break;
+                }
+            }
+
+            var valueLen = Math.Max(options.ValueLength, 8);
+            var value = GC.AllocateArray<byte>(valueLen, pinned: true);
+            Encoding.ASCII.GetBytes(Generator.CreateHexId(size: valueLen), value);
+
+            kvPairBuffers[threadId] = new KVPairBuffer
+            {
+                Keys = keys,
+                Value = value,
+                KeyLen = keyLen,
+                Count = count,
+            };
+        }
+
+        void WriteKeyBytes(Span<byte> dest, int key)
+        {
+            int pos = dest.Length;
+            int n = key;
+            do
+            {
+                dest[--pos] = (byte)('0' + (n % 10));
+                n /= 10;
+            } while (n > 0);
+            while (pos > 0) dest[--pos] = (byte)'X';
         }
     }
 }
