@@ -296,6 +296,8 @@ def execute_run(
     sweep_params: dict,
     prepare_params: dict,
     no_server: bool,
+    primary_params: dict | None = None,
+    replica_params: dict | None = None,
 ) -> None:
     if benchmark == "replication":
         execute_replication_run(
@@ -307,6 +309,8 @@ def execute_run(
             run_name=run_name,
             client_params=client_params,
             server_params=server_params,
+            primary_params=primary_params or {},
+            replica_params=replica_params or {},
             sweep_combo=sweep_combo,
             sweep_params=sweep_params,
             prepare_params=prepare_params,
@@ -360,18 +364,35 @@ def execute_replication_run(
     run_name: str,
     client_params: dict,
     server_params: dict,
+    primary_params: dict,
+    replica_params: dict,
     sweep_combo: dict,
     sweep_params: dict,
     prepare_params: dict,
 ) -> None:
-    """One primary + one replica Garnet subprocess; bench wires them and runs."""
+    """One primary + one replica Garnet subprocess; bench wires them and runs.
 
-    primary_port = int(server_params.get("port", 7000))
-    # If client_params explicitly sets repl_replica_port, use that; otherwise +1.
-    replica_port = int(client_params.get("repl_replica_port", primary_port + 1))
+    Server config layering: ``server_params`` is the shared base; ``primary_params``
+    and ``replica_params`` are per-node overlays that override the base. Ports are
+    assigned last: primary uses the merged ``port`` (default 7000); replica uses
+    its merged ``port`` if set, else the client's ``repl_replica_port``, else
+    primary + 1.
+    """
 
-    primary_params = dict(server_params, port=primary_port)
-    replica_params = dict(server_params, port=replica_port)
+    # Merge overlays on top of the shared base. Primary/replica overlays win
+    # over server_params, but the port handling below has final say.
+    primary_params = {**server_params, **primary_params}
+    replica_params = {**server_params, **replica_params}
+
+    primary_port = int(primary_params.get("port", 7000))
+    primary_params["port"] = primary_port
+
+    replica_port = int(
+        replica_params.get("port")
+        or client_params.get("repl_replica_port")
+        or (primary_port + 1)
+    )
+    replica_params["port"] = replica_port
 
     # The bench is client-only and connects to the two endpoints below. We auto-populate
     # client_params so the YAML does not have to repeat ports already on the server side.
@@ -487,6 +508,8 @@ def main():
             run_name=run_spec.run_name,
             client_params=run_spec.client_params,
             server_params=run_spec.server_params,
+            primary_params=spec.base_primary_params,
+            replica_params=spec.base_replica_params,
             sweep_combo=run_spec.combo,
             sweep_params=run_spec.sweep_params,
             prepare_params=spec.prepare_params,

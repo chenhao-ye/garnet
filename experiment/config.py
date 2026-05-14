@@ -30,6 +30,10 @@ class ExperimentSpec:
     prepare_params: dict[str, Any]
     base_client_params: dict[str, Any]
     base_server_params: dict[str, Any]
+    # Per-node overlays for the replication benchmark; each is applied on top of
+    # base_server_params. Empty dicts when the benchmark only needs one server.
+    base_primary_params: dict[str, Any]
+    base_replica_params: dict[str, Any]
     no_server: bool
     combos: list[dict[str, dict[str, Any]]]
     config: dict[str, Any]
@@ -78,6 +82,8 @@ def load_experiment_spec(
         prepare_params=dict(config.get("prepare", {}).get("client_params", {})),
         base_client_params=dict(config["base"]["client_params"]),
         base_server_params=dict(config["base"].get("server_params", {})),
+        base_primary_params=dict(config["base"].get("primary_params", {})),
+        base_replica_params=dict(config["base"].get("replica_params", {})),
         no_server=config.get("no_server", False),
         combos=expand_sweep(config.get("sweep", {})),
         config=config,
