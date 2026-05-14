@@ -322,8 +322,10 @@ def _build_summary_rows(runs: dict[str, dict]) -> dict[str, list[dict[str, str]]
             row[key] = _format_sweep_value(value)
 
         if benchmark == "aof":
+            throughput_krec_s = (stats.get("throughput") or {}).get("mean")
             row["throughput_mrec_s"] = _format_table_number(
-                (stats.get("throughput") or {}).get("mean"), decimals=3
+                throughput_krec_s / 1000.0 if throughput_krec_s is not None else None,
+                decimals=3,
             )
             row["bandwidth_gib_s"] = _format_table_number(
                 (stats.get("bandwidth") or {}).get("mean"), decimals=3
@@ -335,8 +337,12 @@ def _build_summary_rows(runs: dict[str, dict]) -> dict[str, list[dict[str, str]]
                 (stats.get("bytes") or {}).get("mean"), decimals=0
             )
         elif benchmark == "offline":
+            throughput_ops_s = (stats.get("throughput") or {}).get("mean")
             row["throughput_mops_s"] = _format_table_number(
-                ((stats.get("throughput") or {}).get("mean")), decimals=3
+                throughput_ops_s / 1_000_000.0
+                if throughput_ops_s is not None
+                else None,
+                decimals=3,
             )
             row["total_ops"] = _format_table_number(
                 (stats.get("total_ops") or {}).get("mean"), decimals=0
