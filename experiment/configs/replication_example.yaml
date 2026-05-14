@@ -1,0 +1,40 @@
+# Experiment: replication_smoke
+# One primary + one replica launched by run.py; --repl-bench drives uniform-random
+# 8B/8B SETs against the primary, GETs against the replica, and a single-thread
+# freshness probe to measure write -> replica-visibility delay.
+
+name: replication_smoke
+description: "MultiLog primary+replica read/write/freshness microbenchmark (smoke run)"
+benchmark: replication
+
+base:
+  # Shared base config for both nodes. primary_params / replica_params overlay
+  # on top of this; per-node overrides (different port, asymmetric flags, etc.)
+  # go in those blocks.
+  server_params:
+    bind: 127.0.0.1
+    cluster: true
+    aof: true
+    aof_physical_sublog_count: 2
+    aof_replay_task_count: 1
+    checkpointdir: ./checkpoint
+
+  primary_params:
+    port: 7000
+
+  replica_params:
+    port: 7001
+
+  client_params:
+    keylength: 8
+    valuelength: 8
+    dbsize: 100000
+    runtime: 5
+    repl_writers: 1
+    repl_readers: 1
+    repl_warmup_secs: 2
+    repl_freshness_interval_us: 100
+
+sweep:
+  client_params:
+    itp: [1, 4]
