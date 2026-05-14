@@ -9,7 +9,7 @@ name: aof_enqueue_random
 description: "2-D sweep: thread count (1-64) x physical sublog count (1-64) for EnqueueRandom with 1M-key dbsize"
 benchmark: aof
 no_server: true
-repeat_threads: 3
+repeat_threads: 5
 
 base:
   client_params:
