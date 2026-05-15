@@ -161,15 +161,17 @@ namespace Resp.benchmark
 
         unsafe void RunAofEnqueBench(int threadId)
         {
-            waiter.Wait();
             var buf = aofGen.GetKVPairBuffer(threadId);
             var keys = buf.Keys;
             var valueBytes = buf.Value;
             var keyLen = buf.KeyLen;
             var count = buf.Count;
             var valueLen = valueBytes.Length;
+            var rng = new Random(789110123 + threadId);
             var recordsEnqueued = 0L;
             var bytesEnqueued = 0L;
+
+            waiter.Wait();
 
             fixed (byte* keysPtr = keys)
             fixed (byte* valPtr = valueBytes)
@@ -177,24 +179,20 @@ namespace Resp.benchmark
                 var value = SpanByte.FromPinnedPointer(valPtr, valueLen);
                 while (!done)
                 {
-                    for (var i = 0; i < count; i++)
-                    {
-                        if (done) break;
-                        var key = SpanByte.FromPinnedPointer(keysPtr + i * keyLen, keyLen);
-                        StringInput input = default;
-                        aofGen.appendOnlyFile.Log.Enqueue(
-                            AofEntryType.StoreUpsert,
-                            1,
-                            threadId,
-                            key,
-                            value,
-                            ref input,
-                            epoch,
-                            out _);
-                        bytesEnqueued += sizeof(AofShardedHeader) + key.TotalSize() + value.TotalSize() + input.SerializedLength;
-                        recordsEnqueued++;
-                    }
-                    if (done) break;
+                    int i = rng.Next(count);
+                    var key = SpanByte.FromPinnedPointer(keysPtr + i * keyLen, keyLen);
+                    StringInput input = default;
+                    aofGen.appendOnlyFile.Log.Enqueue(
+                        AofEntryType.StoreUpsert,
+                        1,
+                        threadId,
+                        key,
+                        value,
+                        ref input,
+                        epoch,
+                        out _);
+                    bytesEnqueued += sizeof(AofShardedHeader) + key.TotalSize() + value.TotalSize() + input.SerializedLength;
+                    recordsEnqueued++;
                 }
             }
             //Console.WriteLine($"[{threadId}] - Enqueued: {recordsEnqueued:N0} records");

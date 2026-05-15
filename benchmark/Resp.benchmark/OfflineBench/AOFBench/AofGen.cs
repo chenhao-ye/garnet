@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Text;
 using Garnet.common;
@@ -77,17 +78,15 @@ namespace Resp.benchmark
             appendOnlyFile = new GarnetAppendOnlyFile(aofServerOptions, logSettings, Program.loggerFactory.CreateLogger("AofGen - AOF instance"));
             garnetLog = appendOnlyFile.Log;
 
-            if (options.IsReplayEnabled)
-            {
-                pageBuffers = new Page[options.AofPhysicalSublogCount][];
-            }
-            else
-            {
-                kvPairBuffers = new KVPairBuffer[options.NumThreads.Max()];
-            }
-
             if (options.AofPhysicalSublogCount != options.NumThreads.Max() && options.AofBenchType == AofBenchType.EnqueueSharded)
                 throw new Exception("Use --threads(MAX)== --aof-sublog-count to generated perfectly sharded data!");
+
+            var threadCount = options.IsReplayEnabled ? options.AofPhysicalSublogCount : options.NumThreads.Max();
+            kvPairBuffers = new KVPairBuffer[threadCount];
+            if (options.IsReplayEnabled)
+                pageBuffers = new Page[options.AofPhysicalSublogCount][];
+
+            BuildPerThreadKeysets();
         }
 
         public NetworkBufferSettings GetAofSyncNetworkBufferSettings()
@@ -97,140 +96,184 @@ namespace Resp.benchmark
             return new(aofSyncSendBufferSize, aofSyncInitialReceiveBufferSize);
         }
 
-        byte[] GetKey(Random rng, ZipfGenerator zipf)
+        // Pre-build per-thread key buffers from a fixed-size global hex keyset.
+        // Sharded / Replay: thread t owns the keys hashing to sublog t (per-thread length varies, sum = dbsize).
+        // EnqueueRandom: every thread gets a private pinned copy of all dbsize keys.
+        // Throws if the hash leaves any sublog bucket empty, instead of letting a worker spin in
+        // a rejection-sampling loop forever (the failure mode we hit at k>=16 with structured numeric keys).
+        unsafe void BuildPerThreadKeysets()
         {
-            int key = zipf != null ? zipf.Next() : rng.Next(options.DbSize);
-            return Encoding.ASCII.GetBytes(key.ToString().PadLeft(keyLen, 'X'));
+            var dbsize = options.DbSize;
+            var sublogCount = options.AofPhysicalSublogCount;
+
+            var globalKeys = new byte[dbsize * keyLen];
+            var sublogAssign = new int[dbsize];
+            var bucketCounts = new int[sublogCount];
+            for (int i = 0; i < dbsize; i++)
+            {
+                FormatHexKey(globalKeys, i * keyLen, keyLen, i);
+                var keySpan = globalKeys.AsSpan(i * keyLen, keyLen);
+                int sub = garnetLog.GetPhysicalSublogIdx(keySpan);
+                sublogAssign[i] = sub;
+                bucketCounts[sub]++;
+            }
+            for (int s = 0; s < sublogCount; s++)
+                if (bucketCounts[s] == 0)
+                    throw new Exception(
+                        $"Hash distribution leaves sublog {s} of {sublogCount} with zero of the {dbsize} generated keys. " +
+                        $"Increase --dbsize to populate every bucket.");
+
+            // One shared, fixed-content value buffer for every key and every thread.
+            // Read-only sharing — no false-sharing risk, and benchmark metrics only care
+            // about the byte count, not the bytes themselves.
+            var valueLen = options.ValueLength;
+            var sharedValue = GC.AllocateArray<byte>(valueLen, pinned: true);
+            Array.Fill(sharedValue, (byte)'V');
+
+            bool sharded = options.IsReplayEnabled || options.AofBenchType == AofBenchType.EnqueueSharded;
+
+            if (sharded)
+            {
+                var threadBuffers = new byte[sublogCount][];
+                for (int s = 0; s < sublogCount; s++)
+                    threadBuffers[s] = GC.AllocateArray<byte>(bucketCounts[s] * keyLen, pinned: true);
+                var offsets = new int[sublogCount];
+                for (int i = 0; i < dbsize; i++)
+                {
+                    int s = sublogAssign[i];
+                    Buffer.BlockCopy(globalKeys, i * keyLen, threadBuffers[s], offsets[s] * keyLen, keyLen);
+                    offsets[s]++;
+                }
+                for (int t = 0; t < kvPairBuffers.Length; t++)
+                {
+                    kvPairBuffers[t] = new KVPairBuffer
+                    {
+                        Keys = threadBuffers[t],
+                        Value = sharedValue,
+                        KeyLen = keyLen,
+                        Count = bucketCounts[t],
+                    };
+                }
+            }
+            else
+            {
+                for (int t = 0; t < kvPairBuffers.Length; t++)
+                {
+                    var keys = GC.AllocateArray<byte>(dbsize * keyLen, pinned: true);
+                    Buffer.BlockCopy(globalKeys, 0, keys, 0, dbsize * keyLen);
+                    kvPairBuffers[t] = new KVPairBuffer
+                    {
+                        Keys = keys,
+                        Value = sharedValue,
+                        KeyLen = keyLen,
+                        Count = dbsize,
+                    };
+                }
+            }
+
+            int min = int.MaxValue, max = 0;
+            for (int s = 0; s < sublogCount; s++)
+            {
+                if (bucketCounts[s] < min) min = bucketCounts[s];
+                if (bucketCounts[s] > max) max = bucketCounts[s];
+            }
+            Console.WriteLine($"Per-sublog key distribution (dbsize={dbsize}, sublogs={sublogCount}): min={min} max={max}");
+            Console.WriteLine($"  counts=[{string.Join(", ", bucketCounts)}]");
         }
 
-        byte[] GetKey(int threadId, Random rng, ZipfGenerator zipf)
+        // Hex-encode keyLen characters derived from MurmurHash3(i). High-entropy bytes
+        // ensure Utility.HashBytes(key) % k is near-uniform for k up to 64 — unlike the
+        // previous "i.ToString().PadLeft(keyLen, 'X')" which clustered low bits and left
+        // 6/12/24 of the 16/32/64 buckets empty.
+        // If keyLen > 16 (very unusual), the tail is padded with '0'.
+        static unsafe void FormatHexKey(byte[] dest, int offset, int keyLen, int i)
         {
-            while (true)
-            {
-                var keyData = GetKey(rng, zipf);
-                var physicalSublogIdx = garnetLog.GetPhysicalSublogIdx(keyData.AsSpan());
-                if (physicalSublogIdx == threadId) return keyData;
-            }
-        }
-
-        byte[] GetValue() => Encoding.ASCII.GetBytes(Generator.CreateHexId(size: Math.Max(options.ValueLength, 8)));
-
-        List<(byte[], byte[])> GenerateKVPairs(int threadId, bool random, int count)
-        {
-            var rng = new Random(789110123 + threadId);
-            var zipf = options.Zipf
-                ? new ZipfGenerator(new RandomGenerator((uint)(789110123 + threadId)), options.DbSize, 0.99)
-                : null;
-
-            var kvPairs = new List<(byte[], byte[])>(count);
-            for (var i = 0; i < count; i++)
-            {
-                var key = random ? GetKey(rng, zipf) : GetKey(threadId, rng, zipf);
-                var value = GetValue();
-                kvPairs.Add((key, value));
-            }
-            return kvPairs;
+            Span<byte> mix = stackalloc byte[8];
+            BinaryPrimitives.WriteInt64LittleEndian(mix, i);
+            ulong h;
+            fixed (byte* p = mix)
+                h = Garnet.common.HashUtils.MurmurHash3x64A(p, 8);
+            int hexLen = Math.Min(keyLen, 16);
+            Encoding.ASCII.GetBytes(h.ToString("x16").AsSpan(0, hexLen), dest.AsSpan(offset, hexLen));
+            for (int j = hexLen; j < keyLen; j++)
+                dest[offset + j] = (byte)'0';
         }
 
         public void GenerateData()
         {
-            Console.WriteLine($"Generating AoFBench Data!");
-            var threads = options.IsReplayEnabled ? options.AofPhysicalSublogCount : options.NumThreads.Max();
-            var workers = new Thread[threads];
+            if (!options.IsReplayEnabled)
+            {
+                Console.WriteLine($"Pre-built {kvPairBuffers.Length} per-thread key buffers from {options.DbSize} hex keys (keyLen={keyLen}).");
+                return;
+            }
 
-            // Run the experiment.
+            Console.WriteLine($"Generating AoFBench Data!");
+            var threads = options.AofPhysicalSublogCount;
+            var workers = new Thread[threads];
             for (var idx = 0; idx < threads; ++idx)
             {
                 var x = idx;
-                workers[idx] = options.AofBenchType switch
-                {
-                    AofBenchType.Replay or AofBenchType.ReplayNoResp or AofBenchType.ReplayDirect => new Thread(() => GeneratePages(x)),
-                    AofBenchType.EnqueueSharded or AofBenchType.EnqueueRandom => new Thread(() => GenerateKeys(x)),
-                    _ => throw new Exception($"AofBenchType {options.AofBenchType} not supported"),
-                };
+                workers[idx] = new Thread(() => GeneratePages(x));
             }
 
             Stopwatch swatch = new();
             swatch.Start();
-
-            // Start threads.
             foreach (var worker in workers)
                 worker.Start();
-
-            // Wait for workers to complete
             foreach (var worker in workers)
                 worker.Join();
-
             swatch.Stop();
 
             var seconds = swatch.ElapsedMilliseconds / 1000.0;
-            if (options.IsReplayEnabled)
-            {
-                Console.WriteLine($"Generated {threads}x{options.AofGenPages} pages of size {aofServerOptions.AofPageSize} in {seconds:N2} secs");
-                Console.WriteLine($"Generated number of AOF records: {total_number_of_aof_records:N0}");
-                Console.WriteLine($"Generated number of AOF bytes: {total_number_of_aof_bytes:N0}");
-            }
-            else
-            {
-                var bufferLen = options.AofGenRecords > 0 ? options.AofGenRecords : 2 * options.DbSize;
-                Console.WriteLine($"Generated {threads}x{bufferLen} KV pairs in {seconds:N2} secs");
-            }
+            Console.WriteLine($"Generated {threads}x{options.AofGenPages} pages of size {aofServerOptions.AofPageSize} in {seconds:N2} secs");
+            Console.WriteLine($"Generated number of AOF records: {total_number_of_aof_records:N0}");
+            Console.WriteLine($"Generated number of AOF bytes: {total_number_of_aof_bytes:N0}");
         }
 
         unsafe void GeneratePages(int threadId)
         {
             var seqNumGen = new SequenceNumberGenerator(0);
-            var number_of_aof_records = 0L;
-            var number_of_aof_bytes = 0L;
-            var kvPairs = GenerateKVPairs(threadId, options.AofPhysicalSublogCount == 1, options.DbSize);
-            // Console.WriteLine($"[{threadId}] {string.Join(',', kvPairs.Select(x => Encoding.ASCII.GetString(x.Item1) + "=" + Encoding.ASCII.GetString(x.Item2)))}");
+            var rng = new Random(789110123 + threadId);
+            var buf = kvPairBuffers[threadId];
+            var keys = buf.Keys;
+            var value = buf.Value;
+            var myCount = buf.Count;
+            long number_of_aof_records = 0L;
+            long number_of_aof_bytes = 0L;
             var pages = options.AofGenPages;
             pageBuffers[threadId] = new Page[pages];
-            for (var i = 0; i < pages; i++)
-            {
-                pageBuffers[threadId][i] = new Page(1 << aofServerOptions.AofPageSizeBits());
-                FillPage(threadId, kvPairs, i, pageBuffers[threadId][i]);
-            }
+            var useShardedHeader = options.AofPhysicalSublogCount > 1 || options.AofReplayTaskCount > 1;
+            var pageSize = 1 << aofServerOptions.AofPageSizeBits();
 
-            // Console.WriteLine($"[{threadId}] - Generated {number_of_aof_records:N0} AOF records, {number_of_aof_bytes:N0} AOF bytes");
-            _ = Interlocked.Add(ref total_number_of_aof_records, number_of_aof_records);
-            _ = Interlocked.Add(ref total_number_of_aof_bytes, number_of_aof_bytes);
-
-            void FillPage(int threadId, List<(byte[], byte[])> kvPairs, int pageCount, Page page)
+            fixed (byte* keysPtr = keys)
+            fixed (byte* valuePtr = value)
             {
-                fixed (byte* pagePtr = page.payload)
+                var valueLen = value.Length;
+                for (var pageIdx = 0; pageIdx < pages; pageIdx++)
                 {
-                    var pageOffset = pagePtr;
-                    // First page starts from 64 address, so the payload space must be smaller
-                    var pageEnd = pageOffset + page.Length - (pageCount == 0 ? 64 : 0);
-                    var kvOffset = 0;
-                    while (true)
+                    var page = new Page(pageSize);
+                    pageBuffers[threadId][pageIdx] = page;
+                    fixed (byte* pagePtr = page.payload)
                     {
-                        var kvPair = kvPairs[kvOffset++ % kvPairs.Count];
-                        var keyData = kvPair.Item1;
-                        var valueData = kvPair.Item2;
-                        StringInput input = default;
-                        fixed (byte* keyPtr = keyData)
-                        fixed (byte* valuePtr = valueData)
+                        var pageOffset = pagePtr;
+                        var pageEnd = pageOffset + page.Length - (pageIdx == 0 ? 64 : 0);
+                        while (true)
                         {
-                            var key = SpanByte.FromPinnedPointer(keyPtr, keyData.Length);
-                            var value = SpanByte.FromPinnedPointer(valuePtr, valueData.Length);
+                            int idx = rng.Next(myCount);
+                            var keyPtr = keysPtr + idx * keyLen;
+                            var key = SpanByte.FromPinnedPointer(keyPtr, keyLen);
+                            var v = SpanByte.FromPinnedPointer(valuePtr, valueLen);
+                            StringInput input = default;
                             var aofHeader = new AofHeader { opType = AofEntryType.StoreUpsert, storeVersion = 1, sessionID = 0 };
-                            var useShardedHeader = options.AofPhysicalSublogCount > 1 || options.AofReplayTaskCount > 1;
                             if (!useShardedHeader)
                             {
                                 if (!garnetLog.GetSubLog(threadId).DummyEnqueue(
-                                    ref pageOffset,
-                                    pageEnd,
-                                    aofHeader,
-                                    key,
-                                    value,
-                                    ref input))
+                                    ref pageOffset, pageEnd, aofHeader, key, v, ref input))
                                     break;
                             }
                             else
                             {
-                                var replayTag = garnetLog.GetReplayTag(new ReadOnlySpan<byte>(keyPtr, keyData.Length));
+                                var replayTag = garnetLog.GetReplayTag(new ReadOnlySpan<byte>(keyPtr, keyLen));
                                 var extendedAofHeader = new AofShardedHeader
                                 {
                                     basicHeader = new AofHeader
@@ -242,74 +285,21 @@ namespace Resp.benchmark
                                     },
                                     sequenceNumber = seqNumGen.GetSequenceNumber()
                                 };
-
                                 if (!garnetLog.GetSubLog(threadId).DummyEnqueue(
-                                    ref pageOffset,
-                                    pageEnd,
-                                    extendedAofHeader,
-                                    key,
-                                    value,
-                                    ref input))
+                                    ref pageOffset, pageEnd, extendedAofHeader, key, v, ref input))
                                     break;
                             }
                             page.recordCount++;
                         }
+                        var payloadLength = (int)(pageOffset - pagePtr);
+                        page.payloadLength = payloadLength;
+                        number_of_aof_records += page.recordCount;
+                        number_of_aof_bytes += payloadLength;
                     }
-
-                    var payloadLength = (int)(pageOffset - pagePtr);
-                    page.payloadLength = payloadLength;
-                    number_of_aof_records += page.recordCount;
-                    number_of_aof_bytes += payloadLength;
                 }
             }
-        }
-
-        void GenerateKeys(int threadId)
-        {
-            var count = options.AofGenRecords > 0 ? options.AofGenRecords : 2 * options.DbSize;
-            var rng = new Random(789110123 + threadId);
-            var zipf = options.Zipf
-                ? new ZipfGenerator(new RandomGenerator((uint)(789110123 + threadId)), options.DbSize, 0.99)
-                : null;
-            var isRandom = options.AofBenchType == AofBenchType.EnqueueRandom;
-
-            var keys = GC.AllocateArray<byte>(count * keyLen, pinned: true);
-            var keysSpan = keys.AsSpan();
-            for (var i = 0; i < count; i++)
-            {
-                var slot = keysSpan.Slice(i * keyLen, keyLen);
-                while (true)
-                {
-                    int k = zipf != null ? zipf.Next() : rng.Next(options.DbSize);
-                    WriteKeyBytes(slot, k);
-                    if (isRandom) break;
-                    if (garnetLog.GetPhysicalSublogIdx(slot) == threadId) break;
-                }
-            }
-
-            var valueLen = Math.Max(options.ValueLength, 8);
-            var value = GC.AllocateArray<byte>(valueLen, pinned: true);
-            Encoding.ASCII.GetBytes(Generator.CreateHexId(size: valueLen), value);
-
-            kvPairBuffers[threadId] = new KVPairBuffer
-            {
-                Keys = keys,
-                Value = value,
-                KeyLen = keyLen,
-                Count = count,
-            };
-        }
-
-        void WriteKeyBytes(Span<byte> dest, int key)
-        {
-            int pos = dest.Length;
-            int n = key;
-            do
-            {
-                dest[--pos] = (byte)('0' + (n % 10));
-                n /= 10;
-            } while (n > 0);
-            while (pos > 0) dest[--pos] = (byte)'X';
+            _ = Interlocked.Add(ref total_number_of_aof_records, number_of_aof_records);
+            _ = Interlocked.Add(ref total_number_of_aof_bytes, number_of_aof_bytes);
         }
     }
 }
