@@ -52,6 +52,7 @@ def main():
     fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75)
 
     all_threads: set[float] = set()
+    all_y: list[float] = []
     for m in APPEND_M_VALUES:
         key = f"multilog_m{m}"
         xs, ys, _ = extract_series(
@@ -63,9 +64,11 @@ def main():
             print(f"WARN: no data for {FILTER_PARAM}={m}", file=sys.stderr)
             continue
         all_threads.update(xs)
+        ys_mrec = to_mrecords(ys)
+        all_y.extend(ys_mrec)
         ax.plot(
             xs,
-            to_mrecords(ys),
+            ys_mrec,
             color=color_map[key],
             linestyle=linestyle_map[key],
             marker=marker_map[key],
@@ -75,15 +78,17 @@ def main():
         )
 
     sorted_threads = sorted(all_threads)
-    # Drop the tightly clustered low ticks (1, 2) — they overlap at single-column width.
-    visible_ticks = [t for t in sorted_threads if t not in {1.0, 2.0}]
-    ax.set_xticks(visible_ticks)
-    ax.set_xticklabels([str(int(t)) for t in visible_ticks])
-    ax.set_xlim(0, max(sorted_threads) * 1.02)
-    ax.set_ylim(bottom=0)
+    y_min = min(y for y in all_y if y > 0)
+    y_max = max(all_y)
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xticks(sorted_threads)
+    ax.set_xticklabels([str(int(t)) for t in sorted_threads])
+    ax.set_xlim(sorted_threads[0] / 1.2, sorted_threads[-1] * 1.2)
+    ax.set_ylim(y_min / 1.5, y_max * 1.5)
     ax.set_xlabel("Primary worker threads")
     ax.set_ylabel("Append throughput (Mrec/s)")
-    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
+    ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
     ax.set_axisbelow(True)
     ax.legend(
         loc="upper left",

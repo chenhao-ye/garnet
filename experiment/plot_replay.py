@@ -102,14 +102,18 @@ def main():
         label=labels_map["multilog_physical"],
     )
 
-    y_max = max(to_mrecords(ys_virt) + to_mrecords(ys_phys) + [single_log_y_mrec])
+    all_y = to_mrecords(ys_virt) + to_mrecords(ys_phys) + [single_log_y_mrec]
+    y_min = min(y for y in all_y if y > 0)
+    y_max = max(all_y)
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
     ax.set_xticks(all_x)
     ax.set_xticklabels([str(int(x)) for x in all_x])
-    ax.set_xlim(0, x_max * 1.02)
-    ax.set_ylim(0, y_max * 1.15)
+    ax.set_xlim(all_x[0] / 1.2, x_max * 1.2)
+    ax.set_ylim(y_min / 1.5, y_max * 1.5)
     ax.set_xlabel("Number of sublogs")
     ax.set_ylabel("Replay throughput (Mrec/s)")
-    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
+    ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
     ax.set_axisbelow(True)
     ax.legend(
         loc="upper left",
