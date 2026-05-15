@@ -17,6 +17,9 @@ base:
     aof_null_device: true
     client: InProc
     aof_commit_freq: -1
+    keylength: 8
+    valuelength: 8
+    dbsize: 1000000
 
 sweep:
   client_params:
