@@ -77,6 +77,7 @@ namespace Resp.benchmark
 
         public void Run(int threads)
         {
+            aofGen.BuildKVPairBuffersForRun(threads);
             var workers = new Thread[threads];
 
             Console.WriteLine($"Epoch instance count:{LightEpoch.ActiveInstanceCount()}");

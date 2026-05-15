@@ -42,8 +42,16 @@ namespace Resp.benchmark
 
         /// <summary>
         /// Per-thread flat key buffer + shared value (one entry per thread).
+        /// Rebuilt by <see cref="BuildKVPairBuffersForRun"/> at the start of every Run() so the partition matches the current threadCount.
         /// </summary>
         KVPairBuffer[] kvPairBuffers;
+
+        // Per-sublog flat key buffers, indexed by physical sublog idx. Built once in the constructor;
+        // BuildKVPairBuffersForRun shares these by reference (1-sublog threads) or concatenates them (multi-sublog threads).
+        byte[][] perSublogKeysets;
+        int[] bucketCounts;
+        byte[] globalKeys;
+        byte[] sharedValue;
 
         long total_number_of_aof_records = 0L;
         long total_number_of_aof_bytes = 0L;
@@ -77,15 +85,16 @@ namespace Resp.benchmark
             appendOnlyFile = new GarnetAppendOnlyFile(aofServerOptions, logSettings, Program.loggerFactory.CreateLogger("AofGen - AOF instance"));
             garnetLog = appendOnlyFile.Log;
 
-            if (options.AofPhysicalSublogCount != options.NumThreads.Max() && options.AofBenchType == AofBenchType.EnqueueSharded)
-                throw new Exception("Use --threads(MAX)== --aof-sublog-count to generated perfectly sharded data!");
-
-            var threadCount = options.IsReplayEnabled ? options.AofPhysicalSublogCount : options.NumThreads.Max();
-            kvPairBuffers = new KVPairBuffer[threadCount];
             if (options.IsReplayEnabled)
                 pageBuffers = new Page[options.AofPhysicalSublogCount][];
 
-            BuildPerThreadKeysets();
+            BuildSublogKeysets();
+
+            // Replay drives GeneratePages() (via bench.GenerateData()) before Run(), so kvPairBuffers must
+            // be populated up front for the sublog-indexed access in GeneratePages. Run(AofPhysicalSublogCount)
+            // later re-invokes this with the same threadCount, which is idempotent.
+            if (options.IsReplayEnabled)
+                BuildKVPairBuffersForRun(options.AofPhysicalSublogCount);
         }
 
         public NetworkBufferSettings GetAofSyncNetworkBufferSettings()
@@ -95,19 +104,17 @@ namespace Resp.benchmark
             return new(aofSyncSendBufferSize, aofSyncInitialReceiveBufferSize);
         }
 
-        // Pre-build per-thread key buffers from a fixed-size global hex keyset.
-        // Sharded / Replay: thread t owns the keys hashing to sublog t (per-thread length varies, sum = dbsize).
-        // EnqueueRandom: every thread gets a private pinned copy of all dbsize keys.
+        // Phase A: build the fixed-size global hex keyset and bucket it by physical sublog.
         // Throws if the hash leaves any sublog bucket empty, instead of letting a worker spin in
         // a rejection-sampling loop forever (the failure mode we hit at k>=16 with structured numeric keys).
-        unsafe void BuildPerThreadKeysets()
+        unsafe void BuildSublogKeysets()
         {
             var dbsize = options.DbSize;
             var sublogCount = options.AofPhysicalSublogCount;
 
-            var globalKeys = new byte[dbsize * keyLen];
+            globalKeys = new byte[dbsize * keyLen];
             var sublogAssign = new int[dbsize];
-            var bucketCounts = new int[sublogCount];
+            bucketCounts = new int[sublogCount];
             for (int i = 0; i < dbsize; i++)
             {
                 FormatHexKey(globalKeys, i * keyLen, keyLen, i);
@@ -126,37 +133,110 @@ namespace Resp.benchmark
             // Read-only sharing — no false-sharing risk, and benchmark metrics only care
             // about the byte count, not the bytes themselves.
             var valueLen = options.ValueLength;
-            var sharedValue = GC.AllocateArray<byte>(valueLen, pinned: true);
+            sharedValue = GC.AllocateArray<byte>(valueLen, pinned: true);
             Array.Fill(sharedValue, (byte)'V');
+
+            perSublogKeysets = new byte[sublogCount][];
+            for (int s = 0; s < sublogCount; s++)
+                perSublogKeysets[s] = GC.AllocateArray<byte>(bucketCounts[s] * keyLen, pinned: true);
+            var offsets = new int[sublogCount];
+            for (int i = 0; i < dbsize; i++)
+            {
+                int s = sublogAssign[i];
+                Buffer.BlockCopy(globalKeys, i * keyLen, perSublogKeysets[s], offsets[s] * keyLen, keyLen);
+                offsets[s]++;
+            }
+
+            int min = int.MaxValue, max = 0;
+            for (int s = 0; s < sublogCount; s++)
+            {
+                if (bucketCounts[s] < min) min = bucketCounts[s];
+                if (bucketCounts[s] > max) max = bucketCounts[s];
+            }
+            Console.WriteLine($"Per-sublog key distribution (dbsize={dbsize}, sublogs={sublogCount}): min={min} max={max}");
+            Console.WriteLine($"  counts=[{string.Join(", ", bucketCounts)}]");
+        }
+
+        // Phase B: (re)build kvPairBuffers for the current Run's threadCount.
+        // EnqueueSharded / Replay: round-robin partition — thread t owns sublogs {s : s % threadCount == t}.
+        //   * 1-sublog threads share the perSublogKeysets entry by reference (no copy).
+        //   * Multi-sublog threads get a concatenated pinned buffer.
+        // EnqueueRandom: every thread gets a private pinned copy of all dbsize keys (unchanged).
+        public void BuildKVPairBuffersForRun(int threadCount)
+        {
+            var sublogCount = options.AofPhysicalSublogCount;
+            kvPairBuffers = new KVPairBuffer[threadCount];
 
             bool sharded = options.IsReplayEnabled || options.AofBenchType == AofBenchType.EnqueueSharded;
 
             if (sharded)
             {
-                var threadBuffers = new byte[sublogCount][];
+                var ownedCount = new int[threadCount];
                 for (int s = 0; s < sublogCount; s++)
-                    threadBuffers[s] = GC.AllocateArray<byte>(bucketCounts[s] * keyLen, pinned: true);
-                var offsets = new int[sublogCount];
-                for (int i = 0; i < dbsize; i++)
+                    ownedCount[s % threadCount]++;
+
+                var ownedSublogs = new int[threadCount][];
+                for (int t = 0; t < threadCount; t++)
+                    ownedSublogs[t] = new int[ownedCount[t]];
+                var fillOffset = new int[threadCount];
+                for (int s = 0; s < sublogCount; s++)
                 {
-                    int s = sublogAssign[i];
-                    Buffer.BlockCopy(globalKeys, i * keyLen, threadBuffers[s], offsets[s] * keyLen, keyLen);
-                    offsets[s]++;
+                    int t = s % threadCount;
+                    ownedSublogs[t][fillOffset[t]++] = s;
                 }
-                for (int t = 0; t < kvPairBuffers.Length; t++)
+
+                var perThreadCounts = new int[threadCount];
+                for (int t = 0; t < threadCount; t++)
                 {
+                    var owned = ownedSublogs[t];
+                    int count = 0;
+                    foreach (var s in owned) count += bucketCounts[s];
+
+                    byte[] keys;
+                    if (owned.Length == 1)
+                    {
+                        keys = perSublogKeysets[owned[0]];
+                    }
+                    else
+                    {
+                        keys = GC.AllocateArray<byte>(count * keyLen, pinned: true);
+                        int dstOffset = 0;
+                        foreach (var s in owned)
+                        {
+                            int byteLen = bucketCounts[s] * keyLen;
+                            Buffer.BlockCopy(perSublogKeysets[s], 0, keys, dstOffset, byteLen);
+                            dstOffset += byteLen;
+                        }
+                    }
                     kvPairBuffers[t] = new KVPairBuffer
                     {
-                        Keys = threadBuffers[t],
+                        Keys = keys,
                         Value = sharedValue,
                         KeyLen = keyLen,
-                        Count = bucketCounts[t],
+                        Count = count,
                     };
+                    perThreadCounts[t] = count;
                 }
+
+                var partition = new StringBuilder();
+                for (int t = 0; t < threadCount; t++)
+                {
+                    if (t > 0) partition.Append("; ");
+                    partition.Append($"t{t}->{{");
+                    for (int i = 0; i < ownedSublogs[t].Length; i++)
+                    {
+                        if (i > 0) partition.Append(',');
+                        partition.Append('s').Append(ownedSublogs[t][i]);
+                    }
+                    partition.Append('}');
+                }
+                Console.WriteLine($"threads={threadCount} sublogs={sublogCount} (round-robin): {partition}");
+                Console.WriteLine($"  per-thread key counts=[{string.Join(", ", perThreadCounts)}]");
             }
             else
             {
-                for (int t = 0; t < kvPairBuffers.Length; t++)
+                var dbsize = options.DbSize;
+                for (int t = 0; t < threadCount; t++)
                 {
                     var keys = GC.AllocateArray<byte>(dbsize * keyLen, pinned: true);
                     Buffer.BlockCopy(globalKeys, 0, keys, 0, dbsize * keyLen);
@@ -169,15 +249,6 @@ namespace Resp.benchmark
                     };
                 }
             }
-
-            int min = int.MaxValue, max = 0;
-            for (int s = 0; s < sublogCount; s++)
-            {
-                if (bucketCounts[s] < min) min = bucketCounts[s];
-                if (bucketCounts[s] > max) max = bucketCounts[s];
-            }
-            Console.WriteLine($"Per-sublog key distribution (dbsize={dbsize}, sublogs={sublogCount}): min={min} max={max}");
-            Console.WriteLine($"  counts=[{string.Join(", ", bucketCounts)}]");
         }
 
         // Hex-encode keyLen characters derived from MurmurHash3(i). High-entropy bytes
@@ -202,7 +273,8 @@ namespace Resp.benchmark
         {
             if (!options.IsReplayEnabled)
             {
-                Console.WriteLine($"Pre-built {kvPairBuffers.Length} per-thread key buffers from {options.DbSize} hex keys (keyLen={keyLen}).");
+                // Per-thread buffers are (re)built at the start of each Run() now, so nothing to do here.
+                Console.WriteLine($"Pre-built per-sublog keysets from {options.DbSize} hex keys (keyLen={keyLen}, sublogs={options.AofPhysicalSublogCount}).");
                 return;
             }
 
