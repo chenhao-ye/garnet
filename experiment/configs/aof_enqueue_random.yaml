@@ -20,7 +20,6 @@ base:
     client: InProc
     aof_commit_freq: -1
     aof_memory_size: 256m
-    aof_tail_ref_freq: -1
     keylength: 8
     valuelength: 8
     dbsize: 1000000
