@@ -171,18 +171,28 @@ namespace Resp.benchmark
 
             if (sharded)
             {
-                var ownedCount = new int[threadCount];
-                for (int s = 0; s < sublogCount; s++)
-                    ownedCount[s % threadCount]++;
-
+                // Round-robin:
+                //   T >= S: thread t owns exactly sublog (t % S); multiple threads share a sublog.
+                //   T <  S: thread t owns sublogs {s : s % T == t}; multiple sublogs per thread.
                 var ownedSublogs = new int[threadCount][];
-                for (int t = 0; t < threadCount; t++)
-                    ownedSublogs[t] = new int[ownedCount[t]];
-                var fillOffset = new int[threadCount];
-                for (int s = 0; s < sublogCount; s++)
+                if (threadCount >= sublogCount)
                 {
-                    int t = s % threadCount;
-                    ownedSublogs[t][fillOffset[t]++] = s;
+                    for (int t = 0; t < threadCount; t++)
+                        ownedSublogs[t] = [t % sublogCount];
+                }
+                else
+                {
+                    var ownedCount = new int[threadCount];
+                    for (int s = 0; s < sublogCount; s++)
+                        ownedCount[s % threadCount]++;
+                    for (int t = 0; t < threadCount; t++)
+                        ownedSublogs[t] = new int[ownedCount[t]];
+                    var fillOffset = new int[threadCount];
+                    for (int s = 0; s < sublogCount; s++)
+                    {
+                        int t = s % threadCount;
+                        ownedSublogs[t][fillOffset[t]++] = s;
+                    }
                 }
 
                 var perThreadCounts = new int[threadCount];
