@@ -14,6 +14,18 @@ def result_dir(name: str) -> Path:
     return _RESULT_ROOT / name
 
 
+def config_path_for(name_or_path: str) -> Path:
+    """Resolve a CLI arg to a config path.
+
+    Accepts either a bare config name (looks up
+    experiment/configs/<name>.yaml) or a filesystem path.
+    """
+    candidate = Path(name_or_path)
+    if candidate.exists():
+        return candidate
+    return REPO_ROOT / "experiment" / "configs" / f"{name_or_path}.yaml"
+
+
 DEFAULT_BENCHMARK_PROJECT = "benchmark/Resp.benchmark/Resp.benchmark.csproj"
 DEFAULT_SERVER_PROJECT = "main/GarnetServer/GarnetServer.csproj"
 SUPPORTED_BENCHMARKS = {"online", "offline", "aof"}

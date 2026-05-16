@@ -16,7 +16,12 @@ import statistics
 from pathlib import Path
 
 import yaml
-from config import REPO_ROOT, load_experiment_spec, resolve_run_spec, result_dir
+from config import (
+    config_path_for,
+    load_experiment_spec,
+    resolve_run_spec,
+    result_dir,
+)
 
 ONLINE_COLUMNS = [
     "min_us",
@@ -498,30 +503,8 @@ def _collect_runs(run_dirs: list, warmup: int) -> tuple[dict, dict[str, list]]:
     return runs, sweep_params
 
 
-def main(argv: list[str] | None = None):
-    parser = argparse.ArgumentParser(
-        description="Parse Garnet benchmark outputs into result.yaml"
-    )
-    parser.add_argument(
-        "experiment", help="Experiment name (looks up experiment/configs/<name>.yaml)"
-    )
-    parser.add_argument(
-        "--config",
-        help="Override config path (default: experiment/configs/<name>.yaml)",
-    )
-    parser.add_argument(
-        "--warmup",
-        type=int,
-        default=2,
-        help="Number of initial samples to discard as warmup (default: 2)",
-    )
-    args = parser.parse_args(argv)
-
-    spec = load_experiment_spec(
-        args.config
-        or str(REPO_ROOT / "experiment" / "configs" / f"{args.experiment}.yaml"),
-        default_name=args.experiment,
-    )
+def _process_one(config: str, warmup: int) -> None:
+    spec = load_experiment_spec(config_path_for(config), default_name=Path(config).stem)
 
     exp_dir = result_dir(spec.name)
     if not exp_dir.exists():
@@ -533,21 +516,41 @@ def main(argv: list[str] | None = None):
     if not run_dirs:
         raise ValueError(f"No run directories found in {exp_dir}")
 
-    runs, sweep_params = _collect_runs(run_dirs, args.warmup)
+    runs, sweep_params = _collect_runs(run_dirs, warmup)
 
     result = {
         "experiment_name": spec.name,
         "sweep_params": sweep_params,
-        "warmup_rows_discarded": args.warmup,
+        "warmup_rows_discarded": warmup,
         "runs": runs,
     }
 
     out_path = exp_dir / "result.yaml"
     with open(out_path, "w") as f:
         yaml.dump(result, f)
-    summary_path = _write_summary_file(exp_dir, spec.name, args.warmup, runs)
+    summary_path = _write_summary_file(exp_dir, spec.name, warmup, runs)
     print(f"\nResult written to: {out_path}")
     print(f"Summary written to: {summary_path}")
+
+
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(
+        description="Parse Garnet benchmark outputs into result.yaml"
+    )
+    parser.add_argument(
+        "configs",
+        nargs="+",
+        help="One or more experiment config names (or paths). Each is processed sequentially.",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=5,
+        help="Number of initial samples to discard as warmup (default: 5)",
+    )
+    args = parser.parse_args(argv)
+    for config in args.configs:
+        _process_one(config, args.warmup)
 
 
 if __name__ == "__main__":

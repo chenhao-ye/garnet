@@ -16,7 +16,7 @@ Lifecycle per invocation:
 Usage:
     uv run experiment/run.py scale_clients
     uv run experiment/run.py scale_clients --dry-run
-    uv run experiment/run.py scale_clients --config path/to/custom.yaml
+    uv run experiment/run.py scale_clients other_experiment   # run both sequentially
 """
 
 import argparse
@@ -29,7 +29,13 @@ import time
 from pathlib import Path
 
 import yaml
-from config import REPO_ROOT, load_experiment_spec, resolve_run_spec, result_dir
+from config import (
+    REPO_ROOT,
+    config_path_for,
+    load_experiment_spec,
+    resolve_run_spec,
+    result_dir,
+)
 from parse import main as parse_main
 
 SERVER_READY_TIMEOUT = 60
@@ -294,33 +300,8 @@ def execute_run(
             shutdown_server(server_proc)
 
 
-def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    parser = argparse.ArgumentParser(description="Run Garnet experiments")
-    parser.add_argument(
-        "experiment", help="Experiment name (looks up experiment/configs/<name>.yaml)"
-    )
-    parser.add_argument(
-        "--config",
-        help="Override config path (default: experiment/configs/<name>.yaml)",
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Print commands without executing"
-    )
-    args = parser.parse_args()
-
-    global dry_run
-    dry_run = args.dry_run
-
-    spec = load_experiment_spec(
-        args.config
-        or str(REPO_ROOT / "experiment" / "configs" / f"{args.experiment}.yaml"),
-        default_name=args.experiment,
-    )
+def _run_one(config: str) -> None:
+    spec = load_experiment_spec(config_path_for(config), default_name=Path(config).stem)
     if not spec.prepare_params:
         logger.warning("empty prepare.client_params")
     if not spec.base_server_params:
@@ -360,11 +341,31 @@ def main():
         )
 
     logger.info(f"All runs complete. Results in: {exp_dir}")
+    parse_main([config])
 
-    parse_argv = [args.experiment]
-    if args.config:
-        parse_argv += ["--config", args.config]
-    parse_main(parse_argv)
+
+def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    parser = argparse.ArgumentParser(description="Run Garnet experiments")
+    parser.add_argument(
+        "configs",
+        nargs="+",
+        help="One or more experiment config names (or paths). Each is run sequentially.",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print commands without executing"
+    )
+    args = parser.parse_args()
+
+    global dry_run
+    dry_run = args.dry_run
+
+    for config in args.configs:
+        _run_one(config)
 
 
 if __name__ == "__main__":

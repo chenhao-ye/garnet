@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from config import REPO_ROOT, load_experiment_spec
+from config import REPO_ROOT, config_path_for, load_experiment_spec
 from plot_util import PLOT_CONFIG_KEYS
 
 OPTIONS_CS_PATH = REPO_ROOT / "benchmark/Resp.benchmark/Options.cs"
@@ -77,17 +77,6 @@ CLIENT_DEFAULTS = {
 def option_names_from_options_cs(path: Path) -> set[str]:
     text = path.read_text()
     return set(re.findall(r'\[Option\((?:\'[^\']+\',\s*)?"([^"]+)"', text))
-
-
-def config_path_for_arg(experiment: str, override: str | None) -> Path:
-    if override:
-        return Path(override)
-
-    candidate = Path(experiment)
-    if candidate.exists():
-        return candidate
-
-    return REPO_ROOT / "experiment" / "configs" / f"{experiment}.yaml"
 
 
 def add_issue(issues: list[Issue], level: str, scope: str, message: str) -> None:
@@ -546,23 +535,9 @@ def print_issues(issues: list[Issue], config_path: Path) -> None:
     print(f"Summary: {errors} error(s), {warnings} warning(s) in {config_path}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Validate experiment configs against Resp.benchmark behavior"
-    )
-    parser.add_argument(
-        "experiment",
-        help="Experiment name or path to YAML config",
-    )
-    parser.add_argument(
-        "--config",
-        help="Override config path (default: experiment/configs/<name>.yaml)",
-    )
-    args = parser.parse_args()
-
-    config_path = config_path_for_arg(args.experiment, args.config)
-    spec = load_experiment_spec(config_path, default_name=Path(args.experiment).stem)
-    supported_client_params = option_names_from_options_cs(OPTIONS_CS_PATH)
+def _check_one(config: str, supported_client_params: set[str]) -> bool:
+    """Validate one config. Returns True if any ERROR-level issues were found."""
+    spec = load_experiment_spec(config_path_for(config), default_name=Path(config).stem)
     issues: list[Issue] = []
 
     validate_config_name_matches_filename(
@@ -639,7 +614,26 @@ def main() -> None:
     )
 
     print_issues(issues, spec.config_path)
-    sys.exit(1 if any(issue.level == "ERROR" for issue in issues) else 0)
+    return any(issue.level == "ERROR" for issue in issues)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Validate experiment configs against Resp.benchmark behavior"
+    )
+    parser.add_argument(
+        "configs",
+        nargs="+",
+        help="One or more experiment config names (or paths).",
+    )
+    args = parser.parse_args()
+
+    supported_client_params = option_names_from_options_cs(OPTIONS_CS_PATH)
+    any_errors = False
+    for config in args.configs:
+        if _check_one(config, supported_client_params):
+            any_errors = True
+    sys.exit(1 if any_errors else 0)
 
 
 if __name__ == "__main__":
