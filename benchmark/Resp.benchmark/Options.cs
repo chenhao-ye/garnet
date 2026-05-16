@@ -41,6 +41,9 @@ namespace Resp.benchmark
         [Option("runtime", Required = false, Default = 15, HelpText = "Run time (seconds)")]
         public int RunTime { get; set; }
 
+        [Option("repeat", Required = false, Default = 1, HelpText = "Repeat the benchmark this many times back-to-back (reusing generated data)")]
+        public int Repeat { get; set; }
+
         [Option('t', "threads", Separator = ',', Default = new[] { 1, 2, 4, 8, 16, 32 }, HelpText = "Number of threads (comma separated)")]
         public IEnumerable<int> NumThreads { get; set; }
 

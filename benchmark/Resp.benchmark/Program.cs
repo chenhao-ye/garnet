@@ -272,15 +272,17 @@ namespace Resp.benchmark
                 {
                     var bench = new AofBench(opts);
                     bench.GenerateData();
-                    bench.Run(opts.AofPhysicalSublogCount);
+                    for (var i = 0; i < opts.Repeat; i++)
+                        bench.Run(opts.AofPhysicalSublogCount);
                 }
                 else
                 {
                     var bench = new AofBench(opts);
                     bench.GenerateData();
 
-                    foreach (var threadCount in opts.NumThreads)
-                        bench.Run(threadCount);
+                    for (var i = 0; i < opts.Repeat; i++)
+                        foreach (var threadCount in opts.NumThreads)
+                            bench.Run(threadCount);
                 }
             }
             else
