@@ -101,16 +101,22 @@ def build_fig(nrows: int, ncols: int, total_width: float, total_height: float, *
     return fig, axes
 
 
-def build_fig_single_col(nrows: int, ncols: int, hw_ratio: float = 1.0, **kwargs):
-    subplot_width = SINGLE_COLUMN_WIDTH / ncols
+def build_fig_single_col(
+    nrows: int, ncols: int, hw_ratio: float = 1.0, width_scale: float = 1.0, **kwargs
+):
+    total_width = SINGLE_COLUMN_WIDTH * width_scale
+    subplot_width = total_width / ncols
     subplot_height = subplot_width * hw_ratio
-    return build_fig(nrows, ncols, SINGLE_COLUMN_WIDTH, subplot_height * nrows, **kwargs)
+    return build_fig(nrows, ncols, total_width, subplot_height * nrows, **kwargs)
 
 
-def build_fig_double_col(nrows: int, ncols: int, hw_ratio: float = 1.0, **kwargs):
-    subplot_width = DOUBLE_COLUMN_WIDTH / ncols
+def build_fig_double_col(
+    nrows: int, ncols: int, hw_ratio: float = 1.0, width_scale: float = 1.0, **kwargs
+):
+    total_width = DOUBLE_COLUMN_WIDTH * width_scale
+    subplot_width = total_width / ncols
     subplot_height = subplot_width * hw_ratio
-    return build_fig(nrows, ncols, DOUBLE_COLUMN_WIDTH, subplot_height * nrows, **kwargs)
+    return build_fig(nrows, ncols, total_width, subplot_height * nrows, **kwargs)
 
 
 def save_fig(fig, fig_path: Path, tight_pad: float | None = 0.1):

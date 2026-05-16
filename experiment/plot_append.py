@@ -64,7 +64,8 @@ def main():
     result = load_result(experiment)
     plot_cfg = load_plot_config(experiment)
 
-    fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75)
+    scale = float(plot_cfg.get("scale", 1.0))
+    fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
 
     all_threads: set[float] = set()
     all_y: list[float] = []
