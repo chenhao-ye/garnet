@@ -11,14 +11,11 @@ import matplotlib
 import matplotlib.layout_engine
 import matplotlib.pyplot as plt
 import yaml
-
 from plot_style import DOUBLE_COLUMN_WIDTH, SINGLE_COLUMN_WIDTH
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULT_ROOT = REPO_ROOT / "result"
 CONFIG_ROOT = Path(__file__).resolve().parent / "configs"
-
-KRECORDS_TO_MRECORDS = 1 / 1000.0
 
 
 def load_result(experiment: str) -> dict:
@@ -65,12 +62,7 @@ def extract_series(
         sweep = _run_sweep_params(entry)
         if x_param not in sweep:
             continue
-        skip = False
-        for k, v in filter_params.items():
-            if sweep.get(k) != v:
-                skip = True
-                break
-        if skip:
+        if not all(sweep.get(k) == v for k, v in filter_params.items()):
             continue
         x = float(sweep[x_param])
         stats = entry.get("stats", {}).get(y_metric, {})
@@ -94,7 +86,9 @@ def _hide_top_right_spines(axes):
         axes.spines[["right", "top"]].set_visible(False)
 
 
-def build_fig(nrows: int, ncols: int, total_width: float, total_height: float, **kwargs):
+def build_fig(
+    nrows: int, ncols: int, total_width: float, total_height: float, **kwargs
+):
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, **kwargs)
     fig.set_size_inches(total_width, total_height)
     _hide_top_right_spines(axes)
@@ -130,7 +124,3 @@ def save_fig(fig, fig_path: Path, tight_pad: float | None = 0.1):
         png_path = Path(str(fig_path).replace(".pdf", ".png"))
         fig.savefig(png_path, dpi=300)
         print(f"Saved {png_path}")
-
-
-def to_mrecords(ys_krecords: list[float]) -> list[float]:
-    return [y * KRECORDS_TO_MRECORDS for y in ys_krecords]

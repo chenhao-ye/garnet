@@ -25,7 +25,6 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
 from plot_style import (
     LINEWIDTH,
     MARKER_SIZE,
@@ -40,7 +39,6 @@ from plot_util import (
     extract_series,
     load_result,
     save_fig,
-    to_mrecords,
 )
 
 VIRTUAL_EXP = "aof_replay_virtual"
@@ -52,12 +50,14 @@ def main():
     phys = load_result(PHYSICAL_EXP)
 
     xs_virt, ys_virt, _ = extract_series(virt, x_param="client.aof_replay_task_count")
-    xs_phys, ys_phys, _ = extract_series(phys, x_param="client.aof_physical_sublog_count")
+    xs_phys, ys_phys, _ = extract_series(
+        phys, x_param="client.aof_physical_sublog_count"
+    )
 
     single_log_y_mrec = None
     for x, y in zip(xs_phys, ys_phys):
         if x == 1:
-            single_log_y_mrec = y / 1000.0
+            single_log_y_mrec = y
             break
     if single_log_y_mrec is None:
         raise RuntimeError(
@@ -82,7 +82,7 @@ def main():
 
     ax.plot(
         xs_virt,
-        to_mrecords(ys_virt),
+        ys_virt,
         color=color_map["multilog_virtual"],
         linestyle=linestyle_map["multilog_virtual"],
         marker=marker_map["multilog_virtual"],
@@ -93,7 +93,7 @@ def main():
 
     ax.plot(
         xs_phys,
-        to_mrecords(ys_phys),
+        ys_phys,
         color=color_map["multilog_physical"],
         linestyle=linestyle_map["multilog_physical"],
         marker=marker_map["multilog_physical"],
@@ -102,7 +102,7 @@ def main():
         label=labels_map["multilog_physical"],
     )
 
-    all_y = to_mrecords(ys_virt) + to_mrecords(ys_phys) + [single_log_y_mrec]
+    all_y = list(ys_virt) + list(ys_phys) + [single_log_y_mrec]
     y_min = min(y for y in all_y if y > 0)
     y_max = max(all_y)
     ax.set_xscale("log", base=2)
@@ -112,7 +112,7 @@ def main():
     ax.set_xlim(all_x[0] / 1.2, x_max * 1.2)
     ax.set_ylim(y_min / 1.5, y_max * 1.5)
     ax.set_xlabel("Number of sublogs")
-    ax.set_ylabel("Replay throughput (Mrec/s)")
+    ax.set_ylabel("Replay throughput (Mop/s)")
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
     ax.set_axisbelow(True)
     ax.legend(

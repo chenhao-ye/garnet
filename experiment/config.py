@@ -13,6 +13,7 @@ _RESULT_ROOT = REPO_ROOT / "result"
 def result_dir(name: str) -> Path:
     return _RESULT_ROOT / name
 
+
 DEFAULT_BENCHMARK_PROJECT = "benchmark/Resp.benchmark/Resp.benchmark.csproj"
 DEFAULT_SERVER_PROJECT = "main/GarnetServer/GarnetServer.csproj"
 SUPPORTED_BENCHMARKS = {"online", "offline", "aof"}
@@ -72,9 +73,7 @@ def load_experiment_spec(
     return ExperimentSpec(
         name=config.get("name", default_name or path.stem),
         benchmark=benchmark,
-        benchmark_project=config.get(
-            "benchmark_project", default_benchmark_project
-        ),
+        benchmark_project=config.get("benchmark_project", default_benchmark_project),
         server_project=config.get("server_project", default_server_project),
         prepare_params=dict(config.get("prepare", {}).get("client_params", {})),
         base_client_params=dict(config["base"]["client_params"]),

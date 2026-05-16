@@ -192,7 +192,15 @@ def validate_online_mode(
         iter_param_contexts(
             base_params,
             sweep_client_params,
-            ["aof_bench", "skipload", "op", "batchsize", "client", "pool", "client_hist"],
+            [
+                "aof_bench",
+                "skipload",
+                "op",
+                "batchsize",
+                "client",
+                "pool",
+                "client_hist",
+            ],
         )
     )
 
@@ -440,10 +448,7 @@ def validate_main_config(
     mode_contexts = list(
         iter_param_contexts(base_params, sweep_client_params, ["online", "aof_bench"])
     )
-    possible_modes = {
-        infer_main_mode(context)
-        for context in mode_contexts
-    }
+    possible_modes = {infer_main_mode(context) for context in mode_contexts}
 
     if benchmark_label == "online" and "online" not in possible_modes:
         add_issue(
@@ -476,11 +481,17 @@ def validate_main_config(
         )
 
     if "online" in possible_modes:
-        validate_online_mode(issues, scope, base_params, sweep_client_params, specified_keys)
+        validate_online_mode(
+            issues, scope, base_params, sweep_client_params, specified_keys
+        )
     if "throughput" in possible_modes:
-        validate_offline_mode(issues, scope, base_params, sweep_client_params, specified_keys)
+        validate_offline_mode(
+            issues, scope, base_params, sweep_client_params, specified_keys
+        )
     if "aof" in possible_modes:
-        validate_aof_mode(issues, scope, base_params, sweep_client_params, specified_keys)
+        validate_aof_mode(
+            issues, scope, base_params, sweep_client_params, specified_keys
+        )
 
 
 def validate_config_name_matches_filename(
@@ -510,9 +521,7 @@ def print_issues(issues: list[Issue], config_path: Path) -> None:
 
     errors = sum(issue.level == "ERROR" for issue in issues)
     warnings = sum(issue.level == "WARNING" for issue in issues)
-    print(
-        f"Summary: {errors} error(s), {warnings} warning(s) in {config_path}"
-    )
+    print(f"Summary: {errors} error(s), {warnings} warning(s) in {config_path}")
 
 
 def main() -> None:

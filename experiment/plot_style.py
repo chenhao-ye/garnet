@@ -46,7 +46,9 @@ color_map = {
     "multilog_physical": "#2ca02c",
     "noprefix": "#9467bd",
 }
-color_map.update({f"multilog_m{m}": _append_palette[i] for i, m in enumerate(APPEND_M_VALUES)})
+color_map.update(
+    {f"multilog_m{m}": _append_palette[i] for i, m in enumerate(APPEND_M_VALUES)}
+)
 color_map["multilog_m1"] = color_map["single_log"]
 
 linestyle_map = {
@@ -65,7 +67,12 @@ marker_map = {
     "multilog_physical": "s",
     "noprefix": "^",
 }
-marker_map.update({f"multilog_m{m}": _marker_cycle[i % len(_marker_cycle)] for i, m in enumerate(APPEND_M_VALUES)})
+marker_map.update(
+    {
+        f"multilog_m{m}": _marker_cycle[i % len(_marker_cycle)]
+        for i, m in enumerate(APPEND_M_VALUES)
+    }
+)
 marker_map["multilog_m1"] = None
 
 labels_map = {

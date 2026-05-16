@@ -23,7 +23,6 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
 from plot_style import (
     APPEND_M_VALUES,
     LINEWIDTH,
@@ -40,7 +39,6 @@ from plot_util import (
     load_plot_config,
     load_result,
     save_fig,
-    to_mrecords,
 )
 
 DEFAULT_EXPERIMENT = "aof_enqueue_random"
@@ -80,11 +78,10 @@ def main():
             print(f"WARN: no data for {FILTER_PARAM}={m}", file=sys.stderr)
             continue
         all_threads.update(xs)
-        ys_mrec = to_mrecords(ys)
-        all_y.extend(ys_mrec)
+        all_y.extend(ys)
         ax.plot(
             xs,
-            ys_mrec,
+            ys,
             color=color_map[key],
             linestyle=linestyle_map[key],
             marker=marker_map[key],
@@ -109,7 +106,7 @@ def main():
     y_hi = plot_cfg.get("y_max", y_max * 1.5)
     ax.set_ylim(y_lo, y_hi)
     ax.set_xlabel("Primary worker threads")
-    ax.set_ylabel("Append throughput (Mrec/s)")
+    ax.set_ylabel("Append throughput (Mop/s)")
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
     ax.set_axisbelow(True)
     ax.legend(

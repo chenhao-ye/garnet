@@ -28,7 +28,7 @@ ONLINE_COLUMNS = [
     "p999_us",
     "total_ops",
     "iter_ops",
-    "tpt_kops",
+    "tpt_mops",
 ]
 
 AOF_BASE_COLUMNS = ["time_ms", "bytes", "bandwidth", "throughput"]
@@ -45,7 +45,6 @@ HEADER_RE = re.compile(r"min\s*\(us\)")
 AOF_METRIC_RE = re.compile(r"^\[(?P<name>[^\]]+)\]:\s*(?P<value>.+)$")
 AOF_NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
 OFFLINE_OPERATION_RE = re.compile(r"^Operation type:\s*(?P<value>.+)$")
-OFFLINE_THREADS_RE = re.compile(r"^Num threads:\s*(?P<value>\d+)$")
 
 
 def _is_data_row(parts: list[str]) -> bool:
@@ -118,12 +117,6 @@ def _aggregate_repetitions(
     return aggregated
 
 
-def _format_millions(value: float | None, base_unit: float) -> str:
-    if value is None:
-        return "None"
-    return f"{value / base_unit:.3f} M"
-
-
 def _format_count(value: float | None) -> str:
     if value is None:
         return "None"
@@ -166,6 +159,7 @@ def _parse_online_output(
             parts = line.split()
             if _is_data_row(parts):
                 row = {col: float(v) for col, v in zip(ONLINE_COLUMNS, parts)}
+                row["tpt_mops"] /= 1000.0
                 samples.append(row)
 
     return samples[warmup_rows:], ONLINE_COLUMNS
@@ -192,7 +186,6 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
                     samples.append(current)
                 current = {}
                 current["time_ms"] = _parse_number(value)
-                current["bytes"] = None
 
                 bytes_match = re.search(
                     r"for\s+([-+]?\d[\d,]*(?:\.\d+)?)\s+AOF bytes", value
@@ -207,7 +200,7 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
                 metric_value = _parse_number(value)
                 if metric_key == "throughput":
                     current["throughput"] = (
-                        None if metric_value is None else metric_value / 1000.0
+                        None if metric_value is None else metric_value / 1_000_000.0
                     )
                 else:
                     current[metric_key] = metric_value
@@ -244,11 +237,6 @@ def _parse_offline_output(
                 current = {"operation": op_match.group("value").strip()}
                 continue
 
-            thread_match = OFFLINE_THREADS_RE.match(line)
-            if thread_match and current is not None:
-                current["num_threads"] = float(thread_match.group("value"))
-                continue
-
             metric_match = AOF_METRIC_RE.match(line)
             if metric_match is None or current is None:
                 continue
@@ -265,7 +253,8 @@ def _parse_offline_output(
                     else None
                 )
             elif name == "Throughput":
-                current["throughput"] = _parse_number(value)
+                parsed = _parse_number(value)
+                current["throughput"] = None if parsed is None else parsed / 1_000_000.0
 
     if current and current.get("throughput") is not None:
         samples.append(current)
@@ -304,11 +293,14 @@ def parse_output(
 def _format_summary(
     benchmark: str, stats: dict, num_samples: int, run_name: str
 ) -> str:
+    thr_key = "tpt_mops" if benchmark == "online" else "throughput"
+    thr = stats[thr_key]["median"]
+    thr_str = "None" if thr is None else f"{thr:.3f} M"
     if benchmark == "aof":
         return ", ".join(
             [
                 f"  Parsed {run_name}: {num_samples} samples",
-                f"median throughput={_format_millions(stats['throughput']['median'], 1000.0)} records/s",
+                f"median throughput={thr_str} records/s",
                 f"bandwidth={stats['bandwidth']['median']} GiB/s",
             ]
         )
@@ -316,7 +308,7 @@ def _format_summary(
         return ", ".join(
             [
                 f"  Parsed {run_name}: {num_samples} samples",
-                f"median throughput={_format_millions(stats['throughput']['median'], 1_000_000.0)} ops/s",
+                f"median throughput={thr_str} ops/s",
                 f"total ops={_format_count(stats['total_ops']['median'])}",
             ]
         )
@@ -324,7 +316,7 @@ def _format_summary(
     return ", ".join(
         [
             f"  Parsed {run_name}: {num_samples} samples",
-            f"median throughput={_format_millions(stats['tpt_kops']['median'], 1000.0)} ops/s",
+            f"median throughput={thr_str} ops/s",
             f"median lat={stats['median_us']['median']} us",
         ]
     )
@@ -332,6 +324,9 @@ def _format_summary(
 
 def _build_summary_rows(runs: dict[str, dict]) -> dict[str, list[dict[str, str]]]:
     grouped_rows: dict[str, list[dict[str, str]]] = {}
+
+    def fmt(key: str, decimals: int = 3) -> str:
+        return _format_table_number((stats.get(key) or {}).get("median"), decimals)
 
     for run_name, entry in runs.items():
         benchmark = entry["benchmark"]
@@ -347,50 +342,19 @@ def _build_summary_rows(runs: dict[str, dict]) -> dict[str, list[dict[str, str]]
             row[key] = _format_sweep_value(value)
 
         if benchmark == "aof":
-            throughput_krec_s = (stats.get("throughput") or {}).get("median")
-            row["throughput_mrec_s"] = _format_table_number(
-                throughput_krec_s / 1000.0 if throughput_krec_s is not None else None,
-                decimals=3,
-            )
-            row["bandwidth_gib_s"] = _format_table_number(
-                (stats.get("bandwidth") or {}).get("median"), decimals=3
-            )
-            row["time_ms"] = _format_table_number(
-                (stats.get("time_ms") or {}).get("median"), decimals=3
-            )
-            row["bytes"] = _format_table_number(
-                (stats.get("bytes") or {}).get("median"), decimals=0
-            )
+            row["throughput_mrec_s"] = fmt("throughput")
+            row["bandwidth_gib_s"] = fmt("bandwidth")
+            row["time_ms"] = fmt("time_ms")
+            row["bytes"] = fmt("bytes", decimals=0)
         elif benchmark == "offline":
-            throughput_ops_s = (stats.get("throughput") or {}).get("median")
-            row["throughput_mops_s"] = _format_table_number(
-                throughput_ops_s / 1_000_000.0
-                if throughput_ops_s is not None
-                else None,
-                decimals=3,
-            )
-            row["total_ops"] = _format_table_number(
-                (stats.get("total_ops") or {}).get("median"), decimals=0
-            )
-            row["time_ms"] = _format_table_number(
-                (stats.get("time_ms") or {}).get("median"), decimals=3
-            )
+            row["throughput_mops_s"] = fmt("throughput")
+            row["total_ops"] = fmt("total_ops", decimals=0)
+            row["time_ms"] = fmt("time_ms")
         else:
-            row["throughput_mops_s"] = _format_table_number(
-                ((stats.get("tpt_kops") or {}).get("median") or 0.0) / 1000.0
-                if (stats.get("tpt_kops") or {}).get("median") is not None
-                else None,
-                decimals=3,
-            )
-            row["median_us"] = _format_table_number(
-                (stats.get("median_us") or {}).get("median"), decimals=3
-            )
-            row["p95_us"] = _format_table_number(
-                (stats.get("p95_us") or {}).get("median"), decimals=3
-            )
-            row["p99_us"] = _format_table_number(
-                (stats.get("p99_us") or {}).get("median"), decimals=3
-            )
+            row["throughput_mops_s"] = fmt("tpt_mops")
+            row["median_us"] = fmt("median_us")
+            row["p95_us"] = fmt("p95_us")
+            row["p99_us"] = fmt("p99_us")
 
         grouped_rows.setdefault(benchmark, []).append(row)
 
