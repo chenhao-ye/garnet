@@ -851,17 +851,14 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Get AOF memory size in bits, per physical sublog.
-        /// AofMemorySize is interpreted as the total memory budget across all sublogs,
-        /// so each sublog gets AofMemorySize / AofPhysicalSublogCount.
+        /// Get AOF memory size in bits
         /// </summary>
         /// <returns></returns>
         public int AofMemorySizeBits()
         {
             var size = ParseSize(AofMemorySize, out _);
-            var perSublogSize = size / AofPhysicalSublogCount;
-            var adjustedSize = PreviousPowerOf2(perSublogSize);
-            if (perSublogSize != adjustedSize)
+            var adjustedSize = PreviousPowerOf2(size);
+            if (size != adjustedSize)
                 logger?.LogInformation("Warning: using lower AOF memory size than specified (power of 2)");
             return (int)Math.Log(adjustedSize, 2);
         }

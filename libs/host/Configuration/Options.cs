@@ -197,7 +197,7 @@ namespace Garnet
         public bool? EnableAOF { get; set; }
 
         [MemorySizeValidation]
-        [Option("aof-memory", Required = false, HelpText = "Total AOF memory buffer used in bytes across all physical sublogs (rounds down to power of 2 per sublog) - spills to disk after this limit")]
+        [Option("aof-memory", Required = false, HelpText = "Total AOF memory buffer used in bytes (rounds down to power of 2) - spills to disk after this limit")]
         public string AofMemorySize { get; set; }
 
         [MemorySizeValidation]
