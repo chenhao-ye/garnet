@@ -226,3 +226,4 @@ BenchmarkDotNet.Artifacts/
 result/
 **.pyc
 libs/native/bftree-garnet/target/
+**.lscache

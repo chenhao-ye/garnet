@@ -1,0 +1,31 @@
+# Experiment: online_set_aof
+# Online Resp.benchmark with GarnetClientSession and a null-device AOF on the
+# server (no disk IO, manual commit only). 100% SET workload over a 1M-key
+# dbsize; sweep client thread (session) count from 1 to 64. Companion to
+# online_set (AOF disabled) to isolate the cost of the AOF code path.
+
+name: online_set_aof
+description: "Online 100% SET with GarnetClientSession, null-device AOF (manual commit); sweep threads 1-64"
+benchmark: online
+
+base:
+  client_params:
+    client: GarnetClientSession
+    online: true
+    op_workload: [SET]
+    op_percent: [100]
+    keylength: 8
+    valuelength: 8
+    dbsize: 1000000
+    runtime: 60
+    itp: 32768
+    disable_console_logger: true
+  server_params:
+    aof: true
+    aof_null_device: true
+    aof_commit_freq: -1
+    aof_memory: 256m
+
+sweep:
+  client_params:
+    threads: [1, 2, 4, 8, 16, 32, 64]

@@ -8,7 +8,7 @@ name: aof_replay_physical
 description: "Scale AOF physical sublog count (1-64) for replay with main-memory replication (null device, InProc)"
 benchmark: aof
 no_server: true
-repeat: 5
+repeat: 7
 
 base:
   client_params:
