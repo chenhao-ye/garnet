@@ -125,7 +125,7 @@ def main():
         labelspacing=0.3,
     )
 
-    out_path = RESULT_ROOT / "plots" / "replay_scaling.pdf"
+    out_path = RESULT_ROOT / PHYSICAL_EXP / "replay_scaling.pdf"
     save_fig(fig, out_path)
     plt.close(fig)
 
