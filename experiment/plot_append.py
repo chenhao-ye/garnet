@@ -13,6 +13,7 @@ Throughput vs. primary worker threads, one curve per
 aof_physical_sublog_count. Proves claim C1 (R1a).
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -36,18 +37,32 @@ from plot_util import (
     RESULT_ROOT,
     build_fig_single_col,
     extract_series,
+    load_plot_config,
     load_result,
     save_fig,
     to_mrecords,
 )
 
-EXPERIMENT = "aof_enqueue_random"
+DEFAULT_EXPERIMENT = "aof_enqueue_random"
 X_PARAM = "client.threads"
 FILTER_PARAM = "client.aof_physical_sublog_count"
 
 
 def main():
-    result = load_result(EXPERIMENT)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        default=DEFAULT_EXPERIMENT,
+        help=(
+            "Config name (data directory under RESULT_ROOT)."
+            f" Default: {DEFAULT_EXPERIMENT}"
+        ),
+    )
+    args = parser.parse_args()
+    experiment = args.config
+
+    result = load_result(experiment)
+    plot_cfg = load_plot_config(experiment)
 
     fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75)
 
@@ -85,7 +100,13 @@ def main():
     ax.set_xticks(sorted_threads)
     ax.set_xticklabels([str(int(t)) for t in sorted_threads])
     ax.set_xlim(sorted_threads[0] / 1.2, sorted_threads[-1] * 1.2)
-    ax.set_ylim(y_min / 1.5, y_max * 1.5)
+    y_ticks = plot_cfg.get("y_ticks")
+    if y_ticks:
+        ax.set_yticks(y_ticks)
+        ax.set_yticklabels([str(t) for t in y_ticks])
+    y_lo = plot_cfg.get("y_min", y_min / 1.5)
+    y_hi = plot_cfg.get("y_max", y_max * 1.5)
+    ax.set_ylim(y_lo, y_hi)
     ax.set_xlabel("Primary worker threads")
     ax.set_ylabel("Append throughput (Mrec/s)")
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
@@ -101,7 +122,7 @@ def main():
         labelspacing=0.3,
     )
 
-    out_path = RESULT_ROOT / EXPERIMENT / "plots" / "append_scaling.pdf"
+    out_path = RESULT_ROOT / experiment / "plots" / "append_scaling.pdf"
     save_fig(fig, out_path)
     plt.close(fig)
 

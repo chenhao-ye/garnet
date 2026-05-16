@@ -16,6 +16,7 @@ from plot_style import DOUBLE_COLUMN_WIDTH, SINGLE_COLUMN_WIDTH
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULT_ROOT = REPO_ROOT / "result"
+CONFIG_ROOT = Path(__file__).resolve().parent / "configs"
 
 KRECORDS_TO_MRECORDS = 1 / 1000.0
 
@@ -29,6 +30,18 @@ def load_result(experiment: str) -> dict:
         )
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+def load_plot_config(experiment: str) -> dict:
+    """Load the `plot:` section from configs/<experiment>.yaml.
+
+    Returns {} if the config file is missing or has no `plot:` section."""
+    path = CONFIG_ROOT / f"{experiment}.yaml"
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        cfg = yaml.safe_load(f) or {}
+    return cfg.get("plot") or {}
 
 
 def _run_sweep_params(run_entry: dict) -> dict:
