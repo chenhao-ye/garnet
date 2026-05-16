@@ -31,7 +31,7 @@ class ExperimentSpec:
     base_client_params: dict[str, Any]
     base_server_params: dict[str, Any]
     no_server: bool
-    repeat_threads: int
+    repeat: int
     combos: list[dict[str, dict[str, Any]]]
     config: dict[str, Any]
     config_path: Path
@@ -80,7 +80,7 @@ def load_experiment_spec(
         base_client_params=dict(config["base"]["client_params"]),
         base_server_params=dict(config["base"].get("server_params", {})),
         no_server=config.get("no_server", False),
-        repeat_threads=int(config.get("repeat_threads", 1)),
+        repeat=int(config.get("repeat", 1)),
         combos=expand_sweep(config.get("sweep", {})),
         config=config,
         config_path=path,

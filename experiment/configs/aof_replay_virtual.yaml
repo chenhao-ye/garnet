@@ -8,6 +8,7 @@ name: aof_replay_virtual
 description: "Scale AOF replay task count (1-64) with main-memory replication (null device, InProc)"
 benchmark: aof
 no_server: true
+repeat: 5
 
 base:
   client_params:
@@ -17,6 +18,7 @@ base:
     aof_null_device: true
     client: InProc
     aof_commit_freq: -1
+    aof_memory_size: 1g
     keylength: 8
     valuelength: 8
     dbsize: 1000000

@@ -76,11 +76,12 @@ def _snake_case(text: str) -> str:
 def _stats(values: list[float | None]) -> dict:
     values = [v for v in values if v is not None]
     if not values:
-        return {"mean": None, "std": None, "min": None, "max": None}
+        return {"median": None, "mean": None, "std": None, "min": None, "max": None}
     n = len(values)
     mean = sum(values) / n
     variance = sum((v - mean) ** 2 for v in values) / n if n > 1 else 0.0
     return {
+        "median": round(statistics.median(values), 4),
         "mean": round(mean, 4),
         "std": round(math.sqrt(variance), 4),
         "min": round(min(values), 4),
@@ -100,16 +101,16 @@ def _column_median(samples: list[dict], col: str) -> float | None:
 
 
 def _aggregate_repetitions(
-    samples: list[dict], columns: list[str], repeat_threads: int
+    samples: list[dict], columns: list[str], repeat: int
 ) -> list[dict]:
-    """Split samples evenly into `repeat_threads` chunks; emit one median row per chunk."""
-    if repeat_threads <= 1 or len(samples) < repeat_threads:
+    """Split samples evenly into `repeat` chunks; emit one median row per chunk."""
+    if repeat <= 1 or len(samples) < repeat:
         return samples
-    chunk_size = len(samples) // repeat_threads
+    chunk_size = len(samples) // repeat
     aggregated: list[dict] = []
-    for i in range(repeat_threads):
+    for i in range(repeat):
         start = i * chunk_size
-        end = (i + 1) * chunk_size if i < repeat_threads - 1 else len(samples)
+        end = (i + 1) * chunk_size if i < repeat - 1 else len(samples)
         chunk = samples[start:end]
         if not chunk:
             continue
@@ -307,24 +308,24 @@ def _format_summary(
         return ", ".join(
             [
                 f"  Parsed {run_name}: {num_samples} samples",
-                f"mean throughput={_format_millions(stats['throughput']['mean'], 1000.0)} records/s",
-                f"bandwidth={stats['bandwidth']['mean']} GiB/s",
+                f"median throughput={_format_millions(stats['throughput']['median'], 1000.0)} records/s",
+                f"bandwidth={stats['bandwidth']['median']} GiB/s",
             ]
         )
     if benchmark == "offline":
         return ", ".join(
             [
                 f"  Parsed {run_name}: {num_samples} samples",
-                f"mean throughput={_format_millions(stats['throughput']['mean'], 1_000_000.0)} ops/s",
-                f"total ops={_format_count(stats['total_ops']['mean'])}",
+                f"median throughput={_format_millions(stats['throughput']['median'], 1_000_000.0)} ops/s",
+                f"total ops={_format_count(stats['total_ops']['median'])}",
             ]
         )
 
     return ", ".join(
         [
             f"  Parsed {run_name}: {num_samples} samples",
-            f"mean throughput={_format_millions(stats['tpt_kops']['mean'], 1000.0)} ops/s",
-            f"median lat={stats['median_us']['mean']} us",
+            f"median throughput={_format_millions(stats['tpt_kops']['median'], 1000.0)} ops/s",
+            f"median lat={stats['median_us']['median']} us",
         ]
     )
 
@@ -346,22 +347,22 @@ def _build_summary_rows(runs: dict[str, dict]) -> dict[str, list[dict[str, str]]
             row[key] = _format_sweep_value(value)
 
         if benchmark == "aof":
-            throughput_krec_s = (stats.get("throughput") or {}).get("mean")
+            throughput_krec_s = (stats.get("throughput") or {}).get("median")
             row["throughput_mrec_s"] = _format_table_number(
                 throughput_krec_s / 1000.0 if throughput_krec_s is not None else None,
                 decimals=3,
             )
             row["bandwidth_gib_s"] = _format_table_number(
-                (stats.get("bandwidth") or {}).get("mean"), decimals=3
+                (stats.get("bandwidth") or {}).get("median"), decimals=3
             )
             row["time_ms"] = _format_table_number(
-                (stats.get("time_ms") or {}).get("mean"), decimals=3
+                (stats.get("time_ms") or {}).get("median"), decimals=3
             )
             row["bytes"] = _format_table_number(
-                (stats.get("bytes") or {}).get("mean"), decimals=0
+                (stats.get("bytes") or {}).get("median"), decimals=0
             )
         elif benchmark == "offline":
-            throughput_ops_s = (stats.get("throughput") or {}).get("mean")
+            throughput_ops_s = (stats.get("throughput") or {}).get("median")
             row["throughput_mops_s"] = _format_table_number(
                 throughput_ops_s / 1_000_000.0
                 if throughput_ops_s is not None
@@ -369,26 +370,26 @@ def _build_summary_rows(runs: dict[str, dict]) -> dict[str, list[dict[str, str]]
                 decimals=3,
             )
             row["total_ops"] = _format_table_number(
-                (stats.get("total_ops") or {}).get("mean"), decimals=0
+                (stats.get("total_ops") or {}).get("median"), decimals=0
             )
             row["time_ms"] = _format_table_number(
-                (stats.get("time_ms") or {}).get("mean"), decimals=3
+                (stats.get("time_ms") or {}).get("median"), decimals=3
             )
         else:
             row["throughput_mops_s"] = _format_table_number(
-                ((stats.get("tpt_kops") or {}).get("mean") or 0.0) / 1000.0
-                if (stats.get("tpt_kops") or {}).get("mean") is not None
+                ((stats.get("tpt_kops") or {}).get("median") or 0.0) / 1000.0
+                if (stats.get("tpt_kops") or {}).get("median") is not None
                 else None,
                 decimals=3,
             )
             row["median_us"] = _format_table_number(
-                (stats.get("median_us") or {}).get("mean"), decimals=3
+                (stats.get("median_us") or {}).get("median"), decimals=3
             )
             row["p95_us"] = _format_table_number(
-                (stats.get("p95_us") or {}).get("mean"), decimals=3
+                (stats.get("p95_us") or {}).get("median"), decimals=3
             )
             row["p99_us"] = _format_table_number(
-                (stats.get("p99_us") or {}).get("mean"), decimals=3
+                (stats.get("p99_us") or {}).get("median"), decimals=3
             )
 
         grouped_rows.setdefault(benchmark, []).append(row)
@@ -504,8 +505,8 @@ def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
         warmup_rows=warmup,
         expected_op=config.get("client_params", {}).get("op"),
     )
-    repeat_threads = int(config.get("repeat_threads", 1) or 1)
-    samples = _aggregate_repetitions(samples, metric_columns, repeat_threads)
+    repeat = int(config.get("repeat", 1) or 1)
+    samples = _aggregate_repetitions(samples, metric_columns, repeat)
     stats = _summarize_samples(samples, metric_columns)
     print(_format_summary(benchmark, stats, len(samples), run_dir.name))
     return {
