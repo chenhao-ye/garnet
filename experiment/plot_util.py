@@ -11,11 +11,31 @@ import matplotlib
 import matplotlib.layout_engine
 import matplotlib.pyplot as plt
 import yaml
+from matplotlib.transforms import Bbox
 from plot_style import DOUBLE_COLUMN_WIDTH, SINGLE_COLUMN_WIDTH
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULT_ROOT = REPO_ROOT / "result"
 CONFIG_ROOT = Path(__file__).resolve().parent / "configs"
+
+PLOT_CONFIG_KEYS = {
+    "scale",
+    "xticks",
+    "yticks",
+    "xticks_minor",
+    "yticks_minor",
+    "xmin",
+    "xmax",
+    "ymin",
+    "ymax",
+    "xscale",
+    "yscale",
+    "xlabel",
+    "ylabel",
+    "xgrid",
+    "ygrid",
+    "legend_separate",
+}
 
 
 def load_result(experiment: str) -> dict:
@@ -111,6 +131,128 @@ def build_fig_double_col(
     subplot_width = total_width / ncols
     subplot_height = subplot_width * hw_ratio
     return build_fig(nrows, ncols, total_width, subplot_height * nrows, **kwargs)
+
+
+def _tick_label(value) -> str:
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _resolve_max(plot_cfg, ticks, max_key, default_max):
+    explicit_max = plot_cfg.get(max_key)
+    if explicit_max is not None:
+        return explicit_max
+    if ticks:
+        return max(ticks)
+    return default_max
+
+
+def apply_axis_cfg(
+    ax,
+    plot_cfg: dict,
+    *,
+    default_xlabel: str = "",
+    default_ylabel: str = "",
+    default_xticks: list | None = None,
+    default_yticks: list | None = None,
+    default_xmax: float | None = None,
+    default_ymax: float | None = None,
+) -> None:
+    """Apply axis settings from a config's `plot:` section.
+
+    Recognized keys: scale (handled by the caller before figure creation),
+    xscale, yscale (string, e.g. "log" / "linear"; default linear — for x,
+    "log" uses base 2 to match power-of-two sweeps), xticks, yticks (list),
+    xmin/xmax/ymin/ymax (number), xlabel/ylabel (string).
+
+    Limit resolution: xmin/ymin default to 0 regardless of ticks; the user
+    must set them explicitly to override. xmax/ymax fall back to the
+    ticks' last value, then to the caller-supplied upper bound.
+    """
+    xscale = plot_cfg.get("xscale")
+    if xscale == "log":
+        ax.set_xscale("log", base=2)
+    elif xscale:
+        ax.set_xscale(xscale)
+    yscale = plot_cfg.get("yscale")
+    if yscale:
+        ax.set_yscale(yscale)
+
+    xticks = plot_cfg.get("xticks", default_xticks)
+    if xticks:
+        ax.set_xticks(xticks)
+        ax.set_xticklabels([_tick_label(t) for t in xticks])
+    xticks_minor = plot_cfg.get("xticks_minor")
+    if xticks_minor:
+        ax.set_xticks(xticks_minor, minor=True)
+
+    yticks = plot_cfg.get("yticks", default_yticks)
+    if yticks:
+        ax.set_yticks(yticks)
+        ax.set_yticklabels([_tick_label(t) for t in yticks])
+    yticks_minor = plot_cfg.get("yticks_minor")
+    if yticks_minor:
+        ax.set_yticks(yticks_minor, minor=True)
+
+    xmin = plot_cfg.get("xmin", 0)
+    xmax = _resolve_max(plot_cfg, xticks, "xmax", default_xmax)
+    if xmax is not None:
+        ax.set_xlim(xmin, xmax)
+    ymin = plot_cfg.get("ymin", 0)
+    ymax = _resolve_max(plot_cfg, yticks, "ymax", default_ymax)
+    if ymax is not None:
+        ax.set_ylim(ymin, ymax)
+
+    ax.set_xlabel(plot_cfg.get("xlabel", default_xlabel))
+    ax.set_ylabel(plot_cfg.get("ylabel", default_ylabel))
+
+    if plot_cfg.get("xgrid", True):
+        ax.grid(True, axis="x", which="both", linestyle=":", linewidth=0.5, alpha=0.6)
+    if plot_cfg.get("ygrid", True):
+        ax.grid(True, axis="y", which="both", linestyle=":", linewidth=0.5, alpha=0.6)
+    ax.set_axisbelow(True)
+
+    for line in ax.get_lines():
+        line.set_clip_on(False)
+
+
+def save_legend(
+    ax, fig_path: Path, *, width: float = SINGLE_COLUMN_WIDTH, **legend_kwargs
+) -> Path | None:
+    """Save the axes' legend as a standalone PDF next to fig_path.
+
+    The legend is stretched (via `mode="expand"`) to `width` inches —
+    defaults to SINGLE_COLUMN_WIDTH so the legend matches a single-column
+    figure. When fig_path ends in .pdf, also writes a 300 DPI PNG sibling
+    (mirrors save_fig). Returns the legend PDF path, or None if the axes
+    has no labeled artists.
+    """
+    handles, labels = ax.get_legend_handles_labels()
+    if not handles:
+        return None
+    fig_leg = plt.figure(figsize=(width, 1))
+    legend = fig_leg.legend(
+        handles,
+        labels,
+        loc="center",
+        bbox_to_anchor=(0.5, 0.5),
+        **legend_kwargs,
+    )
+    fig_leg.canvas.draw()
+    legend_bbox = legend.get_window_extent().transformed(
+        fig_leg.dpi_scale_trans.inverted()
+    )
+    # Pin saved width to `width` inches; crop vertically to the legend.
+    bbox = Bbox.from_extents(0, legend_bbox.y0, width, legend_bbox.y1)
+    legend_path = fig_path.with_name(f"{fig_path.stem}_legend{fig_path.suffix}")
+    legend_path.parent.mkdir(parents=True, exist_ok=True)
+    fig_leg.savefig(legend_path, bbox_inches=bbox)
+    print(f"Saved {legend_path}")
+    if str(legend_path).endswith(".pdf"):
+        png_path = Path(str(legend_path).replace(".pdf", ".png"))
+        fig_leg.savefig(png_path, bbox_inches=bbox, dpi=300)
+        print(f"Saved {png_path}")
+    plt.close(fig_leg)
+    return legend_path
 
 
 def save_fig(fig, fig_path: Path, tight_pad: float | None = 0.1):

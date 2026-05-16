@@ -10,12 +10,13 @@
 """Replay scalability figure (evaluation plan v3, sec:3.2, sec:6.3).
 
 Replay throughput vs. number of sublogs. Three curves:
-  - Single Log: horizontal dashed reference (m=1 from aof_replay_physical).
-  - MultiLog-virtual: m=1, n varies (aof_replay_virtual sweep).
-  - MultiLog-physical: n=1, m varies (aof_replay_physical sweep).
+  - Single Log: horizontal dashed reference (m=1 from the physical config).
+  - MultiLog-virtual: m=1, n varies (virtual config sweep).
+  - MultiLog-physical: n=1, m varies (physical config sweep).
 Proves claim C2 (R1b). NoPrefix curve omitted: data not yet available.
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -35,19 +36,38 @@ from plot_style import (
 )
 from plot_util import (
     RESULT_ROOT,
+    apply_axis_cfg,
     build_fig_single_col,
     extract_series,
+    load_plot_config,
     load_result,
     save_fig,
+    save_legend,
 )
 
-VIRTUAL_EXP = "aof_replay_virtual"
-PHYSICAL_EXP = "aof_replay_physical"
+DEFAULT_PHYSICAL = "aof_replay_physical"
+DEFAULT_VIRTUAL = "aof_replay_virtual"
 
 
 def main():
-    virt = load_result(VIRTUAL_EXP)
-    phys = load_result(PHYSICAL_EXP)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "physical",
+        nargs="?",
+        default=DEFAULT_PHYSICAL,
+        help=f"Physical-sweep config name (output is saved under this dir). Default: {DEFAULT_PHYSICAL}",
+    )
+    parser.add_argument(
+        "virtual",
+        nargs="?",
+        default=DEFAULT_VIRTUAL,
+        help=f"Virtual-sweep config name. Default: {DEFAULT_VIRTUAL}",
+    )
+    args = parser.parse_args()
+
+    virt = load_result(args.virtual)
+    phys = load_result(args.physical)
+    plot_cfg = load_plot_config(args.physical)
 
     xs_virt, ys_virt, _ = extract_series(virt, x_param="client.aof_replay_task_count")
     xs_phys, ys_phys, _ = extract_series(
@@ -61,16 +81,16 @@ def main():
             break
     if single_log_y_mrec is None:
         raise RuntimeError(
-            f"Could not find aof_physical_sublog_count=1 datapoint in {PHYSICAL_EXP}; "
+            f"Could not find aof_physical_sublog_count=1 datapoint in {args.physical}; "
             "needed for the Single Log reference line."
         )
 
-    fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75)
+    scale = float(plot_cfg.get("scale", 1.0))
+    fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
 
     all_x = sorted(set(xs_virt) | set(xs_phys))
     if not all_x:
         raise RuntimeError("Empty replay datasets; nothing to plot.")
-    x_max = max(all_x)
 
     ax.axhline(
         single_log_y_mrec,
@@ -103,29 +123,29 @@ def main():
     )
 
     all_y = list(ys_virt) + list(ys_phys) + [single_log_y_mrec]
-    y_min = min(y for y in all_y if y > 0)
-    y_max = max(all_y)
-    ax.set_xscale("log", base=2)
-    ax.set_yscale("log")
-    ax.set_xticks(all_x)
-    ax.set_xticklabels([str(int(x)) for x in all_x])
-    ax.set_xlim(all_x[0] / 1.2, x_max * 1.2)
-    ax.set_ylim(y_min / 1.5, y_max * 1.5)
-    ax.set_xlabel("Number of sublogs")
-    ax.set_ylabel("Replay throughput (Mop/s)")
-    ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
-    ax.set_axisbelow(True)
-    ax.legend(
-        loc="upper left",
-        bbox_to_anchor=(0.0, 1.0),
+    y_log = plot_cfg.get("yscale") == "log"
+    default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+    apply_axis_cfg(
+        ax,
+        plot_cfg,
+        default_xlabel="#threads",
+        default_ylabel="Throughput (Mop/s)",
+        default_xticks=all_x,
+        default_ymax=default_ymax,
+    )
+    out_path = RESULT_ROOT / args.physical / "replay_scaling.pdf"
+    legend_kwargs = dict(
         frameon=False,
         ncol=1,
         handlelength=1.8,
         handletextpad=0.5,
         labelspacing=0.3,
     )
+    if plot_cfg.get("legend_separate"):
+        save_legend(ax, out_path, **legend_kwargs)
+    else:
+        ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.0), **legend_kwargs)
 
-    out_path = RESULT_ROOT / PHYSICAL_EXP / "replay_scaling.pdf"
     save_fig(fig, out_path)
     plt.close(fig)
 

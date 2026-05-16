@@ -34,11 +34,13 @@ from plot_style import (
 )
 from plot_util import (
     RESULT_ROOT,
+    apply_axis_cfg,
     build_fig_single_col,
     extract_series,
     load_plot_config,
     load_result,
     save_fig,
+    save_legend,
 )
 
 DEFAULT_EXPERIMENT = "aof_enqueue_random"
@@ -49,12 +51,10 @@ FILTER_PARAM = "client.aof_physical_sublog_count"
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--config",
+        "config",
+        nargs="?",
         default=DEFAULT_EXPERIMENT,
-        help=(
-            "Config name (data directory under RESULT_ROOT)."
-            f" Default: {DEFAULT_EXPERIMENT}"
-        ),
+        help=f"Config name (data directory under RESULT_ROOT). Default: {DEFAULT_EXPERIMENT}",
     )
     args = parser.parse_args()
     experiment = args.config
@@ -91,27 +91,18 @@ def main():
         )
 
     sorted_threads = sorted(all_threads)
-    y_min = min(y for y in all_y if y > 0)
-    y_max = max(all_y)
-    ax.set_xscale("log", base=2)
-    ax.set_yscale("log")
-    ax.set_xticks(sorted_threads)
-    ax.set_xticklabels([str(int(t)) for t in sorted_threads])
-    ax.set_xlim(sorted_threads[0] / 1.2, sorted_threads[-1] * 1.2)
-    y_ticks = plot_cfg.get("y_ticks")
-    if y_ticks:
-        ax.set_yticks(y_ticks)
-        ax.set_yticklabels([str(t) for t in y_ticks])
-    y_lo = plot_cfg.get("y_min", y_min / 1.5)
-    y_hi = plot_cfg.get("y_max", y_max * 1.5)
-    ax.set_ylim(y_lo, y_hi)
-    ax.set_xlabel("Primary worker threads")
-    ax.set_ylabel("Append throughput (Mop/s)")
-    ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
-    ax.set_axisbelow(True)
-    ax.legend(
-        loc="upper left",
-        bbox_to_anchor=(0.0, 1.0),
+    y_log = plot_cfg.get("yscale") == "log"
+    default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+    apply_axis_cfg(
+        ax,
+        plot_cfg,
+        default_xlabel="#threads",
+        default_ylabel="Throughput (Mop/s)",
+        default_xticks=sorted_threads,
+        default_ymax=default_ymax,
+    )
+    out_path = RESULT_ROOT / experiment / "append_scaling.pdf"
+    legend_kwargs = dict(
         frameon=False,
         ncol=2,
         columnspacing=1.0,
@@ -119,8 +110,11 @@ def main():
         handletextpad=0.5,
         labelspacing=0.3,
     )
+    if plot_cfg.get("legend_separate"):
+        save_legend(ax, out_path, **legend_kwargs)
+    else:
+        ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.0), **legend_kwargs)
 
-    out_path = RESULT_ROOT / experiment / "plots" / "append_scaling.pdf"
     save_fig(fig, out_path)
     plt.close(fig)
 
