@@ -1,11 +1,11 @@
-# Experiment: online_set_aof
+# Experiment: online_set_multilog
 # Online Resp.benchmark with GarnetClientSession and a null-device AOF on the
-# server (no disk IO, manual commit only). 100% SET workload over a 1M-key
-# dbsize; sweep client thread (session) count from 1 to 64. Companion to
-# online_set (AOF disabled) to isolate the cost of the AOF code path.
+# server, configured with 64 physical sublogs (MultiLog). 100% SET workload over
+# a 1M-key dbsize; sweep client thread (session) count from 1 to 64. Companion
+# to online_set_aof (single physical sublog) to isolate the MultiLog speedup.
 
-name: online_set_aof
-description: "Online 100% SET with GarnetClientSession, null-device AOF (manual commit); sweep threads 1-64"
+name: online_set_multilog
+description: "Online 100% SET with GarnetClientSession, null-device AOF, 64 physical sublogs; sweep threads 1-64"
 benchmark: online
 
 base:
@@ -25,13 +25,8 @@ base:
     aof_null_device: true
     aof_commit_freq: -1
     aof_memory: 256m
+    aof_physical_sublog_count: 64
 
 sweep:
   client_params:
     threads: [1, 2, 4, 8, 16, 32, 64]
-
-plot:
-  xticks: [1, 8, 16, 32, 64]
-  yticks: [0, 10, 20, 30, 40, 50, 60]
-  legend_separate: true
-  scale: 0.5

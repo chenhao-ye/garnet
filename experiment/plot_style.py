@@ -45,6 +45,9 @@ color_map = {
     "multilog_virtual": "#1f77b4",
     "multilog_physical": "#2ca02c",
     "noprefix": "#9467bd",
+    "no_aof": "#1f77b4",
+    "aof_single": "#d62728",
+    "aof_multilog": "#2ca02c",
 }
 color_map.update(
     {f"multilog_m{m}": _append_palette[i] for i, m in enumerate(APPEND_M_VALUES)}
@@ -56,6 +59,9 @@ linestyle_map = {
     "multilog_virtual": "-",
     "multilog_physical": "-",
     "noprefix": ":",
+    "no_aof": "-",
+    "aof_single": "-",
+    "aof_multilog": "-",
 }
 linestyle_map.update({f"multilog_m{m}": "-" for m in APPEND_M_VALUES})
 linestyle_map["multilog_m1"] = "--"
@@ -66,6 +72,9 @@ marker_map = {
     "multilog_virtual": "o",
     "multilog_physical": "s",
     "noprefix": "^",
+    "no_aof": "o",
+    "aof_single": "s",
+    "aof_multilog": "^",
 }
 marker_map.update(
     {
@@ -80,6 +89,9 @@ labels_map = {
     "multilog_virtual": "MultiLog-virtual",
     "multilog_physical": "MultiLog-physical",
     "noprefix": "NoPrefix",
+    "no_aof": "No AOF",
+    "aof_single": "Single Log AOF",
+    "aof_multilog": "MultiLog AOF (k=64)",
 }
 labels_map.update({f"multilog_m{m}": f"MultiLog({m})" for m in APPEND_M_VALUES})
 labels_map["multilog_m1"] = "Single Log"
