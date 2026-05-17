@@ -28,6 +28,7 @@ namespace Resp.benchmark
                 CommitFrequencyMs = options.CommitFrequencyMs,
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
                 AofReplayTaskCount = options.AofReplayTaskCount,
+                DisablePrefixConsistency = options.DisablePrefixConsistency,
                 ReplicationOffsetMaxLag = 0,
                 CheckpointDir = OperatingSystem.IsLinux() ? "/tmp" : null,
             };
@@ -170,6 +171,8 @@ namespace Resp.benchmark
             var rng = new Random(789110123 + threadId);
             var recordsEnqueued = 0L;
             var bytesEnqueued = 0L;
+            // NoPrefix emits the 16B AofHeader; MultiLog emits the 24B AofShardedHeader.
+            var headerSize = options.DisablePrefixConsistency ? sizeof(AofHeader) : sizeof(AofShardedHeader);
 
             waiter.Wait();
 
@@ -191,7 +194,7 @@ namespace Resp.benchmark
                         ref input,
                         epoch,
                         out _);
-                    bytesEnqueued += sizeof(AofShardedHeader) + key.TotalSize() + value.TotalSize() + input.SerializedLength;
+                    bytesEnqueued += headerSize + key.TotalSize() + value.TotalSize() + input.SerializedLength;
                     recordsEnqueued++;
                 }
             }

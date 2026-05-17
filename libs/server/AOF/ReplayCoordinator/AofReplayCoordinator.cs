@@ -129,6 +129,15 @@ namespace Garnet.server
             internal unsafe bool AddOrReplayTransactionOperation(int sublogIdx, byte* ptr, int length, bool asReplica)
             {
                 var header = *(AofHeader*)ptr;
+                // When prefix consistency is disabled, there are no transaction headers on the wire;
+                // BasicHeader records flow straight to ReplayOp. Reject anything that still looks
+                // like a txn record on the replay path.
+                if (serverOptions.MultiLogEnabled && serverOptions.DisablePrefixConsistency)
+                {
+                    if (header.headerType == AofHeaderType.TransactionHeader)
+                        throw new GarnetException("Prefix consistency is disabled; transaction replay is not supported.");
+                    return false;
+                }
                 var shardedHeader = default(AofShardedHeader);
                 var replayContext = GetReplayContext(sublogIdx);
                 // First try to process this as an existing transaction
@@ -141,7 +150,7 @@ namespace Garnet.server
                         case AofEntryType.TxnAbort:
                             ClearSessionTxn();
                             shardedHeader = *(AofShardedHeader*)ptr;
-                            aofProcessor.storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(sublogIdx, shardedHeader.sequenceNumber);
+                            aofProcessor.storeWrapper.appendOnlyFile.readConsistencyManager?.UpdateVirtualSublogMaxSequenceNumber(sublogIdx, shardedHeader.sequenceNumber);
                             break;
                         case AofEntryType.TxnCommit:
                             if (replayContext.inFuzzyRegion)
@@ -189,7 +198,7 @@ namespace Garnet.server
                         // after a checkpoint, and the transaction belonged to the previous version. It can safely
                         // be ignored.
                         shardedHeader = *(AofShardedHeader*)ptr;
-                        aofProcessor.storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(sublogIdx, shardedHeader.sequenceNumber);
+                        aofProcessor.storeWrapper.appendOnlyFile.readConsistencyManager?.UpdateVirtualSublogMaxSequenceNumber(sublogIdx, shardedHeader.sequenceNumber);
                         break;
                     default:
                         // Continue processing
@@ -341,6 +350,8 @@ namespace Garnet.server
             /// <param name="ptr"></param>
             internal void ReplayStoredProc(int sublogIdx, byte id, byte* ptr)
             {
+                if (serverOptions.MultiLogEnabled && serverOptions.DisablePrefixConsistency)
+                    throw new GarnetException("Prefix consistency is disabled; stored procedure replay is not supported.");
                 if (!serverOptions.MultiLogEnabled)
                 {
                     StoredProcRunnerBase(0, id, ptr, shardedLog: false, null);
@@ -446,7 +457,7 @@ namespace Garnet.server
                     throw removeBarrierException;
 
                 // Update timestamp
-                aofProcessor.storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(sublogIdx, txnHeader.shardedHeader.sequenceNumber);
+                aofProcessor.storeWrapper.appendOnlyFile.readConsistencyManager?.UpdateVirtualSublogMaxSequenceNumber(sublogIdx, txnHeader.shardedHeader.sequenceNumber);
 
                 // Get barrier helper
                 LeaderBarrier GetBarrier(int sessionId, AofTransactionHeader txnHeader)

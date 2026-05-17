@@ -227,6 +227,10 @@ namespace Garnet
         [Option("aof-read-protocol", Required = false, HelpText = "Read protocol to use on replicas: 'timestamp' (default, prefix-consistent) or 'snapshot'.")]
         public string AofReadProtocol { get; set; }
 
+        [OptionValidation]
+        [Option("disable-prefix-consistency", Required = false, HelpText = "Disable prefix-consistent replica reads. Requires AofPhysicalSublogCount > 1 or AofReplayTaskCount > 1. Transactions, checkpoints, and flush coordination are unsupported.")]
+        public bool? DisablePrefixConsistency { get; set; }
+
         [IntRangeValidation(1, int.MaxValue)]
         [Option("aof-snapshot-freq", Required = false, HelpText = "Frequency in milliseconds at which a snapshot of the AOF read state is taken on replicas (only applies with snapshot read protocol).")]
         public int AofSnapshotFreq { get; set; } = 5;
@@ -862,6 +866,7 @@ namespace Garnet
                 AofTailWitnessFreq = AofTailWitnessFreq,
                 AofReadWithTimestamp = string.IsNullOrEmpty(AofReadProtocol) || AofReadProtocol.Equals("timestamp", StringComparison.OrdinalIgnoreCase),
                 AofSnapshotFreq = AofSnapshotFreq > 0 ? AofSnapshotFreq : 5,
+                DisablePrefixConsistency = DisablePrefixConsistency.GetValueOrDefault(),
                 CommitFrequencyMs = CommitFrequencyMs,
                 WaitForCommit = WaitForCommit.GetValueOrDefault(),
                 AofSizeLimit = AofSizeLimit,

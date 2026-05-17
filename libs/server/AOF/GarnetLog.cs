@@ -27,6 +27,7 @@ namespace Garnet.server
         readonly Func<byte[]> cookieGeneratorCallback;
         readonly bool usingSingleLog;
         readonly bool usingSinglePhysicalLog;
+        readonly bool disablePrefixConsistency;
 
         public static unsafe long GetSequenceNumberFromCookie(byte[] cookie)
         {
@@ -52,7 +53,8 @@ namespace Garnet.server
                 unsafe
                 {
                     var cookie = stackalloc byte[8];
-                    *(long*)cookie = appendOnlyFile.seqNumGen.GetSequenceNumber();
+                    // When prefix consistency is disabled the sequence generator is null; FastCommit still requires a fixed-size cookie.
+                    *(long*)cookie = appendOnlyFile.seqNumGen?.GetSequenceNumber() ?? 0L;
                     return new Span<byte>(cookie, 8).ToArray();
                 }
             };
@@ -60,6 +62,9 @@ namespace Garnet.server
             this.serverOptions = serverOptions;
             this.usingSingleLog = serverOptions.AofPhysicalSublogCount == 1 && serverOptions.AofReplayTaskCount == 1;
             this.usingSinglePhysicalLog = serverOptions.AofPhysicalSublogCount == 1;
+            // Cache the gated mode: only meaningful when MultiLogEnabled, so AND it in here
+            // to keep the dropped-prefix-consistency branches behind a single, hot-path-cheap check.
+            this.disablePrefixConsistency = serverOptions.MultiLogEnabled && serverOptions.DisablePrefixConsistency;
 
             if (usingSinglePhysicalLog)
                 this.singleLog = new SingleLog(logSettings[0], logger);
@@ -621,6 +626,30 @@ namespace Garnet.server
                     epochAccessor,
                     out logicalAddress);
             }
+            else if (disablePrefixConsistency)
+            {
+                // Prefix consistency disabled: partition the AOF but emit plain 16B AofHeader
+                // (no sequenceNumber, no replayTag). The replica re-hashes the key to route to
+                // the right replay task.
+                var header = new AofHeader
+                {
+                    opType = opType,
+                    storeVersion = version,
+                    sessionID = sessionId,
+                };
+
+                if (usingSinglePhysicalLog)
+                {
+                    singleLog.log.Enqueue(header, key, value, ref input, epochAccessor, out logicalAddress);
+                }
+                else
+                {
+                    var physicalSublogIdx = GetPhysicalSublogIdx(HASH(key));
+                    shardedLog.sublog[physicalSublogIdx].Enqueue(header, key, value, ref input, epochAccessor, out logicalAddress);
+                    if (serverOptions.AofAutoCommit)
+                        Commit();
+                }
+            }
             else
             {
                 var hash = HASH(key);
@@ -685,6 +714,28 @@ namespace Garnet.server
                     epochAccessor,
                     out logicalAddress);
             }
+            else if (disablePrefixConsistency)
+            {
+                // Prefix consistency disabled: partition the AOF but emit plain 16B AofHeader (no sequenceNumber).
+                var header = new AofHeader
+                {
+                    opType = opType,
+                    storeVersion = version,
+                    sessionID = sessionId,
+                };
+
+                if (usingSinglePhysicalLog)
+                {
+                    singleLog.log.Enqueue(header, key, ref input, epochAccessor, out logicalAddress);
+                }
+                else
+                {
+                    var physicalSublogIdx = GetPhysicalSublogIdx(HASH(key));
+                    shardedLog.sublog[physicalSublogIdx].Enqueue(header, key, ref input, epochAccessor, out logicalAddress);
+                    if (serverOptions.AofAutoCommit)
+                        Commit();
+                }
+            }
             else
             {
                 var hash = HASH(key);
@@ -746,6 +797,28 @@ namespace Garnet.server
                     epochAccessor,
                     out logicalAddress);
             }
+            else if (disablePrefixConsistency)
+            {
+                // Prefix consistency disabled: partition the AOF but emit plain 16B AofHeader (no sequenceNumber).
+                var header = new AofHeader
+                {
+                    opType = opType,
+                    storeVersion = version,
+                    sessionID = sessionId,
+                };
+
+                if (usingSinglePhysicalLog)
+                {
+                    singleLog.log.Enqueue(header, key, value, epochAccessor, out logicalAddress);
+                }
+                else
+                {
+                    var physicalSublogIdx = GetPhysicalSublogIdx(HASH(key));
+                    shardedLog.sublog[physicalSublogIdx].Enqueue(header, key, value, epochAccessor, out logicalAddress);
+                    if (serverOptions.AofAutoCommit)
+                        Commit();
+                }
+            }
             else
             {
                 var hash = HASH(key);
@@ -790,6 +863,10 @@ namespace Garnet.server
 
         internal unsafe void EnqueueStoredProc(AofEntryType opType, byte procedureId, long txnVersion, int sessionId, ref CustomProcedureInput procInput, CustomTransactionProcedure proc)
         {
+            if (disablePrefixConsistency)
+            {
+                throw new GarnetException("Prefix consistency is disabled; stored procedures are not supported.");
+            }
             if (usingSingleLog)
             {
                 var header = new AofHeader
@@ -861,6 +938,10 @@ namespace Garnet.server
 
         internal unsafe void EnqueueTxn(AofEntryType opType, long txnVersion, int sessionId, ulong physicalSublogAccessVector, BitVector[] virtualSublogAccessVector, int virtualSublogParticipantCount)
         {
+            if (disablePrefixConsistency)
+            {
+                throw new GarnetException("Prefix consistency is disabled; transactions are not supported.");
+            }
             if (usingSingleLog)
             {
                 var header = new AofHeader
@@ -927,6 +1008,10 @@ namespace Garnet.server
 
         internal void EnqueueDatabaseCommit(AofEntryType opType, long version)
         {
+            if (disablePrefixConsistency)
+            {
+                throw new GarnetException("Prefix consistency is disabled; database commit / checkpoint markers are not supported.");
+            }
             if (usingSingleLog)
             {
                 var header = new AofHeader()
@@ -996,6 +1081,10 @@ namespace Garnet.server
 
         internal unsafe void EnqueueSafeFlushAOF(AofEntryType opType, bool unsafeTruncateLog, int dbId)
         {
+            if (disablePrefixConsistency)
+            {
+                throw new GarnetException("Prefix consistency is disabled; flush coordination is not supported.");
+            }
             if (usingSingleLog)
             {
                 AofHeader header = new()

@@ -150,6 +150,15 @@ namespace Garnet.cluster
                 {
                     await aofSyncTasks[0].RunAofSyncTask(this).ConfigureAwait(false);
                 }
+                else if (clusterProvider.serverOptions.DisablePrefixConsistency)
+                {
+                    // Prefix consistency disabled: ship pages per physical sublog only; no tail-witness pulse.
+                    var tasks = new Task[aofSyncTasks.Length];
+                    for (var i = 0; i < aofSyncTasks.Length; i++)
+                        tasks[i] = aofSyncTasks[i].RunAofSyncTask(this);
+
+                    _ = await Task.WhenAny(tasks).ConfigureAwait(false);
+                }
                 else
                 {
                     var tasks = new Task[aofSyncTasks.Length + 1];

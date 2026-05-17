@@ -98,6 +98,15 @@ namespace Garnet.server
         public bool AofReadWithTimestamp = true;
 
         /// <summary>
+        /// When false (default), MultiLog enforces prefix-consistent replica reads via per-record sequence numbers, sketch state, and the 3-phase Prepare/Read/Update read protocol.
+        /// When true the AOF is still partitioned across physical sublogs and replayed in parallel, but no prefix-consistency machinery is active.
+        /// The replica may serve stale or torn reads.
+        /// Transactions, checkpoints, and flush coordination are unsupported in this mode and will fault loudly.
+        /// Only meaningful when <see cref="MultiLogEnabled"/> is also true.
+        /// </summary>
+        public bool DisablePrefixConsistency = false;
+
+        /// <summary>
         /// Frequency in milliseconds at which a snapshot of the AOF read state is taken on replicas.
         /// Only applies when AofReadWithTimestamp is false.
         /// </summary>

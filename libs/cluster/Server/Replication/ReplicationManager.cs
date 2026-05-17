@@ -643,6 +643,7 @@ namespace Garnet.cluster
             Debug.Assert(!storeWrapper.TaskManager.IsRunning(TaskType.AdvanceTimeReplicaTask), "AdvanceTimeReplicaTask should be not running at this stage!");
             onAdvanceTimeWorkerStart = new();
             if (clusterProvider.serverOptions.AofPhysicalSublogCount > 1 && clusterProvider.serverOptions.AofReadWithTimestamp &&
+                !clusterProvider.serverOptions.DisablePrefixConsistency &&
                 !clusterProvider.storeWrapper.TaskManager.RegisterAndRun(TaskType.AdvanceTimeReplicaTask, (token) => AdvanceTimeWorker(token)))
             {
                 logger?.LogError("Failed to register AdvanceTime task at the replica");

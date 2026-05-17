@@ -79,7 +79,8 @@ namespace Resp.benchmark
                 EnableCluster = true,
                 ReplicationOffsetMaxLag = 0,
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
-                AofReplayTaskCount = options.AofReplayTaskCount
+                AofReplayTaskCount = options.AofReplayTaskCount,
+                DisablePrefixConsistency = options.DisablePrefixConsistency,
             };
             aofServerOptions.GetAofSettings(0, out var logSettings);
             appendOnlyFile = new GarnetAppendOnlyFile(aofServerOptions, logSettings, Program.loggerFactory.CreateLogger("AofGen - AOF instance"));

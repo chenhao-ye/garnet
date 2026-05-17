@@ -214,7 +214,7 @@ namespace Garnet.server
                 ? new GarnetServerMonitor(this, serverOptions, servers,
                     loggerFactory?.CreateLogger("GarnetServerMonitor"))
                 : null;
-            this.enforceConsistentRead = serverOptions.EnableCluster && serverOptions.EnableAOF && serverOptions.MultiLogEnabled;
+            this.enforceConsistentRead = serverOptions.EnableCluster && serverOptions.EnableAOF && serverOptions.MultiLogEnabled && !serverOptions.DisablePrefixConsistency;
             this.logger = loggerFactory?.CreateLogger("StoreWrapper");
             this.sessionLogger = loggerFactory?.CreateLogger("Session");
             this.accessControlList = accessControlList;

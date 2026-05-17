@@ -146,7 +146,7 @@ namespace Garnet.server
                     if (usingShardedLog)
                     {
                         shardedHeader = *(AofShardedHeader*)ptr;
-                        storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, shardedHeader.sequenceNumber);
+                        storeWrapper.appendOnlyFile.readConsistencyManager?.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, shardedHeader.sequenceNumber);
                     }
                     break;
                 case AofEntryType.CheckpointEndCommit:
@@ -208,7 +208,7 @@ namespace Garnet.server
                     if (usingShardedLog)
                     {
                         shardedHeader = *(AofShardedHeader*)ptr;
-                        storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, shardedHeader.sequenceNumber);
+                        storeWrapper.appendOnlyFile.readConsistencyManager?.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, shardedHeader.sequenceNumber);
                     }
                     break;
                 case AofEntryType.FlushAll:
@@ -374,23 +374,27 @@ namespace Garnet.server
         }
 
         // Extract key from entryPtr.
-        // In sharded mode, additionally hashes the key and updates the ReadConsistencyManager,
-        // returning the hash via keyHash for the caller to forward to Tsavorite via opts.KeyHash.
+        // Dispatches on the on-disk header type so NoPrefix records (BasicHeader emitted under
+        // sharded partitioning) take the no-sketch path, while MultiLog records (ShardedHeader)
+        // still update the ReadConsistencyManager and pass keyHash to Tsavorite via opts.KeyHash.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void PrepareKey(int sublogIdx, byte* entryPtr, out Span<byte> key, out long? keyHash, out byte* postKeyPtr)
         {
-            if (usingShardedLog)
+            var header = *(AofHeader*)entryPtr;
+            if (header.headerType == AofHeaderType.ShardedHeader)
             {
                 var keyPtr = entryPtr + sizeof(AofShardedHeader);
                 key = SpanByte.FromLengthPrefixedPinnedPointer(keyPtr);
                 postKeyPtr = keyPtr + key.TotalSize();
                 var hash = GarnetLog.HASH(key);
                 var seqNum = ((AofShardedHeader*)entryPtr)->sequenceNumber;
-                storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogKeySequenceNumber(sublogIdx, hash, seqNum);
+                storeWrapper.appendOnlyFile.readConsistencyManager?.UpdateVirtualSublogKeySequenceNumber(sublogIdx, hash, seqNum);
                 keyHash = hash;
             }
             else
             {
+                // BasicHeader: legacy single-log or NoPrefix. No sketch state; let Tsavorite
+                // compute its own hash so the legacy single-log fast path stays bit-identical.
                 var keyPtr = entryPtr + sizeof(AofHeader);
                 key = SpanByte.FromLengthPrefixedPinnedPointer(keyPtr);
                 postKeyPtr = keyPtr + key.TotalSize();
@@ -603,6 +607,12 @@ namespace Garnet.server
             sequenceNumber = 0L;
             switch (header.headerType)
             {
+                // NoPrefix: header carries no replayTag; re-hash the key to route.
+                case AofHeaderType.BasicHeader:
+                {
+                    var key = SpanByte.FromLengthPrefixedPinnedPointer(ptr + sizeof(AofHeader));
+                    return replayTaskIdx == storeWrapper.appendOnlyFile.Log.GetReplayTaskIdx(GarnetLog.HASH(key));
+                }
                 // Check replay tag embedded in header to determine if this task should replay the entry
                 case AofHeaderType.ShardedHeader:
                     var shardedHeader = *(AofShardedHeader*)ptr;
@@ -632,6 +642,12 @@ namespace Garnet.server
             var header = *(AofHeader*)ptr;
             switch (header.headerType)
             {
+                // NoPrefix: header carries no replayTag; re-hash the key to determine the task.
+                case AofHeaderType.BasicHeader:
+                {
+                    var key = SpanByte.FromLengthPrefixedPinnedPointer(ptr + sizeof(AofHeader));
+                    return storeWrapper.appendOnlyFile.Log.GetReplayTaskIdx(GarnetLog.HASH(key));
+                }
                 // Extract replay tag from header to determine target replay task
                 case AofHeaderType.ShardedHeader:
                     return storeWrapper.appendOnlyFile.Log.GetReplayTaskIdxFromTag(header.replayTag);
@@ -661,6 +677,10 @@ namespace Garnet.server
             var header = *(AofHeader*)ptr;
             switch (header.headerType)
             {
+                // NoPrefix: no sequence number on record; never skip based on sequenceNumber.
+                case AofHeaderType.BasicHeader:
+                    entrySequenceNumber = 0;
+                    return false;
                 case AofHeaderType.ShardedHeader:
                     var shardedHeader = *(AofShardedHeader*)ptr;
                     entrySequenceNumber = shardedHeader.sequenceNumber;

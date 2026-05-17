@@ -152,6 +152,9 @@ namespace Resp.benchmark
         [Option("aof-replay-task-count", Required = false, Default = 1, HelpText = "Number of replay tasks per physical sublog at the replica.")]
         public int AofReplayTaskCount { get; set; }
 
+        [Option("disable-prefix-consistency", Required = false, HelpText = "Disable prefix-consistent replica reads (NoPrefix baseline). Requires AofPhysicalSublogCount > 1 or AofReplayTaskCount > 1.")]
+        public bool DisablePrefixConsistency { get; set; }
+
         [Option("aof-memory-size", Required = false, Default = "64m", HelpText = "Total AOF memory buffer used in bytes (rounds down to power of 2) - spills to disk after this limit.")]
         public string AofMemorySize { get; set; }
 

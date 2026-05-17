@@ -200,7 +200,7 @@ namespace Garnet.server
                         }
 
                         // Update max sequence number for this virtual sublog which is mapped
-                        appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, maxSequenceNumber);
+                        appendOnlyFile.readConsistencyManager?.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, maxSequenceNumber);
                     }
                     catch (Exception ex)
                     {

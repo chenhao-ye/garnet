@@ -66,7 +66,7 @@ namespace Garnet.server
             InvalidAofAddress = AofAddress.Create(length: serverOptions.AofPhysicalSublogCount, value: -1);
             MaxAofAddress = AofAddress.Create(length: serverOptions.AofPhysicalSublogCount, value: long.MaxValue);
             CreateOrUpdateKeySequenceManager();
-            if (serverOptions.MultiLogEnabled)
+            if (serverOptions.MultiLogEnabled && !serverOptions.DisablePrefixConsistency)
                 seqNumGen = new SequenceNumberGenerator(0);
             this.logger = logger;
             Log = new(this, serverOptions, logSettings, logger);
@@ -98,8 +98,8 @@ namespace Garnet.server
         /// </summary>
         public void CreateOrUpdateKeySequenceManager()
         {
-            // Create manager only if sharded log is enabled
-            if (!serverOptions.MultiLogEnabled) return;
+            // Create manager only if sharded log is enabled and prefix consistency is not disabled
+            if (!serverOptions.MultiLogEnabled || serverOptions.DisablePrefixConsistency) return;
             var currentVersion = readConsistencyManager?.CurrentVersion ?? 0L;
             var _readConsistencyManager = new ReadConsistencyManager(currentVersion + 1, this, serverOptions);
             _ = Interlocked.CompareExchange(ref readConsistencyManager, _readConsistencyManager, readConsistencyManager);
@@ -111,7 +111,7 @@ namespace Garnet.server
         /// </summary>
         public void ResetSequenceNumberGenerator()
         {
-            if (!serverOptions.MultiLogEnabled)
+            if (!serverOptions.MultiLogEnabled || serverOptions.DisablePrefixConsistency)
                 return;
             var physicalSublogMaxReplayedSequenceNumber = readConsistencyManager.GetPhysicalSublogMaxReplayedSequenceNumber();
             var start = physicalSublogMaxReplayedSequenceNumber.Max();

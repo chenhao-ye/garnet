@@ -103,6 +103,7 @@ namespace Resp.benchmark
                 Console.WriteLine($"index:{opts.IndexMemorySize}");
                 Console.WriteLine($"aof-sublog-count:{opts.AofPhysicalSublogCount}");
                 Console.WriteLine($"aof-replay-task-count:{opts.AofReplayTaskCount}");
+                Console.WriteLine($"disable-prefix-consistency:{opts.DisablePrefixConsistency}");
                 Console.WriteLine("----------------------------------");
             }
         }
