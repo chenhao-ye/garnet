@@ -1,0 +1,46 @@
+# Experiment: online_set_noprefix
+# Online Resp.benchmark with GarnetClientSession and a null-device AOF on the
+# server, configured with 64 physical sublogs and prefix-consistency stripped
+# (NoPrefix baseline). 100% SET workload over a 1M-key dbsize; sweep client
+# thread (session) count from 1 to 64. Companion to online_set_multilog at
+# matched (k, m); throughput delta isolates the prefix-consistency overhead.
+
+name: online_set_noprefix
+description: "Online 100% SET with GarnetClientSession, null-device AOF, 64 physical sublogs, NoPrefix (no prefix-consistency); sweep threads 1-64"
+benchmark: online
+
+affinity:
+  server:
+    numa_node: 0
+  client:
+    numa_node: 1
+
+base:
+  client_params:
+    client: GarnetClientSession
+    online: true
+    op_workload: [SET]
+    op_percent: [100]
+    keylength: 8
+    valuelength: 8
+    dbsize: 1000000
+    runtime: 60
+    itp: 32768
+    disable_console_logger: true
+  server_params:
+    aof: true
+    aof_null_device: true
+    aof_commit_freq: -1
+    aof_memory: 256m
+    aof_physical_sublog_count: 64
+    disable_prefix_consistency: true
+
+sweep:
+  client_params:
+    threads: [1, 2, 4, 8, 16, 32, 64]
+
+plot:
+  xticks: [1, 8, 16, 32, 64]
+  yticks: [0, 10, 20, 30, 40, 50, 60]
+  legend_separate: true
+  scale: 0.5

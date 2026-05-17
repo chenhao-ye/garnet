@@ -1,0 +1,38 @@
+# Experiment: aof_replay_physical_noprefix
+# Counterpart to aof_replay_physical with prefix consistency disabled (NoPrefix
+# baseline). Throughput delta isolates the cost of sketch maintenance and the
+# 3-phase read protocol on the replay path.
+
+name: aof_replay_physical_noprefix
+description: "Scale AOF physical sublog count (1-64) for replay under NoPrefix"
+benchmark: aof
+no_server: true
+repeat: 7
+
+affinity:
+  client:
+    numa_node: 0
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 1000000
+    disable_prefix_consistency: true
+
+sweep:
+  client_params:
+    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32, 64]
+
+plot:
+  xticks: [1, 8, 16, 32, 64]
+  yticks: [0, 20, 40, 60, 80, 100, 120]
+  legend_separate: true
+  scale: 0.5
