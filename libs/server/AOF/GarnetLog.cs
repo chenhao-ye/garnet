@@ -609,6 +609,29 @@ namespace Garnet.server
             where TInput : IStoreInput
             where TEpochAccessor : IEpochAccessor
         {
+            // Hot-path guard: when prefix consistency is enabled (the default) this is a
+            // single never-taken branch and the if/else below is identical to upstream MultiLog.
+            if (disablePrefixConsistency)
+            {
+                var basicHeader = new AofHeader
+                {
+                    opType = opType,
+                    storeVersion = version,
+                    sessionID = sessionId,
+                };
+                if (usingSinglePhysicalLog)
+                {
+                    singleLog.log.Enqueue(basicHeader, key, value, ref input, epochAccessor, out logicalAddress);
+                }
+                else
+                {
+                    var physicalSublogIdx = GetPhysicalSublogIdx(HASH(key));
+                    shardedLog.sublog[physicalSublogIdx].Enqueue(basicHeader, key, value, ref input, epochAccessor, out logicalAddress);
+                    if (serverOptions.AofAutoCommit)
+                        Commit();
+                }
+                return;
+            }
             if (usingSingleLog)
             {
                 var header = new AofHeader
@@ -625,30 +648,6 @@ namespace Garnet.server
                     ref input,
                     epochAccessor,
                     out logicalAddress);
-            }
-            else if (disablePrefixConsistency)
-            {
-                // Prefix consistency disabled: partition the AOF but emit plain 16B AofHeader
-                // (no sequenceNumber, no replayTag). The replica re-hashes the key to route to
-                // the right replay task.
-                var header = new AofHeader
-                {
-                    opType = opType,
-                    storeVersion = version,
-                    sessionID = sessionId,
-                };
-
-                if (usingSinglePhysicalLog)
-                {
-                    singleLog.log.Enqueue(header, key, value, ref input, epochAccessor, out logicalAddress);
-                }
-                else
-                {
-                    var physicalSublogIdx = GetPhysicalSublogIdx(HASH(key));
-                    shardedLog.sublog[physicalSublogIdx].Enqueue(header, key, value, ref input, epochAccessor, out logicalAddress);
-                    if (serverOptions.AofAutoCommit)
-                        Commit();
-                }
             }
             else
             {
@@ -698,6 +697,27 @@ namespace Garnet.server
             where TInput : IStoreInput
             where TEpochAccessor : IEpochAccessor
         {
+            if (disablePrefixConsistency)
+            {
+                var basicHeader = new AofHeader
+                {
+                    opType = opType,
+                    storeVersion = version,
+                    sessionID = sessionId,
+                };
+                if (usingSinglePhysicalLog)
+                {
+                    singleLog.log.Enqueue(basicHeader, key, ref input, epochAccessor, out logicalAddress);
+                }
+                else
+                {
+                    var physicalSublogIdx = GetPhysicalSublogIdx(HASH(key));
+                    shardedLog.sublog[physicalSublogIdx].Enqueue(basicHeader, key, ref input, epochAccessor, out logicalAddress);
+                    if (serverOptions.AofAutoCommit)
+                        Commit();
+                }
+                return;
+            }
             if (usingSingleLog)
             {
                 var header = new AofHeader
@@ -713,28 +733,6 @@ namespace Garnet.server
                     ref input,
                     epochAccessor,
                     out logicalAddress);
-            }
-            else if (disablePrefixConsistency)
-            {
-                // Prefix consistency disabled: partition the AOF but emit plain 16B AofHeader (no sequenceNumber).
-                var header = new AofHeader
-                {
-                    opType = opType,
-                    storeVersion = version,
-                    sessionID = sessionId,
-                };
-
-                if (usingSinglePhysicalLog)
-                {
-                    singleLog.log.Enqueue(header, key, ref input, epochAccessor, out logicalAddress);
-                }
-                else
-                {
-                    var physicalSublogIdx = GetPhysicalSublogIdx(HASH(key));
-                    shardedLog.sublog[physicalSublogIdx].Enqueue(header, key, ref input, epochAccessor, out logicalAddress);
-                    if (serverOptions.AofAutoCommit)
-                        Commit();
-                }
             }
             else
             {
@@ -781,6 +779,27 @@ namespace Garnet.server
         internal void Enqueue<TEpochAccessor>(AofEntryType opType, long version, int sessionId, ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, TEpochAccessor epochAccessor, out long logicalAddress)
             where TEpochAccessor : IEpochAccessor
         {
+            if (disablePrefixConsistency)
+            {
+                var basicHeader = new AofHeader
+                {
+                    opType = opType,
+                    storeVersion = version,
+                    sessionID = sessionId,
+                };
+                if (usingSinglePhysicalLog)
+                {
+                    singleLog.log.Enqueue(basicHeader, key, value, epochAccessor, out logicalAddress);
+                }
+                else
+                {
+                    var physicalSublogIdx = GetPhysicalSublogIdx(HASH(key));
+                    shardedLog.sublog[physicalSublogIdx].Enqueue(basicHeader, key, value, epochAccessor, out logicalAddress);
+                    if (serverOptions.AofAutoCommit)
+                        Commit();
+                }
+                return;
+            }
             if (usingSingleLog)
             {
                 var header = new AofHeader
@@ -796,28 +815,6 @@ namespace Garnet.server
                     value,
                     epochAccessor,
                     out logicalAddress);
-            }
-            else if (disablePrefixConsistency)
-            {
-                // Prefix consistency disabled: partition the AOF but emit plain 16B AofHeader (no sequenceNumber).
-                var header = new AofHeader
-                {
-                    opType = opType,
-                    storeVersion = version,
-                    sessionID = sessionId,
-                };
-
-                if (usingSinglePhysicalLog)
-                {
-                    singleLog.log.Enqueue(header, key, value, epochAccessor, out logicalAddress);
-                }
-                else
-                {
-                    var physicalSublogIdx = GetPhysicalSublogIdx(HASH(key));
-                    shardedLog.sublog[physicalSublogIdx].Enqueue(header, key, value, epochAccessor, out logicalAddress);
-                    if (serverOptions.AofAutoCommit)
-                        Commit();
-                }
             }
             else
             {

@@ -62,6 +62,8 @@ namespace Garnet.server
         public class AofReplayCoordinator(GarnetServerOptions serverOptions, AofProcessor aofProcessor, ILogger logger = null) : IDisposable
         {
             readonly GarnetServerOptions serverOptions = serverOptions;
+            // Cached at construction to avoid recomputing MultiLogEnabled (a property) on every replay record.
+            readonly bool disablePrefixConsistency = serverOptions.MultiLogEnabled && serverOptions.DisablePrefixConsistency;
             readonly ConcurrentDictionary<BarrierKey, LeaderBarrier> leaderBarriers = [];
             readonly AofProcessor aofProcessor = aofProcessor;
             readonly AofReplayContext[] aofReplayContext = InitializeReplayContext(serverOptions.AofVirtualSublogCount, aofProcessor);
@@ -132,7 +134,7 @@ namespace Garnet.server
                 // When prefix consistency is disabled, there are no transaction headers on the wire;
                 // BasicHeader records flow straight to ReplayOp. Reject anything that still looks
                 // like a txn record on the replay path.
-                if (serverOptions.MultiLogEnabled && serverOptions.DisablePrefixConsistency)
+                if (disablePrefixConsistency)
                 {
                     if (header.headerType == AofHeaderType.TransactionHeader)
                         throw new GarnetException("Prefix consistency is disabled; transaction replay is not supported.");
@@ -350,7 +352,7 @@ namespace Garnet.server
             /// <param name="ptr"></param>
             internal void ReplayStoredProc(int sublogIdx, byte id, byte* ptr)
             {
-                if (serverOptions.MultiLogEnabled && serverOptions.DisablePrefixConsistency)
+                if (disablePrefixConsistency)
                     throw new GarnetException("Prefix consistency is disabled; stored procedure replay is not supported.");
                 if (!serverOptions.MultiLogEnabled)
                 {
