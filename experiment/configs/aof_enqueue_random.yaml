@@ -11,6 +11,10 @@ benchmark: aof
 no_server: true
 repeat: 5
 
+affinity:
+  client:
+    numa_node: 0
+
 base:
   client_params:
     aof_bench: true

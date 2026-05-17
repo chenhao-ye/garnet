@@ -31,6 +31,8 @@ from pathlib import Path
 import yaml
 from config import (
     REPO_ROOT,
+    Affinity,
+    AffinitySpec,
     config_path_for,
     load_experiment_spec,
     resolve_run_spec,
@@ -93,9 +95,27 @@ def params_to_args(
     return args
 
 
-def build_command(project: str, params: dict, is_server: bool = False) -> list[str]:
+def numactl_prefix(affinity: AffinitySpec | None) -> list[str]:
+    if affinity is None:
+        return []
+    args = ["numactl"]
+    if affinity.cpus is not None:
+        args.append(f"--physcpubind={affinity.cpus}")
+    else:
+        args.append(f"--cpunodebind={affinity.numa_node}")
+    args += [f"--membind={affinity.numa_node}", "--"]
+    return args
+
+
+def build_command(
+    project: str,
+    params: dict,
+    is_server: bool = False,
+    affinity: AffinitySpec | None = None,
+) -> list[str]:
     project_path = REPO_ROOT / project
-    cmd = [
+    cmd = numactl_prefix(affinity)
+    cmd += [
         "dotnet",
         "run",
         "-c",
@@ -154,9 +174,14 @@ def dump_config(path: Path, payload: dict) -> None:
 
 
 def launch_server(
-    server_project: str, server_params: dict, log_path: Path
+    server_project: str,
+    server_params: dict,
+    log_path: Path,
+    affinity: AffinitySpec | None = None,
 ) -> subprocess.Popen | None:
-    cmd = build_command(server_project, server_params, is_server=True)
+    cmd = build_command(
+        server_project, server_params, is_server=True, affinity=affinity
+    )
 
     logger.info(f"Launch server: {shlex.join(cmd)}")
     if dry_run:
@@ -257,16 +282,23 @@ def execute_run(
     prepare_params: dict,
     no_server: bool,
     repeat: int,
+    affinity: Affinity,
 ) -> None:
     client_params = dict(client_params)
     if repeat > 1:
         client_params["repeat"] = repeat
 
-    server_cmd = build_command(server_project, server_params, is_server=True)
-    prepare_cmd = (
-        build_command(benchmark_project, prepare_params) if prepare_params else None
+    server_cmd = build_command(
+        server_project, server_params, is_server=True, affinity=affinity.server
     )
-    benchmark_cmd = build_command(benchmark_project, client_params)
+    prepare_cmd = (
+        build_command(benchmark_project, prepare_params, affinity=affinity.prepare)
+        if prepare_params
+        else None
+    )
+    benchmark_cmd = build_command(
+        benchmark_project, client_params, affinity=affinity.client
+    )
 
     config_record = {
         "experiment": exp_name,
@@ -277,6 +309,7 @@ def execute_run(
         "sweep": sweep_combo,
         "sweep_params": sweep_params,
         "repeat": repeat,
+        "affinity": affinity.to_dict(),
         "server_cmd": shlex.join(server_cmd),
         "prepare_cmd": shlex.join(prepare_cmd) if prepare_cmd is not None else "",
         "client_cmd": shlex.join(benchmark_cmd),
@@ -288,7 +321,9 @@ def execute_run(
     try:
         if not no_server:
             server_log = run_dir / "_server.log"
-            server_proc = launch_server(server_project, server_params, server_log)
+            server_proc = launch_server(
+                server_project, server_params, server_log, affinity=affinity.server
+            )
             wait_for_server(host, port, server_proc)
 
         if prepare_params:
@@ -306,6 +341,11 @@ def _run_one(config: str) -> None:
         logger.warning("empty prepare.client_params")
     if not spec.base_server_params:
         logger.warning("empty base.server_params")
+
+    if spec.affinity.any_set() and shutil.which("numactl") is None:
+        raise RuntimeError(
+            "affinity configured in YAML but 'numactl' is not on PATH"
+        )
 
     exp_dir = result_dir(spec.name)
 
@@ -338,6 +378,7 @@ def _run_one(config: str) -> None:
             prepare_params=spec.prepare_params,
             no_server=spec.no_server,
             repeat=spec.repeat,
+            affinity=spec.affinity,
         )
 
     logger.info(f"All runs complete. Results in: {exp_dir}")

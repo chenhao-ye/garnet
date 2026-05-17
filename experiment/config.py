@@ -35,6 +35,38 @@ SWEEP_PARAM_PREFIXES = {"client_params": "client", "server_params": "server"}
 
 
 @dataclass(frozen=True)
+class AffinitySpec:
+    numa_node: int
+    cpus: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"numa_node": self.numa_node}
+        if self.cpus is not None:
+            d["cpus"] = self.cpus
+        return d
+
+
+@dataclass(frozen=True)
+class Affinity:
+    server: AffinitySpec | None = None
+    client: AffinitySpec | None = None
+    prepare: AffinitySpec | None = None
+
+    def any_set(self) -> bool:
+        return any(p is not None for p in (self.server, self.client, self.prepare))
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if self.server is not None:
+            out["server"] = self.server.to_dict()
+        if self.client is not None:
+            out["client"] = self.client.to_dict()
+        if self.prepare is not None:
+            out["prepare"] = self.prepare.to_dict()
+        return out
+
+
+@dataclass(frozen=True)
 class ExperimentSpec:
     name: str
     benchmark: str
@@ -46,6 +78,7 @@ class ExperimentSpec:
     no_server: bool
     repeat: int
     combos: list[dict[str, dict[str, Any]]]
+    affinity: Affinity
     config: dict[str, Any]
     config_path: Path
 
@@ -62,6 +95,47 @@ class ResolvedRunSpec:
 def load_yaml_config(path: str | Path) -> dict[str, Any]:
     with open(path) as f:
         return yaml.safe_load(f) or {}
+
+
+def _parse_affinity_block(role: str, block: Any) -> AffinitySpec | None:
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise ValueError(f"affinity.{role} must be a mapping, got {type(block).__name__}")
+    if "numa_node" not in block:
+        raise ValueError(f"affinity.{role} requires 'numa_node'")
+    numa_node = block["numa_node"]
+    if not isinstance(numa_node, int) or isinstance(numa_node, bool):
+        raise ValueError(
+            f"affinity.{role}.numa_node must be an int, got {type(numa_node).__name__}"
+        )
+    cpus = block.get("cpus")
+    if cpus is not None and not isinstance(cpus, str):
+        raise ValueError(
+            f"affinity.{role}.cpus must be a string (numactl --physcpubind syntax), "
+            f"got {type(cpus).__name__}"
+        )
+    unknown = set(block) - {"numa_node", "cpus"}
+    if unknown:
+        raise ValueError(f"affinity.{role} has unknown keys: {sorted(unknown)}")
+    return AffinitySpec(numa_node=numa_node, cpus=cpus)
+
+
+def _parse_affinity(config: dict[str, Any]) -> Affinity:
+    raw = config.get("affinity")
+    if raw is None:
+        return Affinity()
+    if not isinstance(raw, dict):
+        raise ValueError(f"'affinity' must be a mapping, got {type(raw).__name__}")
+    unknown = set(raw) - {"server", "client", "prepare"}
+    if unknown:
+        raise ValueError(f"affinity has unknown roles: {sorted(unknown)}")
+    server = _parse_affinity_block("server", raw.get("server"))
+    client = _parse_affinity_block("client", raw.get("client"))
+    prepare = _parse_affinity_block("prepare", raw.get("prepare"))
+    if prepare is None:
+        prepare = client
+    return Affinity(server=server, client=client, prepare=prepare)
 
 
 def load_experiment_spec(
@@ -93,6 +167,7 @@ def load_experiment_spec(
         no_server=config.get("no_server", False),
         repeat=int(config.get("repeat", 1)),
         combos=expand_sweep(config.get("sweep", {})),
+        affinity=_parse_affinity(config),
         config=config,
         config_path=path,
     )

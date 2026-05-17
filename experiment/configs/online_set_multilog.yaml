@@ -8,6 +8,12 @@ name: online_set_multilog
 description: "Online 100% SET with GarnetClientSession, null-device AOF, 64 physical sublogs; sweep threads 1-64"
 benchmark: online
 
+affinity:
+  server:
+    numa_node: 0
+  client:
+    numa_node: 1
+
 base:
   client_params:
     client: GarnetClientSession

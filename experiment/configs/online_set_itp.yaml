@@ -9,6 +9,12 @@ name: online_set_itp
 description: "Sweep itp at threads=64 to find throughput saturation point"
 benchmark: online
 
+affinity:
+  server:
+    numa_node: 0
+  client:
+    numa_node: 1
+
 base:
   client_params:
     client: GarnetClientSession
