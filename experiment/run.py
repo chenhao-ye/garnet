@@ -58,8 +58,9 @@ CLIENT_BOOL_PARAMS = {
     "aof_null_device",
     "client_hist",
     "aof_bench",
+    "disable_prefix_consistency",
 }
-SERVER_BOOL_PARAMS = {"aof", "aof_null_device", "cluster", "tls"}
+SERVER_BOOL_PARAMS = {"aof", "aof_null_device", "cluster", "tls", "disable_prefix_consistency"}
 
 logger = logging.getLogger(__name__)
 dry_run = False
