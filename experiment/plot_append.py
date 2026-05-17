@@ -25,12 +25,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from plot_style import (
     APPEND_M_VALUES,
+    LEGEND_KWARGS,
     LINEWIDTH,
     MARKER_SIZE,
     color_map,
     labels_map,
     linestyle_map,
     marker_map,
+    zorder_map,
 )
 from plot_util import (
     RESULT_ROOT,
@@ -39,6 +41,7 @@ from plot_util import (
     extract_series,
     load_plot_config,
     load_result,
+    row_major_handles,
     save_fig,
     save_legend,
 )
@@ -68,7 +71,7 @@ def main():
     all_threads: set[float] = set()
     all_y: list[float] = []
     for m in APPEND_M_VALUES:
-        key = f"multilog_m{m}"
+        key = "single_log" if m == 1 else f"multilog_m{m}"
         xs, ys, _ = extract_series(
             result,
             x_param=X_PARAM,
@@ -88,6 +91,7 @@ def main():
             markersize=MARKER_SIZE,
             linewidth=LINEWIDTH,
             label=labels_map[key],
+            zorder=zorder_map.get(key, 2),
         )
 
     sorted_threads = sorted(all_threads)
@@ -102,18 +106,18 @@ def main():
         default_ymax=default_ymax,
     )
     out_path = RESULT_ROOT / experiment / "append_scaling.pdf"
-    legend_kwargs = dict(
-        frameon=False,
-        ncol=2,
-        columnspacing=1.0,
-        handlelength=1.8,
-        handletextpad=0.5,
-        labelspacing=0.3,
-    )
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=4)
     if plot_cfg.get("legend_separate"):
         save_legend(ax, out_path, **legend_kwargs)
     else:
-        ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.0), **legend_kwargs)
+        handles, labels = row_major_handles(ax, legend_kwargs["ncol"])
+        ax.legend(
+            handles,
+            labels,
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.0),
+            **legend_kwargs,
+        )
 
     save_fig(fig, out_path)
     plt.close(fig)

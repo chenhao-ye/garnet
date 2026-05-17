@@ -28,61 +28,82 @@ SINGLE_COLUMN_WIDTH = (DOUBLE_COLUMN_WIDTH - COLUMN_SEP) / 2
 
 MARKER_SIZE = 2.5
 LEGEND_MARKER_SIZE = 5
-LINEWIDTH = 1.2
+LINEWIDTH = 1
+
+# Shared legend kwargs. Callers override `ncol` per figure.
+LEGEND_KWARGS = dict(
+    frameon=False,
+    columnspacing=0.8,
+    handlelength=1.2,
+    handletextpad=0.4,
+    labelspacing=0.3,
+    borderpad=0.1,
+)
 
 APPEND_M_VALUES = [1, 2, 4, 8, 16, 32, 64]
 
 
-def _viridis_samples(n: int):
-    cmap = plt.get_cmap("viridis")
-    return [cmap(i / (n - 1) * 0.9) for i in range(n)]
+def _sample_cmap(cmap_name: str, t: float):
+    """Return one color from a matplotlib colormap at position t ∈ [0, 1]."""
+    return plt.get_cmap(cmap_name)(t)
 
 
-_append_palette = _viridis_samples(len(APPEND_M_VALUES))
+# autumn goes red (t=0) → yellow (t=1). Tune individual t per key as needed.
+MULTILOG_CMAP = "autumn"
 
 color_map = {
-    "single_log": "#d62728",
-    "multilog_virtual": "#1f77b4",
-    "multilog_physical": "#2ca02c",
+    "single_log": "#2c7bb6",
+    "multilog_virtual": _sample_cmap(MULTILOG_CMAP, 0.50),
+    "multilog_physical": _sample_cmap(MULTILOG_CMAP, 0.10),
     "noprefix": "#9467bd",
     "no_aof": "#1f77b4",
     "aof_single": "#d62728",
     "aof_multilog": "#2ca02c",
+    "multilog_m2": _sample_cmap(MULTILOG_CMAP, 0.90),
+    "multilog_m4": _sample_cmap(MULTILOG_CMAP, 0.75),
+    "multilog_m8": _sample_cmap(MULTILOG_CMAP, 0.6),
+    "multilog_m16": _sample_cmap(MULTILOG_CMAP, 0.45),
+    "multilog_m32": _sample_cmap(MULTILOG_CMAP, 0.3),
+    "multilog_m64": _sample_cmap(MULTILOG_CMAP, 0.00),
 }
-color_map.update(
-    {f"multilog_m{m}": _append_palette[i] for i, m in enumerate(APPEND_M_VALUES)}
-)
-color_map["multilog_m1"] = color_map["single_log"]
 
 linestyle_map = {
-    "single_log": "--",
+    "single_log": "-",
     "multilog_virtual": "-",
     "multilog_physical": "-",
     "noprefix": ":",
     "no_aof": "-",
     "aof_single": "-",
     "aof_multilog": "-",
+    # higher m -> less broken; m=64 fully solid.
+    # "multilog_m2": (0, (1, 3)),
+    # "multilog_m4": (0, (2, 2)),
+    # "multilog_m8": (0, (4, 2)),
+    # "multilog_m16": (0, (6, 2)),
+    # "multilog_m32": (0, (10, 2)),
+    "multilog_m2": "-",
+    "multilog_m4": "-",
+    "multilog_m8": "-",
+    "multilog_m16": "-",
+    "multilog_m32": "-",
+    "multilog_m64": "-",
 }
-linestyle_map.update({f"multilog_m{m}": "-" for m in APPEND_M_VALUES})
-linestyle_map["multilog_m1"] = "--"
 
-_marker_cycle = ["o", "s", "^", "D", "v", "P", "X"]
 marker_map = {
-    "single_log": None,
+    "single_log": ".",
     "multilog_virtual": "o",
     "multilog_physical": "s",
     "noprefix": "^",
     "no_aof": "o",
     "aof_single": "s",
     "aof_multilog": "^",
+    "multilog_m2": "^",
+    "multilog_m4": "v",
+    "multilog_m8": "D",
+    "multilog_m16": "s",
+    "multilog_m32": "x",
+    "multilog_m64": "o",
 }
-marker_map.update(
-    {
-        f"multilog_m{m}": _marker_cycle[i % len(_marker_cycle)]
-        for i, m in enumerate(APPEND_M_VALUES)
-    }
-)
-marker_map["multilog_m1"] = None
 
 labels_map = {
     "single_log": "Single Log",
@@ -93,5 +114,16 @@ labels_map = {
     "aof_single": "Single Log AOF",
     "aof_multilog": "MultiLog AOF (k=64)",
 }
-labels_map.update({f"multilog_m{m}": f"MultiLog({m})" for m in APPEND_M_VALUES})
-labels_map["multilog_m1"] = "Single Log"
+labels_map.update(
+    {f"multilog_m{m}": f"MultiLog({m})" for m in APPEND_M_VALUES if m != 1}
+)
+
+# Smaller m sits in front so the lighter (yellow) curves aren't buried under
+# the deeper-red high-m curves where they overlap. m=1 is Single Log baseline.
+_multilog_m_family = [m for m in APPEND_M_VALUES if m != 1]
+zorder_map = {
+    f"multilog_m{m}": 10 - i for i, m in enumerate(_multilog_m_family)
+}
+# Single Log baseline (slate blue, dashed) is the reference — keep it on top.
+zorder_map["single_log"] = 11
+zorder_map["multilog_m1"] = 11

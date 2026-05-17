@@ -27,6 +27,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from plot_style import (
+    LEGEND_KWARGS,
     LINEWIDTH,
     MARKER_SIZE,
     color_map,
@@ -41,6 +42,7 @@ from plot_util import (
     extract_series,
     load_plot_config,
     load_result,
+    row_major_handles,
     save_fig,
     save_legend,
 )
@@ -134,17 +136,18 @@ def main():
         default_ymax=default_ymax,
     )
     out_path = RESULT_ROOT / args.physical / "replay_scaling.pdf"
-    legend_kwargs = dict(
-        frameon=False,
-        ncol=1,
-        handlelength=1.8,
-        handletextpad=0.5,
-        labelspacing=0.3,
-    )
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=3)
     if plot_cfg.get("legend_separate"):
         save_legend(ax, out_path, **legend_kwargs)
     else:
-        ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.0), **legend_kwargs)
+        handles, labels = row_major_handles(ax, legend_kwargs["ncol"])
+        ax.legend(
+            handles,
+            labels,
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.0),
+            **legend_kwargs,
+        )
 
     save_fig(fig, out_path)
     plt.close(fig)

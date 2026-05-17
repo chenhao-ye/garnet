@@ -16,7 +16,29 @@ from plot_style import DOUBLE_COLUMN_WIDTH, SINGLE_COLUMN_WIDTH
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULT_ROOT = REPO_ROOT / "result"
+FIGURES_DIR = RESULT_ROOT / "figures"
 CONFIG_ROOT = Path(__file__).resolve().parent / "configs"
+
+
+def _link_to_figures(file_path: Path) -> None:
+    """Mirror an output figure under FIGURES_DIR as <experiment>-<filename>.
+    The link is relative so the result tree remains portable."""
+    file_path = Path(file_path)
+    if not file_path.exists():
+        return
+    try:
+        rel = file_path.relative_to(RESULT_ROOT)
+    except ValueError:
+        return
+    if rel.parts[0] == FIGURES_DIR.name:
+        return
+    experiment = rel.parts[0]
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    link_path = FIGURES_DIR / f"{experiment}-{file_path.name}"
+    target = Path("..") / file_path.relative_to(RESULT_ROOT)
+    if link_path.is_symlink() or link_path.exists():
+        link_path.unlink()
+    link_path.symlink_to(target)
 
 PLOT_CONFIG_KEYS = {
     "scale",
@@ -215,6 +237,20 @@ def apply_axis_cfg(
         line.set_clip_on(False)
 
 
+def row_major_handles(ax, ncol: int):
+    """Return (handles, labels) reordered so a matplotlib legend with `ncol`
+    columns displays them row-major. matplotlib fills legends column-major by
+    default; this reshuffle compensates so callers can write entries in
+    natural reading order."""
+    handles, labels = ax.get_legend_handles_labels()
+    if not handles or ncol <= 1:
+        return handles, labels
+    n = len(handles)
+    nrows = -(-n // ncol)
+    order = [r * ncol + c for c in range(ncol) for r in range(nrows) if r * ncol + c < n]
+    return [handles[i] for i in order], [labels[i] for i in order]
+
+
 def save_legend(
     ax, fig_path: Path, *, width: float = SINGLE_COLUMN_WIDTH, **legend_kwargs
 ) -> Path | None:
@@ -226,7 +262,8 @@ def save_legend(
     (mirrors save_fig). Returns the legend PDF path, or None if the axes
     has no labeled artists.
     """
-    handles, labels = ax.get_legend_handles_labels()
+    ncol = legend_kwargs.get("ncol", 1)
+    handles, labels = row_major_handles(ax, ncol)
     if not handles:
         return None
     fig_leg = plt.figure(figsize=(width, 1))
@@ -245,12 +282,14 @@ def save_legend(
     bbox = Bbox.from_extents(0, legend_bbox.y0, width, legend_bbox.y1)
     legend_path = fig_path.with_name(f"{fig_path.stem}_legend{fig_path.suffix}")
     legend_path.parent.mkdir(parents=True, exist_ok=True)
-    fig_leg.savefig(legend_path, bbox_inches=bbox)
+    fig_leg.savefig(legend_path, bbox_inches=bbox, pad_inches=0)
     print(f"Saved {legend_path}")
+    _link_to_figures(legend_path)
     if str(legend_path).endswith(".pdf"):
         png_path = Path(str(legend_path).replace(".pdf", ".png"))
-        fig_leg.savefig(png_path, bbox_inches=bbox, dpi=300)
+        fig_leg.savefig(png_path, bbox_inches=bbox, pad_inches=0, dpi=300)
         print(f"Saved {png_path}")
+        _link_to_figures(png_path)
     plt.close(fig_leg)
     return legend_path
 
@@ -262,7 +301,9 @@ def save_fig(fig, fig_path: Path, tight_pad: float | None = 0.1):
         fig.set_layout_engine(matplotlib.layout_engine.TightLayoutEngine(pad=tight_pad))
     fig.savefig(fig_path)
     print(f"Saved {fig_path}")
+    _link_to_figures(fig_path)
     if str(fig_path).endswith(".pdf"):
         png_path = Path(str(fig_path).replace(".pdf", ".png"))
         fig.savefig(png_path, dpi=300)
         print(f"Saved {png_path}")
+        _link_to_figures(png_path)
