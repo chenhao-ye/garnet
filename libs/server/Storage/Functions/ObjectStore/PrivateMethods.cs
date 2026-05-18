@@ -17,7 +17,7 @@ namespace Garnet.server
         /// a. InPlaceWriter
         /// b. PostInitialWriter
         /// </summary>
-        void WriteLogUpsert<TEpochAccessor>(ReadOnlySpan<byte> key, ref ObjectInput input, ReadOnlySpan<byte> value, long version, int sessionID, TEpochAccessor epochAccessor)
+        void WriteLogUpsert<TEpochAccessor>(ReadOnlySpan<byte> key, ref ObjectInput input, ReadOnlySpan<byte> value, long version, int sessionID, long keyHash, TEpochAccessor epochAccessor)
             where TEpochAccessor : IEpochAccessor
         {
             if (functionsState.StoredProcMode)
@@ -32,6 +32,7 @@ namespace Garnet.server
                 value,
                 ref input,
                 epochAccessor,
+                keyHash,
                 out _);
         }
 
@@ -40,7 +41,7 @@ namespace Garnet.server
         /// a. InPlaceWriter
         /// b. PostInitialWriter
         /// </summary>
-        void WriteLogUpsert<TEpochAccessor>(ReadOnlySpan<byte> key, ref ObjectInput input, IGarnetObject value, long version, int sessionID, TEpochAccessor epochAccessor)
+        void WriteLogUpsert<TEpochAccessor>(ReadOnlySpan<byte> key, ref ObjectInput input, IGarnetObject value, long version, int sessionID, long keyHash, TEpochAccessor epochAccessor)
             where TEpochAccessor : IEpochAccessor
         {
             if (functionsState.StoredProcMode)
@@ -58,6 +59,7 @@ namespace Garnet.server
                     new ReadOnlySpan<byte>(valPtr, valueBytes.Length),
                     ref input,
                     epochAccessor,
+                    keyHash,
                     out _);
             }
         }
@@ -68,7 +70,7 @@ namespace Garnet.server
         /// b. InPlaceUpdater
         /// c. PostCopyUpdater
         /// </summary>
-        void WriteLogRMW<TEpochAccessor>(ReadOnlySpan<byte> key, ref ObjectInput input, long version, int sessionID, TEpochAccessor epochAccessor)
+        void WriteLogRMW<TEpochAccessor>(ReadOnlySpan<byte> key, ref ObjectInput input, long version, int sessionID, long keyHash, TEpochAccessor epochAccessor)
             where TEpochAccessor : IEpochAccessor
         {
             if (functionsState.StoredProcMode) return;
@@ -86,6 +88,7 @@ namespace Garnet.server
                     sbKey,
                     ref input,
                     epochAccessor,
+                    keyHash,
                     out _);
             }
         }
@@ -95,7 +98,7 @@ namespace Garnet.server
         ///  a. InPlaceDeleter
         ///  b. PostInitialDeleter
         /// </summary>
-        void WriteLogDelete<TEpochAccessor>(ReadOnlySpan<byte> key, long version, int sessionID, TEpochAccessor epochAccessor)
+        void WriteLogDelete<TEpochAccessor>(ReadOnlySpan<byte> key, long version, int sessionID, long keyHash, TEpochAccessor epochAccessor)
             where TEpochAccessor : IEpochAccessor
         {
 
@@ -109,6 +112,7 @@ namespace Garnet.server
                 key,
                 value: default,
                 epochAccessor,
+                keyHash,
                 out _);
         }
 

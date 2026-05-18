@@ -181,6 +181,9 @@ namespace Resp.benchmark
                 {
                     int i = rng.Next(count);
                     var key = SpanByte.FromPinnedPointer(keysPtr + i * keyLen, keyLen);
+                    // Emulate Tsavorite upsert: the hash is computed once on the write path,
+                    // regardless of AofPhysicalSublogCount. The k=1 branch ignores it.
+                    var keyHash = SpanByteComparer.StaticGetHashCode64(key);
                     StringInput input = default;
                     aofGen.appendOnlyFile.Log.Enqueue(
                         AofEntryType.StoreUpsert,
@@ -190,6 +193,7 @@ namespace Resp.benchmark
                         value,
                         ref input,
                         epoch,
+                        keyHash,
                         out _);
                     bytesEnqueued += sizeof(AofShardedHeader) + key.TotalSize() + value.TotalSize() + input.SerializedLength;
                     recordsEnqueued++;
