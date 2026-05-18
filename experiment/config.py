@@ -156,6 +156,22 @@ def load_experiment_spec(
             f"Expected one of: {', '.join(sorted(SUPPORTED_BENCHMARKS))}"
         )
 
+    sweep_raw = config.get("sweep") or {}
+    sweep_combo_raw = config.get("sweep_combo") or []
+    if sweep_raw and sweep_combo_raw:
+        raise ValueError(
+            f"Config '{path}' sets both 'sweep' and 'sweep_combo'; "
+            f"use one or the other"
+        )
+    if sweep_combo_raw:
+        if not isinstance(sweep_combo_raw, list):
+            raise ValueError(
+                f"'sweep_combo' must be a list, got {type(sweep_combo_raw).__name__}"
+            )
+        combos = expand_sweep_combo(sweep_combo_raw)
+    else:
+        combos = expand_sweep(sweep_raw)
+
     return ExperimentSpec(
         name=config.get("name", default_name or path.stem),
         benchmark=benchmark,
@@ -166,7 +182,7 @@ def load_experiment_spec(
         base_server_params=dict(config["base"].get("server_params", {})),
         no_server=config.get("no_server", False),
         repeat=int(config.get("repeat", 1)),
-        combos=expand_sweep(config.get("sweep", {})),
+        combos=combos,
         affinity=_parse_affinity(config),
         config=config,
         config_path=path,
@@ -202,6 +218,31 @@ def expand_sweep(
         combo = {scope: {} for scope in SWEEP_SCOPES}
         for (scope, key, _), value in zip(dims, picked_values):
             combo[scope][key] = value
+        combos.append(combo)
+    return combos
+
+
+def expand_sweep_combo(
+    sweep_combo: list[dict[str, dict[str, Any]]],
+) -> list[dict[str, dict[str, Any]]]:
+    combos: list[dict[str, dict[str, Any]]] = []
+    for i, entry in enumerate(sweep_combo):
+        assert isinstance(entry, dict), (
+            f"sweep_combo[{i}] must be a mapping, got {type(entry).__name__}"
+        )
+        unknown = set(entry) - set(SWEEP_SCOPES)
+        assert not unknown, (
+            f"sweep_combo[{i}] has unknown scopes {sorted(unknown)}; "
+            f"expected subset of {list(SWEEP_SCOPES)}"
+        )
+        combo = {scope: {} for scope in SWEEP_SCOPES}
+        for scope in SWEEP_SCOPES:
+            params = entry.get(scope, {}) or {}
+            assert isinstance(params, dict), (
+                f"sweep_combo[{i}].{scope} must be a mapping, "
+                f"got {type(params).__name__}"
+            )
+            combo[scope] = dict(params)
         combos.append(combo)
     return combos
 
