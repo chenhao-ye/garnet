@@ -7,10 +7,10 @@
 
 name: replay_scaling
 description: "Replay throughput vs. number of sublogs (sec:6.3)."
+template: replay
 
-dependencies:
-  physical: aof_replay_physical
-  virtual: aof_replay_virtual
+# Order: [physical sweep, virtual sweep]
+dependencies: [aof_replay_physical, aof_replay_virtual]
 
 scale: 0.5
 xticks: [1, 8, 16, 32, 64]

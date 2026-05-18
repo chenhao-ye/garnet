@@ -6,10 +6,9 @@
 
 name: set_scaling
 description: "Online SET throughput: no AOF vs. single-log AOF."
+template: set
 
-dependencies:
-  no_aof: online_set
-  aof_single: online_set_aof
+dependencies: [online_set, online_set_aof]
 
 scale: 0.5
 xticks: [1, 8, 16, 32, 64]

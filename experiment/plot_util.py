@@ -91,40 +91,32 @@ def load_plot_config(plot_name: str) -> dict:
     return cfg
 
 
-def resolve_dependencies(plot_cfg: dict) -> dict[str, str]:
-    """Return the `dependencies` block of a plot config as a {role: experiment} map.
+def resolve_dependencies(plot_cfg: dict) -> list[str]:
+    """Return the `dependencies` block of a plot config as a list of experiments.
 
-    Accepts either a mapping (`{physical: aof_replay_physical, ...}`) or a bare
-    string when the plot has exactly one dependency (`dependencies: aof_enqueue_random`).
-    A bare string is exposed under the role key "data".
+    Order is preserved; each template documents what its slots mean.
     """
     raw = plot_cfg.get("dependencies")
     if raw is None:
         raise ValueError("Plot config is missing required 'dependencies' field")
-    if isinstance(raw, str):
-        return {"data": raw}
-    if isinstance(raw, dict):
-        return {str(role): str(exp) for role, exp in raw.items()}
-    raise ValueError(
-        f"'dependencies' must be a string or mapping, got {type(raw).__name__}"
-    )
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise ValueError(
+            f"'dependencies' must be a list of experiment names, got {type(raw).__name__}"
+        )
+    return list(raw)
 
 
-def require_results_ready(deps: dict[str, str]) -> None:
+def require_results_ready(deps: list[str]) -> None:
     """Verify that result.yaml exists for every dependency. Aborts loudly if not.
 
     Lists every missing experiment at once so the user can rerun parse.py in a
     single batch instead of discovering them one at a time.
     """
-    missing: list[str] = []
-    for exp in deps.values():
-        if not (RESULT_ROOT / exp / "result.yaml").exists():
-            missing.append(exp)
+    missing = [exp for exp in deps if not (RESULT_ROOT / exp / "result.yaml").exists()]
     if missing:
-        names = " ".join(missing)
         raise RuntimeError(
             "Missing result.yaml for dependencies: " + ", ".join(missing) + ".\n"
-            f"Run: uv run experiment/parse.py {names}"
+            f"Run: uv run experiment/parse.py {' '.join(missing)}"
         )
 
 
@@ -145,7 +137,7 @@ def extract_series(
     """Pull (xs, ys, stds) from result.yaml. Filters by exact match on filter_params."""
     filter_params = filter_params or {}
     rows: list[tuple[float, float, float]] = []
-    for _name, entry in result["runs"].items():
+    for _, entry in result["runs"].items():
         sweep = _run_sweep_params(entry)
         if x_param not in sweep:
             continue
@@ -227,7 +219,7 @@ def apply_axis_cfg(
     """Apply axis settings from a config's `plot:` section.
 
     Recognized keys: scale (handled by the caller before figure creation),
-    xscale, yscale (string, e.g. "log" / "linear"; default linear — for x,
+    xscale, yscale (string, e.g. "log" / "linear"; default linear -- for x,
     "log" uses base 2 to match power-of-two sweeps), xticks, yticks (list),
     xmin/xmax/ymin/ymax (number), xlabel/ylabel (string).
 
@@ -299,13 +291,14 @@ def row_major_handles(ax, ncol: int):
 def save_legend(
     ax, fig_path: Path, *, width: float = SINGLE_COLUMN_WIDTH, **legend_kwargs
 ) -> Path | None:
-    """Save the axes' legend as a standalone PDF next to fig_path.
+    """Save the axes' legend as a standalone PDF of fixed `width` inches.
 
-    The legend is stretched (via `mode="expand"`) to `width` inches —
-    defaults to SINGLE_COLUMN_WIDTH so the legend matches a single-column
-    figure. When fig_path ends in .pdf, also writes a 300 DPI PNG sibling
-    (mirrors save_fig). Returns the legend PDF path, or None if the axes
-    has no labeled artists.
+    The legend is centered within a host figure of width `width` (default
+    SINGLE_COLUMN_WIDTH); narrower legends get whitespace on both sides,
+    so the saved file is always exactly `width` wide. When fig_path ends
+    in .pdf, also writes a 300 DPI PNG sibling (mirrors save_fig).
+    Returns the legend PDF path, or None if the axes has no labeled
+    artists.
     """
     ncol = legend_kwargs.get("ncol", 1)
     handles, labels = row_major_handles(ax, ncol)
@@ -323,8 +316,11 @@ def save_legend(
     legend_bbox = legend.get_window_extent().transformed(
         fig_leg.dpi_scale_trans.inverted()
     )
-    # Pin saved width to `width` inches; crop vertically to the legend.
-    bbox = Bbox.from_extents(0, legend_bbox.y0, width, legend_bbox.y1)
+    # Width is fixed at `width` (centered legend; whitespace padding on
+    # both sides when the legend is narrower). Vertical crop tightens to
+    # the rendered legend extent with a small pad for anti-aliasing.
+    pad_y = 0.02
+    bbox = Bbox.from_extents(0, legend_bbox.y0 - pad_y, width, legend_bbox.y1 + pad_y)
     legend_path = fig_path.with_name(f"{fig_path.stem}_legend{fig_path.suffix}")
     legend_path.parent.mkdir(parents=True, exist_ok=True)
     fig_leg.savefig(legend_path, bbox_inches=bbox, pad_inches=0)
