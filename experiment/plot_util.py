@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULT_ROOT = REPO_ROOT / "result"
 FIGURES_DIR = RESULT_ROOT / "figures"
 CONFIG_ROOT = Path(__file__).resolve().parent / "configs"
+PLOT_CONFIG_ROOT = Path(__file__).resolve().parent / "plot_configs"
 
 
 def _link_to_figures(file_path: Path) -> None:
@@ -71,16 +72,60 @@ def load_result(experiment: str) -> dict:
         return yaml.safe_load(f)
 
 
-def load_plot_config(experiment: str) -> dict:
-    """Load the `plot:` section from configs/<experiment>.yaml.
+def load_plot_config(plot_name: str) -> dict:
+    """Load a plot config from plot_configs/<plot_name>.yaml.
 
-    Returns {} if the config file is missing or has no `plot:` section."""
-    path = CONFIG_ROOT / f"{experiment}.yaml"
+    The returned dict contains the figure's dependencies and all axis-styling
+    keys (the former `plot:` section). The caller is responsible for resolving
+    `dependencies` via `resolve_dependencies` and checking data readiness via
+    `require_results_ready`.
+    """
+    path = PLOT_CONFIG_ROOT / f"{plot_name}.yaml"
     if not path.exists():
-        return {}
+        raise FileNotFoundError(
+            f"Plot config not found at {path}.\n"
+            f"Create it under {PLOT_CONFIG_ROOT.relative_to(REPO_ROOT)}/."
+        )
     with open(path) as f:
         cfg = yaml.safe_load(f) or {}
-    return cfg.get("plot") or {}
+    return cfg
+
+
+def resolve_dependencies(plot_cfg: dict) -> dict[str, str]:
+    """Return the `dependencies` block of a plot config as a {role: experiment} map.
+
+    Accepts either a mapping (`{physical: aof_replay_physical, ...}`) or a bare
+    string when the plot has exactly one dependency (`dependencies: aof_enqueue_random`).
+    A bare string is exposed under the role key "data".
+    """
+    raw = plot_cfg.get("dependencies")
+    if raw is None:
+        raise ValueError("Plot config is missing required 'dependencies' field")
+    if isinstance(raw, str):
+        return {"data": raw}
+    if isinstance(raw, dict):
+        return {str(role): str(exp) for role, exp in raw.items()}
+    raise ValueError(
+        f"'dependencies' must be a string or mapping, got {type(raw).__name__}"
+    )
+
+
+def require_results_ready(deps: dict[str, str]) -> None:
+    """Verify that result.yaml exists for every dependency. Aborts loudly if not.
+
+    Lists every missing experiment at once so the user can rerun parse.py in a
+    single batch instead of discovering them one at a time.
+    """
+    missing: list[str] = []
+    for exp in deps.values():
+        if not (RESULT_ROOT / exp / "result.yaml").exists():
+            missing.append(exp)
+    if missing:
+        names = " ".join(missing)
+        raise RuntimeError(
+            "Missing result.yaml for dependencies: " + ", ".join(missing) + ".\n"
+            f"Run: uv run experiment/parse.py {names}"
+        )
 
 
 def _run_sweep_params(run_entry: dict) -> dict:

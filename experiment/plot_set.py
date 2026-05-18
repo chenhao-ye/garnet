@@ -43,43 +43,37 @@ from plot_util import (
     extract_series,
     load_plot_config,
     load_result,
+    require_results_ready,
+    resolve_dependencies,
     save_fig,
     save_legend,
 )
 
+DEFAULT_PLOT_CONFIG = "set_scaling"
 X_PARAM = "client.threads"
 Y_METRIC = "tpt_mops"
-
-# (config name, style key)
-SET_CURVES = [
-    ("online_set", "no_aof"),
-    ("online_set_aof", "aof_single"),
-]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "configs",
-        nargs="*",
-        default=[name for name, _ in SET_CURVES],
-        help=(
-            "Two config names corresponding to no-AOF / single-log runs."
-            f" Default: {' '.join(name for name, _ in SET_CURVES)}"
-        ),
+        "plot_config",
+        nargs="?",
+        default=DEFAULT_PLOT_CONFIG,
+        help=f"Plot config name under experiment/plot_configs/. Default: {DEFAULT_PLOT_CONFIG}",
     )
     args = parser.parse_args()
-    if len(args.configs) != len(SET_CURVES):
-        parser.error(f"expected {len(SET_CURVES)} configs, got {len(args.configs)}")
-    keys = [key for _, key in SET_CURVES]
 
-    plot_cfg = load_plot_config(args.configs[0])
+    plot_cfg = load_plot_config(args.plot_config)
+    deps = resolve_dependencies(plot_cfg)
+    require_results_ready(deps)
+
     scale = float(plot_cfg.get("scale", 1.0))
     fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
 
     all_threads: set[float] = set()
     all_y: list[float] = []
-    for experiment, key in zip(args.configs, keys):
+    for key, experiment in deps.items():
         result = load_result(experiment)
         xs, ys, _ = extract_series(result, x_param=X_PARAM, y_metric=Y_METRIC)
         if not xs:
@@ -110,7 +104,7 @@ def main():
         default_ymax=default_ymax,
     )
 
-    out_path = RESULT_ROOT / args.configs[0] / "set_scaling.pdf"
+    out_path = RESULT_ROOT / args.plot_config / f"{args.plot_config}.pdf"
     legend_kwargs = dict(
         frameon=False,
         ncol=2,

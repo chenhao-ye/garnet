@@ -42,34 +42,31 @@ from plot_util import (
     extract_series,
     load_plot_config,
     load_result,
+    require_results_ready,
+    resolve_dependencies,
     row_major_handles,
     save_fig,
     save_legend,
 )
 
-DEFAULT_PHYSICAL = "aof_replay_physical"
-DEFAULT_VIRTUAL = "aof_replay_virtual"
+DEFAULT_PLOT_CONFIG = "replay_scaling"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "physical",
+        "plot_config",
         nargs="?",
-        default=DEFAULT_PHYSICAL,
-        help=f"Physical-sweep config name (output is saved under this dir). Default: {DEFAULT_PHYSICAL}",
-    )
-    parser.add_argument(
-        "virtual",
-        nargs="?",
-        default=DEFAULT_VIRTUAL,
-        help=f"Virtual-sweep config name. Default: {DEFAULT_VIRTUAL}",
+        default=DEFAULT_PLOT_CONFIG,
+        help=f"Plot config name under experiment/plot_configs/. Default: {DEFAULT_PLOT_CONFIG}",
     )
     args = parser.parse_args()
 
-    virt = load_result(args.virtual)
-    phys = load_result(args.physical)
-    plot_cfg = load_plot_config(args.physical)
+    plot_cfg = load_plot_config(args.plot_config)
+    deps = resolve_dependencies(plot_cfg)
+    require_results_ready(deps)
+    phys = load_result(deps["physical"])
+    virt = load_result(deps["virtual"])
 
     xs_virt, ys_virt, _ = extract_series(virt, x_param="client.aof_replay_task_count")
     xs_phys, ys_phys, _ = extract_series(
@@ -83,7 +80,7 @@ def main():
             break
     if single_log_y_mrec is None:
         raise RuntimeError(
-            f"Could not find aof_physical_sublog_count=1 datapoint in {args.physical}; "
+            f"Could not find aof_physical_sublog_count=1 datapoint in {deps['physical']}; "
             "needed for the Single Log reference line."
         )
 
@@ -135,7 +132,7 @@ def main():
         default_xticks=all_x,
         default_ymax=default_ymax,
     )
-    out_path = RESULT_ROOT / args.physical / "replay_scaling.pdf"
+    out_path = RESULT_ROOT / args.plot_config / f"{args.plot_config}.pdf"
     legend_kwargs = dict(LEGEND_KWARGS, ncol=3)
     if plot_cfg.get("legend_separate"):
         save_legend(ax, out_path, **legend_kwargs)

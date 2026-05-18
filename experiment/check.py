@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 from config import REPO_ROOT, config_path_for, load_experiment_spec
-from plot_util import PLOT_CONFIG_KEYS
 
 OPTIONS_CS_PATH = REPO_ROOT / "benchmark/Resp.benchmark/Options.cs"
 SUPPORTED_SERVER_PARAMS = {
@@ -484,27 +483,6 @@ def validate_main_config(
         )
 
 
-def validate_plot_section(issues: list[Issue], plot_cfg: Any) -> None:
-    if plot_cfg is None:
-        return
-    if not isinstance(plot_cfg, dict):
-        add_issue(
-            issues,
-            "ERROR",
-            "plot",
-            f"'plot:' section must be a mapping, got {type(plot_cfg).__name__}",
-        )
-        return
-    for key in sorted(plot_cfg):
-        if key not in PLOT_CONFIG_KEYS:
-            add_issue(
-                issues,
-                "ERROR",
-                "plot",
-                f"unknown plot key '{key}'; supported keys: {format_values(sorted(PLOT_CONFIG_KEYS))}",
-            )
-
-
 def validate_config_name_matches_filename(
     issues: list[Issue], *, config: dict[str, Any], config_path: Path
 ) -> None:
@@ -543,7 +521,6 @@ def _check_one(config: str, supported_client_params: set[str]) -> bool:
     validate_config_name_matches_filename(
         issues, config=spec.config, config_path=spec.config_path
     )
-    validate_plot_section(issues, spec.config.get("plot"))
 
     validate_param_keys(
         issues,

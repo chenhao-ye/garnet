@@ -41,12 +41,14 @@ from plot_util import (
     extract_series,
     load_plot_config,
     load_result,
+    require_results_ready,
+    resolve_dependencies,
     row_major_handles,
     save_fig,
     save_legend,
 )
 
-DEFAULT_EXPERIMENT = "aof_enqueue_random"
+DEFAULT_PLOT_CONFIG = "append_scaling"
 X_PARAM = "client.threads"
 FILTER_PARAM = "client.aof_physical_sublog_count"
 
@@ -54,16 +56,17 @@ FILTER_PARAM = "client.aof_physical_sublog_count"
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "config",
+        "plot_config",
         nargs="?",
-        default=DEFAULT_EXPERIMENT,
-        help=f"Config name (data directory under RESULT_ROOT). Default: {DEFAULT_EXPERIMENT}",
+        default=DEFAULT_PLOT_CONFIG,
+        help=f"Plot config name under experiment/plot_configs/. Default: {DEFAULT_PLOT_CONFIG}",
     )
     args = parser.parse_args()
-    experiment = args.config
 
-    result = load_result(experiment)
-    plot_cfg = load_plot_config(experiment)
+    plot_cfg = load_plot_config(args.plot_config)
+    deps = resolve_dependencies(plot_cfg)
+    require_results_ready(deps)
+    result = load_result(deps["data"])
 
     scale = float(plot_cfg.get("scale", 1.0))
     fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
@@ -105,7 +108,7 @@ def main():
         default_xticks=sorted_threads,
         default_ymax=default_ymax,
     )
-    out_path = RESULT_ROOT / experiment / "append_scaling.pdf"
+    out_path = RESULT_ROOT / args.plot_config / f"{args.plot_config}.pdf"
     legend_kwargs = dict(LEGEND_KWARGS, ncol=4)
     if plot_cfg.get("legend_separate"):
         save_legend(ax, out_path, **legend_kwargs)
