@@ -30,7 +30,8 @@ MARKER_SIZE = 2.5
 LEGEND_MARKER_SIZE = 5
 LINEWIDTH = 1
 
-# Shared legend kwargs. Callers override `ncol` per figure.
+# Shared legend defaults. Render functions pass `dict(LEGEND_KWARGS, ncol=N,
+# ...)` to twist ncol and any other knob per figure.
 LEGEND_KWARGS = dict(
     frameon=False,
     columnspacing=0.8,
@@ -44,11 +45,11 @@ APPEND_M_VALUES = [1, 2, 4, 8, 16, 32, 64]
 
 
 def _sample_cmap(cmap_name: str, t: float):
-    """Return one color from a matplotlib colormap at position t ∈ [0, 1]."""
+    """Return one color from a matplotlib colormap at position t in [0, 1]."""
     return plt.get_cmap(cmap_name)(t)
 
 
-# autumn goes red (t=0) → yellow (t=1). Tune individual t per key as needed.
+# autumn goes red (t=0) -> yellow (t=1). Tune individual t per key as needed.
 MULTILOG_CMAP = "autumn"
 
 color_map = {
@@ -56,9 +57,9 @@ color_map = {
     "multilog_virtual": _sample_cmap(MULTILOG_CMAP, 0.50),
     "multilog_physical": _sample_cmap(MULTILOG_CMAP, 0.10),
     "noprefix": "#9467bd",
-    "no_aof": "#1f77b4",
-    "aof_single": "#d62728",
-    "aof_multilog": "#2ca02c",
+    "no_aof": "#abd9e9",
+    "aof_single": "#2c7bb6",
+    "aof_multilog": "red",
     "multilog_m2": _sample_cmap(MULTILOG_CMAP, 0.90),
     "multilog_m4": _sample_cmap(MULTILOG_CMAP, 0.75),
     "multilog_m8": _sample_cmap(MULTILOG_CMAP, 0.6),
@@ -94,9 +95,9 @@ marker_map = {
     "multilog_virtual": "o",
     "multilog_physical": "s",
     "noprefix": "^",
-    "no_aof": "o",
-    "aof_single": "s",
-    "aof_multilog": "^",
+    "no_aof": "d",
+    "aof_single": ".",
+    "aof_multilog": "o",
     "multilog_m2": "^",
     "multilog_m4": "v",
     "multilog_m8": "D",
@@ -107,12 +108,12 @@ marker_map = {
 
 labels_map = {
     "single_log": "Single Log",
-    "multilog_virtual": "MultiLog-virtual",
-    "multilog_physical": "MultiLog-physical",
+    "multilog_virtual": "MultiLog(1,x)",
+    "multilog_physical": "MultiLog(x)",
     "noprefix": "NoPrefix",
-    "no_aof": "No AOF",
-    "aof_single": "Single Log AOF",
-    "aof_multilog": "MultiLog AOF (k=64)",
+    "no_aof": "Garnet w/o Log",
+    "aof_single": "Garnet w/ Log",
+    "aof_multilog": "Garnet w/ MultiLog(64)",
 }
 labels_map.update(
     {f"multilog_m{m}": f"MultiLog({m})" for m in APPEND_M_VALUES if m != 1}
@@ -124,6 +125,6 @@ _multilog_m_family = [m for m in APPEND_M_VALUES if m != 1]
 zorder_map = {
     f"multilog_m{m}": 10 - i for i, m in enumerate(_multilog_m_family)
 }
-# Single Log baseline (slate blue, dashed) is the reference — keep it on top.
+# Single Log baseline (slate blue, dashed) is the reference -- keep it on top.
 zorder_map["single_log"] = 11
 zorder_map["multilog_m1"] = 11
