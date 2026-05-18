@@ -726,7 +726,7 @@ namespace Garnet.server
         /// a. InPlaceWriter
         /// b. PostInitialWriter
         /// </summary>
-        void WriteLogUpsert<TEpochAccessor>(ReadOnlySpan<byte> key, ref StringInput input, ReadOnlySpan<byte> value, long version, int sessionId, TEpochAccessor epochAccessor)
+        void WriteLogUpsert<TEpochAccessor>(ReadOnlySpan<byte> key, ref StringInput input, ReadOnlySpan<byte> value, long version, int sessionId, long keyHash, TEpochAccessor epochAccessor)
             where TEpochAccessor : IEpochAccessor
         {
             if (functionsState.StoredProcMode) return;
@@ -750,6 +750,7 @@ namespace Garnet.server
                 value,
                 ref input,
                 epochAccessor,
+                keyHash,
                 out _);
         }
 
@@ -759,7 +760,7 @@ namespace Garnet.server
         /// b. InPlaceUpdater
         /// c. PostCopyUpdater
         /// </summary>
-        void WriteLogRMW<TEpochAccessor>(ReadOnlySpan<byte> key, ref StringInput input, long version, int sessionId, TEpochAccessor epochAccessor)
+        void WriteLogRMW<TEpochAccessor>(ReadOnlySpan<byte> key, ref StringInput input, long version, int sessionId, long keyHash, TEpochAccessor epochAccessor)
             where TEpochAccessor : IEpochAccessor
         {
             if (functionsState.StoredProcMode) return;
@@ -778,6 +779,7 @@ namespace Garnet.server
                 key,
                 ref input,
                 epochAccessor,
+                keyHash,
                 out _);
         }
 
@@ -786,7 +788,7 @@ namespace Garnet.server
         ///  a. InPlaceDeleter
         ///  b. PostInitialDeleter
         /// </summary>
-        void WriteLogDelete<TEpochAccessor>(ReadOnlySpan<byte> key, long version, int sessionID, TEpochAccessor epochAccessor)
+        void WriteLogDelete<TEpochAccessor>(ReadOnlySpan<byte> key, long version, int sessionID, long keyHash, TEpochAccessor epochAccessor)
             where TEpochAccessor : IEpochAccessor
         {
             if (functionsState.StoredProcMode) return;
@@ -798,6 +800,7 @@ namespace Garnet.server
                 key,
                 value: default,
                 epochAccessor,
+                keyHash,
                 out _);
         }
 

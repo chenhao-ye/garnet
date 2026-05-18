@@ -30,9 +30,3 @@ base:
 sweep:
   client_params:
     aof_replay_task_count: [1, 2, 4, 8, 16, 32, 64]
-
-plot:
-  xticks: [1, 8, 16, 32, 64]
-  yticks: [0, 10, 20, 30, 40, 50, 60]
-  legend_separate: true
-  scale: 0.5

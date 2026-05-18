@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULT_ROOT = REPO_ROOT / "result"
 FIGURES_DIR = RESULT_ROOT / "figures"
 CONFIG_ROOT = Path(__file__).resolve().parent / "configs"
+PLOT_CONFIG_ROOT = Path(__file__).resolve().parent / "plot_configs"
 
 
 def _link_to_figures(file_path: Path) -> None:
@@ -71,16 +72,52 @@ def load_result(experiment: str) -> dict:
         return yaml.safe_load(f)
 
 
-def load_plot_config(experiment: str) -> dict:
-    """Load the `plot:` section from configs/<experiment>.yaml.
+def load_plot_config(plot_name: str) -> dict:
+    """Load a plot config from plot_configs/<plot_name>.yaml.
 
-    Returns {} if the config file is missing or has no `plot:` section."""
-    path = CONFIG_ROOT / f"{experiment}.yaml"
+    The returned dict contains the figure's dependencies and all axis-styling
+    keys (the former `plot:` section). The caller is responsible for resolving
+    `dependencies` via `resolve_dependencies` and checking data readiness via
+    `require_results_ready`.
+    """
+    path = PLOT_CONFIG_ROOT / f"{plot_name}.yaml"
     if not path.exists():
-        return {}
+        raise FileNotFoundError(
+            f"Plot config not found at {path}.\n"
+            f"Create it under {PLOT_CONFIG_ROOT.relative_to(REPO_ROOT)}/."
+        )
     with open(path) as f:
         cfg = yaml.safe_load(f) or {}
-    return cfg.get("plot") or {}
+    return cfg
+
+
+def resolve_dependencies(plot_cfg: dict) -> list[str]:
+    """Return the `dependencies` block of a plot config as a list of experiments.
+
+    Order is preserved; each template documents what its slots mean.
+    """
+    raw = plot_cfg.get("dependencies")
+    if raw is None:
+        raise ValueError("Plot config is missing required 'dependencies' field")
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise ValueError(
+            f"'dependencies' must be a list of experiment names, got {type(raw).__name__}"
+        )
+    return list(raw)
+
+
+def require_results_ready(deps: list[str]) -> None:
+    """Verify that result.yaml exists for every dependency. Aborts loudly if not.
+
+    Lists every missing experiment at once so the user can rerun parse.py in a
+    single batch instead of discovering them one at a time.
+    """
+    missing = [exp for exp in deps if not (RESULT_ROOT / exp / "result.yaml").exists()]
+    if missing:
+        raise RuntimeError(
+            "Missing result.yaml for dependencies: " + ", ".join(missing) + ".\n"
+            f"Run: uv run experiment/parse.py {' '.join(missing)}"
+        )
 
 
 def _run_sweep_params(run_entry: dict) -> dict:
@@ -100,7 +137,7 @@ def extract_series(
     """Pull (xs, ys, stds) from result.yaml. Filters by exact match on filter_params."""
     filter_params = filter_params or {}
     rows: list[tuple[float, float, float]] = []
-    for _name, entry in result["runs"].items():
+    for _, entry in result["runs"].items():
         sweep = _run_sweep_params(entry)
         if x_param not in sweep:
             continue
@@ -182,7 +219,7 @@ def apply_axis_cfg(
     """Apply axis settings from a config's `plot:` section.
 
     Recognized keys: scale (handled by the caller before figure creation),
-    xscale, yscale (string, e.g. "log" / "linear"; default linear — for x,
+    xscale, yscale (string, e.g. "log" / "linear"; default linear -- for x,
     "log" uses base 2 to match power-of-two sweeps), xticks, yticks (list),
     xmin/xmax/ymin/ymax (number), xlabel/ylabel (string).
 
@@ -254,13 +291,14 @@ def row_major_handles(ax, ncol: int):
 def save_legend(
     ax, fig_path: Path, *, width: float = SINGLE_COLUMN_WIDTH, **legend_kwargs
 ) -> Path | None:
-    """Save the axes' legend as a standalone PDF next to fig_path.
+    """Save the axes' legend as a standalone PDF of fixed `width` inches.
 
-    The legend is stretched (via `mode="expand"`) to `width` inches —
-    defaults to SINGLE_COLUMN_WIDTH so the legend matches a single-column
-    figure. When fig_path ends in .pdf, also writes a 300 DPI PNG sibling
-    (mirrors save_fig). Returns the legend PDF path, or None if the axes
-    has no labeled artists.
+    The legend is centered within a host figure of width `width` (default
+    SINGLE_COLUMN_WIDTH); narrower legends get whitespace on both sides,
+    so the saved file is always exactly `width` wide. When fig_path ends
+    in .pdf, also writes a 300 DPI PNG sibling (mirrors save_fig).
+    Returns the legend PDF path, or None if the axes has no labeled
+    artists.
     """
     ncol = legend_kwargs.get("ncol", 1)
     handles, labels = row_major_handles(ax, ncol)
@@ -278,8 +316,11 @@ def save_legend(
     legend_bbox = legend.get_window_extent().transformed(
         fig_leg.dpi_scale_trans.inverted()
     )
-    # Pin saved width to `width` inches; crop vertically to the legend.
-    bbox = Bbox.from_extents(0, legend_bbox.y0, width, legend_bbox.y1)
+    # Width is fixed at `width` (centered legend; whitespace padding on
+    # both sides when the legend is narrower). Vertical crop tightens to
+    # the rendered legend extent with a small pad for anti-aliasing.
+    pad_y = 0.02
+    bbox = Bbox.from_extents(0, legend_bbox.y0 - pad_y, width, legend_bbox.y1 + pad_y)
     legend_path = fig_path.with_name(f"{fig_path.stem}_legend{fig_path.suffix}")
     legend_path.parent.mkdir(parents=True, exist_ok=True)
     fig_leg.savefig(legend_path, bbox_inches=bbox, pad_inches=0)

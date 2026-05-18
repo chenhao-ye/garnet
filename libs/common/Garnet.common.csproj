@@ -16,4 +16,26 @@
     <ProjectReference Include="..\storage\Tsavorite\cs\src\devices\AzureStorageDevice\Tsavorite.devices.AzureStorageDevice.csproj" />
   </ItemGroup>
 
+  <!-- TSC reader for SequenceNumberGenerator. Built on Linux only;          -->
+  <!-- SequenceNumberGenerator falls back to Stopwatch transparently if      -->
+  <!-- libgarnet_tsc is not loadable.                                        -->
+  <ItemGroup>
+    <NativeSource Include="native/garnet_tsc.c" />
+  </ItemGroup>
+  <Target Name="BuildGarnetTsc"
+          BeforeTargets="AssignTargetPaths;ResolveAssemblyReferences"
+          Inputs="@(NativeSource)"
+          Outputs="$(IntermediateOutputPath)libgarnet_tsc.so"
+          Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <Exec Command="gcc -O2 -shared -fPIC -fvisibility=hidden -o &quot;$(IntermediateOutputPath)libgarnet_tsc.so&quot; @(NativeSource->'&quot;%(FullPath)&quot;', ' ')" />
+    <ItemGroup>
+      <Content Include="$(IntermediateOutputPath)libgarnet_tsc.so">
+        <Link>libgarnet_tsc.so</Link>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <Visible>false</Visible>
+      </Content>
+    </ItemGroup>
+  </Target>
+
 </Project>

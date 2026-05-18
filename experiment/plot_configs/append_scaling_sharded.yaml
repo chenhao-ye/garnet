@@ -1,0 +1,14 @@
+# Plot: append_scaling_sharded
+# Append throughput vs. primary worker threads, one curve per
+# aof_physical_sublog_count, EnqueueSharded workload (sec:6.2).
+
+name: append_scaling_sharded
+description: "Append throughput vs. threads, EnqueueSharded (sec:6.2)."
+template: append
+
+dependencies: [aof_enqueue_sharded]
+
+scale: 0.5
+xticks: [1, 8, 16, 32, 64]
+yticks: [0, 100, 200, 300, 400]
+legend_separate: true

@@ -32,9 +32,3 @@ base:
 sweep:
   client_params:
     threads: [1, 2, 4, 8, 16, 32, 64]
-
-plot:
-  xticks: [1, 8, 16, 32, 64]
-  yticks: [0, 20, 40, 60, 80, 100]
-  legend_separate: true
-  scale: 0.5

@@ -7,491 +7,309 @@
 #   "pyyaml",
 # ]
 # ///
-"""
-Plot experiment results from result.yaml.
+"""Render figures defined by experiment/plot_configs/*.yaml.
+
+Each plot config carries a `template` field that selects a renderer:
+  - replay: replay-scaling figure (sec:6.3)
+            dependencies: [<physical sweep>, <virtual sweep>]
+  - append: append-scaling figure (sec:6.2)
+            dependencies: [<single experiment>]
+  - set:    online SET throughput figure (no AOF vs single-log)
+            dependencies: [<no-AOF run>, <single-log AOF run>]
 
 Usage:
-    uv run experiment/plot.py <experiment_name>
-    uv run experiment/plot.py scale_clients
-    uv run experiment/plot.py scale_clients --output-dir /tmp/plots
+    uv run experiment/plot.py replay_scaling
+    uv run experiment/plot.py append_scaling set_scaling     # render multiple
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-import matplotlib
-import yaml
-
-matplotlib.use("Agg")  # non-interactive backend
-import matplotlib.pyplot as plt
-import numpy as np
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from plot_util import RESULT_ROOT, load_result
+import matplotlib
 
-AOF_METRICS = [
-    ("bandwidth", "Bandwidth", "GiB/s", "steelblue"),
-    ("records", "Records", "count", "tomato"),
-    ("pages", "Pages", "count", "seagreen"),
-    ("bytes", "Bytes", "bytes", "darkorange"),
-]
-
-
-def load_exp_config(experiment: str) -> dict:
-    path = RESULT_ROOT / experiment / "config.yaml"
-    if not path.exists():
-        return {}
-    with open(path) as f:
-        return yaml.safe_load(f) or {}
-
-
-def _primary_sweep_key(result: dict) -> str | None:
-    sweep_params = result.get("sweep_params") or {}
-    if len(sweep_params) == 1:
-        return next(iter(sweep_params))
-    return None
-
-
-def _entry_sweep_value(entry: dict, sweep_key: str | None):
-    sweep_params = entry.get("sweep_params")
-    if sweep_params is None:
-        sweep_params = entry.get("config", {}).get("sweep_params") or {}
-    if sweep_key is None:
-        return None
-    return sweep_params.get(sweep_key)
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from plot_style import (
+    APPEND_M_VALUES,
+    LEGEND_KWARGS,
+    LINEWIDTH,
+    MARKER_SIZE,
+    color_map,
+    labels_map,
+    linestyle_map,
+    marker_map,
+    zorder_map,
+)
+from plot_util import (
+    RESULT_ROOT,
+    apply_axis_cfg,
+    build_fig_single_col,
+    extract_series,
+    load_plot_config,
+    load_result,
+    require_results_ready,
+    resolve_dependencies,
+    row_major_handles,
+    save_fig,
+    save_legend,
+)
 
 
-def sorted_runs(result: dict, sweep_values: list | None = None):
-    """Return runs ordered by sweep_values list, or numerically/lexicographically."""
-    runs = result["runs"]
-    items = list(runs.items())
-    sweep_key = _primary_sweep_key(result)
-    if sweep_values is not None:
-        order = {str(v): i for i, v in enumerate(sweep_values)}
-        items.sort(
-            key=lambda kv: order.get(
-                str(_entry_sweep_value(kv[1], sweep_key)), len(order)
-            )
+def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
+    # dependencies[0] = physical sweep, dependencies[1] = virtual sweep.
+    if len(deps) != 2:
+        raise ValueError(
+            f"replay template expects 2 dependencies [physical, virtual]; got {deps}"
         )
-    else:
-        try:
-            items.sort(
-                key=lambda kv: (
-                    float(_entry_sweep_value(kv[1], sweep_key))
-                    if _entry_sweep_value(kv[1], sweep_key) is not None
-                    else kv[0]
-                )
-            )
-        except (TypeError, ValueError):
-            items.sort(key=lambda kv: kv[0])
-    return items
+    physical_name, virtual_name = deps
+    phys = load_result(physical_name)
+    virt = load_result(virtual_name)
 
-
-def _x_label(sweep: dict) -> str:
-    param = sweep.get("param") or "run"
-    return param.replace("_", " ")
-
-
-def _x_values(items: list, sweep_values: list | None, sweep_key: str | None) -> list:
-    if sweep_values:
-        return sweep_values
-    return [
-        _entry_sweep_value(entry, sweep_key)
-        if _entry_sweep_value(entry, sweep_key) is not None
-        else name
-        for name, entry in items
-    ]
-
-
-def _use_log_scale(values: list) -> bool:
-    try:
-        nums = [float(v) for v in values if v is not None]
-        return len(nums) >= 2 and max(nums) / min(nums) > 10
-    except (TypeError, ZeroDivisionError):
-        return False
-
-
-def _first_run_entry(result: dict) -> dict | None:
-    if result.get("runs"):
-        return next(iter(result["runs"].values()))
-    return None
-
-
-def _benchmark_type(result: dict) -> str:
-    entry = _first_run_entry(result)
-    return entry.get("benchmark", "online") if entry else "online"
-
-
-def _metric_stat(entry: dict, metric: str, field: str = "mean") -> float:
-    return entry["stats"].get(metric, {}).get(field) or 0
-
-
-def plot_throughput(result: dict, sweep: dict, out_dir: Path) -> Path:
-    sweep_values = sweep.get("values")
-    items = sorted_runs(result, sweep_values)
-    sweep_key = _primary_sweep_key(result)
-    x_labels = [str(v) for v in _x_values(items, sweep_values, sweep_key)]
-    x = np.arange(len(items))
-    means = [kv[1]["stats"]["tpt_mops"]["mean"] or 0 for kv in items]
-    stds = [kv[1]["stats"]["tpt_mops"]["std"] or 0 for kv in items]
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(
-        x,
-        means,
-        yerr=stds,
-        capsize=5,
-        color="steelblue",
-        alpha=0.85,
-        error_kw={"elinewidth": 1.5, "ecolor": "black"},
+    xs_virt, ys_virt, _ = extract_series(virt, x_param="client.aof_replay_task_count")
+    xs_phys, ys_phys, _ = extract_series(
+        phys, x_param="client.aof_physical_sublog_count"
     )
-    ax.set_xticks(x)
-    ax.set_xticklabels(x_labels)
-    ax.set_xlabel(_x_label(sweep))
-    ax.set_ylabel("Throughput (Mop/s)")
-    ax.set_title(f"{result['experiment_name']} - Throughput")
-    ax.yaxis.grid(True, linestyle="--", alpha=0.6)
-    ax.set_axisbelow(True)
-    fig.tight_layout()
 
-    out_path = out_dir / "throughput.pdf"
-    fig.savefig(out_path)
-    plt.close(fig)
-    print(f"  Saved: {out_path}")
-    return out_path
-
-
-def plot_aof_throughput(result: dict, sweep: dict, out_dir: Path) -> Path:
-    sweep_values = sweep.get("values")
-    items = sorted_runs(result, sweep_values)
-    sweep_key = _primary_sweep_key(result)
-    x_labels = [str(v) for v in _x_values(items, sweep_values, sweep_key)]
-    x = np.arange(len(items))
-    means = [_metric_stat(kv[1], "throughput") for kv in items]
-    stds = [_metric_stat(kv[1], "throughput", "std") for kv in items]
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(
-        x,
-        means,
-        yerr=stds,
-        capsize=5,
-        color="steelblue",
-        alpha=0.85,
-        error_kw={"elinewidth": 1.5, "ecolor": "black"},
-    )
-    ax.set_xticks(x)
-    ax.set_xticklabels(x_labels)
-    ax.set_xlabel(_x_label(sweep))
-    ax.set_ylabel("Throughput (Mop/s)")
-    ax.set_title(f"{result['experiment_name']} - AOF Throughput")
-    ax.yaxis.grid(True, linestyle="--", alpha=0.6)
-    ax.set_axisbelow(True)
-    fig.tight_layout()
-
-    out_path = out_dir / "throughput.pdf"
-    fig.savefig(out_path)
-    plt.close(fig)
-    print(f"  Saved: {out_path}")
-    return out_path
-
-
-def plot_latency(result: dict, sweep: dict, out_dir: Path) -> Path:
-    sweep_values = sweep.get("values")
-    items = sorted_runs(result, sweep_values)
-    sweep_key = _primary_sweep_key(result)
-    x_labels = [str(v) for v in _x_values(items, sweep_values, sweep_key)]
-    x = np.arange(len(items))
-
-    percentiles = [
-        ("median_us", "Median", "steelblue"),
-        ("p95_us", "p95", "orange"),
-        ("p99_us", "p99", "tomato"),
-        ("p999_us", "p99.9", "purple"),
-    ]
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    width = 0.18
-    n = len(percentiles)
-    offsets = np.linspace(-(n - 1) / 2 * width, (n - 1) / 2 * width, n)
-
-    for (col, label, color), offset in zip(percentiles, offsets):
-        means = [kv[1]["stats"][col]["mean"] or 0 for kv in items]
-        stds = [kv[1]["stats"][col]["std"] or 0 for kv in items]
-        ax.bar(
-            x + offset,
-            means,
-            width=width,
-            yerr=stds,
-            capsize=3,
-            label=label,
-            color=color,
-            alpha=0.85,
-            error_kw={"elinewidth": 1.0, "ecolor": "black"},
+    single_log_y = None
+    for x, y in zip(xs_phys, ys_phys):
+        if x == 1:
+            single_log_y = y
+            break
+    if single_log_y is None:
+        raise RuntimeError(
+            f"Could not find aof_physical_sublog_count=1 datapoint in "
+            f"{physical_name}; needed for the Single Log reference line."
         )
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(x_labels)
-    ax.set_xlabel(_x_label(sweep))
-    ax.set_ylabel("Latency (us)")
-    ax.set_title(f"{result['experiment_name']} - Latency Percentiles")
-    ax.legend()
-    ax.yaxis.grid(True, linestyle="--", alpha=0.6)
-    ax.set_axisbelow(True)
-    fig.tight_layout()
+    scale = float(plot_cfg.get("scale", 1.0))
+    fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
 
-    out_path = out_dir / "latency.pdf"
-    fig.savefig(out_path)
-    plt.close(fig)
-    print(f"  Saved: {out_path}")
-    return out_path
+    all_x = sorted(set(xs_virt) | set(xs_phys))
+    if not all_x:
+        raise RuntimeError("Empty replay datasets; nothing to plot.")
 
-
-def plot_aof_metrics(result: dict, sweep: dict, out_dir: Path) -> Path:
-    sweep_values = sweep.get("values")
-    items = sorted_runs(result, sweep_values)
-    sweep_key = _primary_sweep_key(result)
-    x_labels = [str(v) for v in _x_values(items, sweep_values, sweep_key)]
-    x = np.arange(len(items))
-
-    fig, axes = plt.subplots(1, len(AOF_METRICS), figsize=(5 * len(AOF_METRICS), 5))
-    if len(AOF_METRICS) == 1:
-        axes = [axes]
-
-    for ax, (metric, title, unit, color) in zip(axes, AOF_METRICS):
-        means = [_metric_stat(kv[1], metric) for kv in items]
-        stds = [_metric_stat(kv[1], metric, "std") for kv in items]
-        ax.bar(
-            x,
-            means,
-            yerr=stds,
-            capsize=4,
-            color=color,
-            alpha=0.85,
-            error_kw={"elinewidth": 1.0, "ecolor": "black"},
-        )
-        ax.set_xticks(x)
-        ax.set_xticklabels(x_labels)
-        ax.set_xlabel(_x_label(sweep))
-        ax.set_ylabel(unit)
-        ax.set_title(title)
-        ax.yaxis.grid(True, linestyle="--", alpha=0.6)
-        ax.set_axisbelow(True)
-
-    fig.suptitle(f"{result['experiment_name']} - AOF Metrics")
-    fig.tight_layout()
-
-    out_path = out_dir / "aof_metrics.pdf"
-    fig.savefig(out_path)
-    plt.close(fig)
-    print(f"  Saved: {out_path}")
-    return out_path
-
-
-def plot_latency_line(result: dict, sweep: dict, out_dir: Path) -> Path:
-    """Line chart of latency percentiles vs sweep param (good for many x values)."""
-    sweep_values = sweep.get("values")
-    items = sorted_runs(result, sweep_values)
-    sweep_key = _primary_sweep_key(result)
-    x_vals = _x_values(items, sweep_values, sweep_key)
-    x_labels = [str(v) for v in x_vals]
-
-    percentiles = [
-        ("median_us", "Median", "steelblue", "o"),
-        ("p95_us", "p95", "orange", "s"),
-        ("p99_us", "p99", "tomato", "^"),
-        ("p999_us", "p99.9", "purple", "D"),
-    ]
-
-    use_log = _use_log_scale(x_vals)
-    x = np.array([float(v) for v in x_vals]) if use_log else np.arange(len(items))
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for col, label, color, marker in percentiles:
-        means = np.array([kv[1]["stats"][col]["mean"] or 0 for kv in items])
-        stds = np.array([kv[1]["stats"][col]["std"] or 0 for kv in items])
-        ax.plot(x, means, marker=marker, label=label, color=color)
-        ax.fill_between(x, means - stds, means + stds, alpha=0.15, color=color)
-
-    if use_log:
-        ax.set_xscale("log")
-        ax.set_xlabel(_x_label(sweep))
-    else:
-        ax.set_xticks(x)
-        ax.set_xticklabels(x_labels)
-        ax.set_xlabel(_x_label(sweep))
-
-    ax.set_ylabel("Latency (us)")
-    ax.set_title(f"{result['experiment_name']} - Latency Percentiles")
-    ax.legend()
-    ax.yaxis.grid(True, linestyle="--", alpha=0.6)
-    ax.set_axisbelow(True)
-    fig.tight_layout()
-
-    out_path = out_dir / "latency_line.pdf"
-    fig.savefig(out_path)
-    plt.close(fig)
-    print(f"  Saved: {out_path}")
-    return out_path
-
-
-def plot_aof_throughput_line(result: dict, sweep: dict, out_dir: Path) -> Path:
-    sweep_values = sweep.get("values")
-    items = sorted_runs(result, sweep_values)
-    sweep_key = _primary_sweep_key(result)
-    x_vals = _x_values(items, sweep_values, sweep_key)
-    x_labels = [str(v) for v in x_vals]
-    means = np.array([_metric_stat(kv[1], "throughput") for kv in items])
-    stds = np.array([_metric_stat(kv[1], "throughput", "std") for kv in items])
-
-    use_log = _use_log_scale(x_vals)
-    x = np.array([float(v) for v in x_vals]) if use_log else np.arange(len(items))
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(x, means, marker="o", color="steelblue", label="throughput")
-    ax.fill_between(x, means - stds, means + stds, alpha=0.2, color="steelblue")
-
-    if use_log:
-        ax.set_xscale("log")
-        ax.set_xlabel(_x_label(sweep))
-    else:
-        ax.set_xticks(x)
-        ax.set_xticklabels(x_labels)
-        ax.set_xlabel(_x_label(sweep))
-
-    ax.set_ylabel("Throughput (Mop/s)")
-    ax.set_title(f"{result['experiment_name']} - AOF Throughput")
-    ax.legend()
-    ax.yaxis.grid(True, linestyle="--", alpha=0.6)
-    ax.set_axisbelow(True)
-    fig.tight_layout()
-
-    out_path = out_dir / "throughput_line.pdf"
-    fig.savefig(out_path)
-    plt.close(fig)
-    print(f"  Saved: {out_path}")
-    return out_path
-
-
-def plot_throughput_line(result: dict, sweep: dict, out_dir: Path) -> Path:
-    """Line chart of throughput vs sweep param."""
-    sweep_values = sweep.get("values")
-    items = sorted_runs(result, sweep_values)
-    sweep_key = _primary_sweep_key(result)
-    x_vals = _x_values(items, sweep_values, sweep_key)
-    x_labels = [str(v) for v in x_vals]
-    means = np.array([kv[1]["stats"]["tpt_mops"]["mean"] or 0 for kv in items])
-    stds = np.array([kv[1]["stats"]["tpt_mops"]["std"] or 0 for kv in items])
-
-    use_log = _use_log_scale(x_vals)
-    x = np.array([float(v) for v in x_vals]) if use_log else np.arange(len(items))
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(x, means, marker="o", color="steelblue", label="mean tpt")
-    ax.fill_between(x, means - stds, means + stds, alpha=0.2, color="steelblue")
-
-    if use_log:
-        ax.set_xscale("log")
-        ax.set_xlabel(_x_label(sweep))
-    else:
-        ax.set_xticks(x)
-        ax.set_xticklabels(x_labels)
-        ax.set_xlabel(_x_label(sweep))
-
-    ax.set_ylabel("Throughput (Mop/s)")
-    ax.set_title(f"{result['experiment_name']} - Throughput")
-    ax.legend()
-    ax.yaxis.grid(True, linestyle="--", alpha=0.6)
-    ax.set_axisbelow(True)
-    fig.tight_layout()
-
-    out_path = out_dir / "throughput_line.pdf"
-    fig.savefig(out_path)
-    plt.close(fig)
-    print(f"  Saved: {out_path}")
-    return out_path
-
-
-def plot_aof_metrics_line(result: dict, sweep: dict, out_dir: Path) -> Path:
-    sweep_values = sweep.get("values")
-    items = sorted_runs(result, sweep_values)
-    sweep_key = _primary_sweep_key(result)
-    x_vals = _x_values(items, sweep_values, sweep_key)
-    x_labels = [str(v) for v in x_vals]
-    use_log = _use_log_scale(x_vals)
-    x = np.array([float(v) for v in x_vals]) if use_log else np.arange(len(items))
-
-    fig, axes = plt.subplots(1, len(AOF_METRICS), figsize=(5 * len(AOF_METRICS), 5))
-    if len(AOF_METRICS) == 1:
-        axes = [axes]
-
-    for ax, (metric, title, unit, color) in zip(axes, AOF_METRICS):
-        means = np.array([_metric_stat(kv[1], metric) for kv in items])
-        stds = np.array([_metric_stat(kv[1], metric, "std") for kv in items])
-        ax.plot(x, means, marker="o", color=color)
-        ax.fill_between(x, means - stds, means + stds, alpha=0.15, color=color)
-        if use_log:
-            ax.set_xscale("log")
-            ax.set_xlabel(_x_label(sweep))
-        else:
-            ax.set_xticks(x)
-            ax.set_xticklabels(x_labels)
-            ax.set_xlabel(_x_label(sweep))
-        ax.set_ylabel(unit)
-        ax.set_title(title)
-        ax.yaxis.grid(True, linestyle="--", alpha=0.6)
-        ax.set_axisbelow(True)
-
-    fig.suptitle(f"{result['experiment_name']} - AOF Metrics")
-    fig.tight_layout()
-
-    out_path = out_dir / "aof_metrics_line.pdf"
-    fig.savefig(out_path)
-    plt.close(fig)
-    print(f"  Saved: {out_path}")
-    return out_path
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Plot Garnet experiment results from result.json"
+    ax.axhline(
+        single_log_y,
+        color=color_map["single_log"],
+        linestyle=linestyle_map["single_log"],
+        linewidth=LINEWIDTH,
+        label=labels_map["single_log"],
     )
-    parser.add_argument("experiment", help="Experiment name (subdirectory of result/)")
+    ax.plot(
+        xs_virt,
+        ys_virt,
+        color=color_map["multilog_virtual"],
+        linestyle=linestyle_map["multilog_virtual"],
+        marker=marker_map["multilog_virtual"],
+        markersize=MARKER_SIZE,
+        linewidth=LINEWIDTH,
+        label=labels_map["multilog_virtual"],
+    )
+    ax.plot(
+        xs_phys,
+        ys_phys,
+        color=color_map["multilog_physical"],
+        linestyle=linestyle_map["multilog_physical"],
+        marker=marker_map["multilog_physical"],
+        markersize=MARKER_SIZE,
+        linewidth=LINEWIDTH,
+        label=labels_map["multilog_physical"],
+    )
+
+    all_y = list(ys_virt) + list(ys_phys) + [single_log_y]
+    y_log = plot_cfg.get("yscale") == "log"
+    default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+    apply_axis_cfg(
+        ax,
+        plot_cfg,
+        default_xlabel="Number of threads",
+        default_ylabel="Throughput (Mop/s)",
+        default_xticks=all_x,
+        default_ymax=default_ymax,
+    )
+
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=3)
+    if plot_cfg.get("legend_separate"):
+        save_legend(ax, out_path, **legend_kwargs)
+    else:
+        handles, labels = row_major_handles(ax, legend_kwargs["ncol"])
+        ax.legend(
+            handles,
+            labels,
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.0),
+            **legend_kwargs,
+        )
+
+    save_fig(fig, out_path)
+
+
+def render_append(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
+    if len(deps) != 1:
+        raise ValueError(f"append template expects 1 dependency; got {deps}")
+    result = load_result(deps[0])
+    x_param = "client.threads"
+    filter_param = "client.aof_physical_sublog_count"
+
+    scale = float(plot_cfg.get("scale", 1.0))
+    fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
+
+    all_threads: set[float] = set()
+    all_y: list[float] = []
+    for m in APPEND_M_VALUES:
+        key = "single_log" if m == 1 else f"multilog_m{m}"
+        xs, ys, _ = extract_series(
+            result, x_param=x_param, filter_params={filter_param: m}
+        )
+        if not xs:
+            print(f"WARN: no data for {filter_param}={m}", file=sys.stderr)
+            continue
+        all_threads.update(xs)
+        all_y.extend(ys)
+        ax.plot(
+            xs,
+            ys,
+            color=color_map[key],
+            linestyle=linestyle_map[key],
+            marker=marker_map[key],
+            markersize=MARKER_SIZE,
+            linewidth=LINEWIDTH,
+            label=labels_map[key],
+            zorder=zorder_map.get(key, 2),
+        )
+
+    sorted_threads = sorted(all_threads)
+    y_log = plot_cfg.get("yscale") == "log"
+    default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+    apply_axis_cfg(
+        ax,
+        plot_cfg,
+        default_xlabel="Number of threads",
+        default_ylabel="Throughput (Mop/s)",
+        default_xticks=sorted_threads,
+        default_ymax=default_ymax,
+    )
+
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=4)
+    if plot_cfg.get("legend_separate"):
+        save_legend(ax, out_path, **legend_kwargs)
+    else:
+        handles, labels = row_major_handles(ax, legend_kwargs["ncol"])
+        ax.legend(
+            handles,
+            labels,
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.0),
+            **legend_kwargs,
+        )
+
+    save_fig(fig, out_path)
+
+
+def render_set(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
+    # dependencies are paired positionally with style keys: index 0 = no_aof
+    # (AOF disabled), index 1 = aof_single (single physical sublog AOF).
+    style_keys = ["no_aof", "aof_single"]
+    if len(deps) != len(style_keys):
+        raise ValueError(
+            f"set template expects {len(style_keys)} dependencies "
+            f"[{', '.join(style_keys)}]; got {deps}"
+        )
+
+    x_param = "client.threads"
+    y_metric = "tpt_mops"
+
+    scale = float(plot_cfg.get("scale", 1.0))
+    fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
+
+    all_threads: set[float] = set()
+    all_y: list[float] = []
+    for key, experiment in zip(style_keys, deps):
+        result = load_result(experiment)
+        xs, ys, _ = extract_series(result, x_param=x_param, y_metric=y_metric)
+        if not xs:
+            print(f"WARN: no data for {experiment}", file=sys.stderr)
+            continue
+        all_threads.update(xs)
+        all_y.extend(ys)
+        ax.plot(
+            xs,
+            ys,
+            color=color_map[key],
+            linestyle=linestyle_map[key],
+            marker=marker_map[key],
+            markersize=MARKER_SIZE,
+            linewidth=LINEWIDTH,
+            label=labels_map[key],
+        )
+
+    sorted_threads = sorted(all_threads)
+    y_log = plot_cfg.get("yscale") == "log"
+    default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+    apply_axis_cfg(
+        ax,
+        plot_cfg,
+        default_xlabel="Number of threads",
+        default_ylabel="Throughput (Mop/s)",
+        default_xticks=sorted_threads,
+        default_ymax=default_ymax,
+    )
+
+    # Set figure has only 2 entries; widen spacing/handles over the LEGEND_KWARGS
+    # defaults tuned for the denser 3-4 entry replay/append legends.
+    legend_kwargs = dict(
+        LEGEND_KWARGS,
+        ncol=2,
+        columnspacing=1.0,
+        handlelength=1.8,
+        handletextpad=0.5,
+    )
+    if plot_cfg.get("legend_separate"):
+        save_legend(ax, out_path, **legend_kwargs)
+    else:
+        ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.0), **legend_kwargs)
+
+    save_fig(fig, out_path)
+
+
+TEMPLATES = {
+    "replay": render_replay,
+    "append": render_append,
+    "set": render_set,
+}
+
+
+def _render_one(name: str) -> None:
+    plot_cfg = load_plot_config(name)
+    deps = resolve_dependencies(plot_cfg)
+    require_results_ready(deps)
+
+    template = plot_cfg.get("template")
+    if template not in TEMPLATES:
+        raise ValueError(
+            f"Plot config '{name}' has unknown template {template!r}; "
+            f"expected one of: {', '.join(sorted(TEMPLATES))}"
+        )
+
+    out_path = RESULT_ROOT / name / f"{name}.pdf"
+    print(f"=== Rendering {name} (template={template}) ===")
+    TEMPLATES[template](plot_cfg, deps, out_path)
+    plt.close("all")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--output-dir", help="Directory to write plots (default: result/<exp>/plots)"
+        "plot_configs",
+        nargs="+",
+        help="One or more plot config names under experiment/plot_configs/.",
     )
     args = parser.parse_args()
-
-    result = load_result(args.experiment)
-    exp_cfg = load_exp_config(args.experiment)
-    sweep = exp_cfg.get("sweep", {})
-
-    if args.output_dir:
-        out_dir = Path(args.output_dir)
-    else:
-        out_dir = RESULT_ROOT / args.experiment / "plots"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    n_runs = len(result["runs"])
-    benchmark = _benchmark_type(result)
-    print(f"Plotting {args.experiment} ({n_runs} runs) -> {out_dir}")
-    if benchmark == "aof":
-        if n_runs <= 8:
-            plot_aof_throughput(result, sweep, out_dir)
-            plot_aof_metrics(result, sweep, out_dir)
-        plot_aof_throughput_line(result, sweep, out_dir)
-        plot_aof_metrics_line(result, sweep, out_dir)
-    else:
-        # Use bar charts for small sweep sizes, line charts for large ones
-        if n_runs <= 8:
-            plot_throughput(result, sweep, out_dir)
-            plot_latency(result, sweep, out_dir)
-        plot_throughput_line(result, sweep, out_dir)
-        plot_latency_line(result, sweep, out_dir)
-
-    print("Done.")
+    for name in args.plot_configs:
+        _render_one(name)
 
 
 if __name__ == "__main__":
