@@ -125,7 +125,7 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     apply_axis_cfg(
         ax,
         plot_cfg,
-        default_xlabel="#threads",
+        default_xlabel="Number of threads",
         default_ylabel="Throughput (Mop/s)",
         default_xticks=all_x,
         default_ymax=default_ymax,
@@ -187,7 +187,7 @@ def render_append(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     apply_axis_cfg(
         ax,
         plot_cfg,
-        default_xlabel="#threads",
+        default_xlabel="Number of threads",
         default_ylabel="Throughput (Mop/s)",
         default_xticks=sorted_threads,
         default_ymax=default_ymax,
@@ -252,7 +252,7 @@ def render_set(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     apply_axis_cfg(
         ax,
         plot_cfg,
-        default_xlabel="#threads",
+        default_xlabel="Number of threads",
         default_ylabel="Throughput (Mop/s)",
         default_xticks=sorted_threads,
         default_ymax=default_ymax,
