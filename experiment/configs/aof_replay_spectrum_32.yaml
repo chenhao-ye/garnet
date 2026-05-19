@@ -1,0 +1,49 @@
+# Experiment: aof_replay_spectrum_32
+# Sweep physical sublog count x replay task count along the diagonal where
+# their product equals 32 (i.e. 32 virtual sublogs total): (1,32), (2,16),
+# (4,8), (8,4), (16,2), (32,1). Uses the offline AofBench in Replay mode
+# with main-memory replication (--aof-null-device, InProc client).
+# No external Garnet server is needed - AofBench creates an embedded server.
+
+name: aof_replay_spectrum_32
+description: "Sweep (physical_sublog_count, replay_task_count) along k*m=32 diagonal for replay with main-memory replication (null device, InProc)"
+benchmark: aof
+no_server: true
+repeat: 7
+
+affinity:
+  client:
+    numa_node: 0
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 1000000
+
+sweep_combo:
+  - client_params:
+      aof_physical_sublog_count: 1
+      aof_replay_task_count: 32
+  - client_params:
+      aof_physical_sublog_count: 2
+      aof_replay_task_count: 16
+  - client_params:
+      aof_physical_sublog_count: 4
+      aof_replay_task_count: 8
+  - client_params:
+      aof_physical_sublog_count: 8
+      aof_replay_task_count: 4
+  - client_params:
+      aof_physical_sublog_count: 16
+      aof_replay_task_count: 2
+  - client_params:
+      aof_physical_sublog_count: 32
+      aof_replay_task_count: 1
