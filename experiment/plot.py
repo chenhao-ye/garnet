@@ -39,7 +39,6 @@ from plot_style import (
     LEGEND_KWARGS,
     LINEWIDTH,
     MARKER_SIZE,
-    MULTILOG_CMAP,
     color_map,
     labels_map,
     linestyle_map,
@@ -219,45 +218,72 @@ def render_replay_spectrum(plot_cfg: dict, deps: list[str], out_path: Path) -> N
     n = len(rows)
     xs = list(range(n))
     ys = [r[2] for r in rows]
-    stds = [r[3] for r in rows]
-    labels = [f"({k},{m})" for k, m, _, _ in rows]
+    # m=1 is the all-direct extreme; label it with just `k` to flag it as the
+    # pure MultiLog-direct configuration (no virtual sublogs per physical).
+    # All other combos keep the `(k, m)` tuple form.
+    labels = [f"({k},{m})" if m > 1 else f"{k}" for k, m, _, _ in rows]
 
-    # autumn ramp from t=0.50 (virtual extreme) to t=0.10 (physical extreme)
-    # to match the multilog_virtual / multilog_physical endpoints elsewhere.
-    cmap = plt.get_cmap(MULTILOG_CMAP)
-    if n > 1:
-        ts = [0.50 - 0.40 * (i / (n - 1)) for i in range(n)]
-    else:
-        ts = [0.30]
-    colors = [cmap(t) for t in ts]
-
-    ax.bar(
-        xs,
-        ys,
-        color=colors,
-        edgecolor="black",
-        linewidth=0.5,
-        yerr=stds,
-        error_kw=dict(elinewidth=0.5, capsize=2),
-    )
+    # Draw bars in two labeled groups so the legend gets one entry per mode.
+    # m=1 is the all-direct extreme (multilog_direct color); m>1 are hybrid.
+    hybrid_idx = [i for i, (_, m, _, _) in enumerate(rows) if m > 1]
+    direct_idx = [i for i, (_, m, _, _) in enumerate(rows) if m == 1]
+    if hybrid_idx:
+        ax.bar(
+            [xs[i] for i in hybrid_idx],
+            [ys[i] for i in hybrid_idx],
+            color=color_map["multilog_hybrid"],
+            edgecolor="black",
+            linewidth=0.5,
+            label=labels_map["multilog_hybrid"],
+        )
+    if direct_idx:
+        ax.bar(
+            [xs[i] for i in direct_idx],
+            [ys[i] for i in direct_idx],
+            color=color_map["multilog_direct"],
+            edgecolor="black",
+            linewidth=0.5,
+            label=labels_map["multilog_direct"],
+        )
 
     y_log = plot_cfg.get("yscale") == "log"
     default_ymax = max(ys) * (1.5 if y_log else 1.1) if ys else None
     apply_axis_cfg(
         ax,
         plot_cfg,
-        default_xlabel="(k, m)",
-        default_ylabel="Throughput (Mrec/s)",
+        default_xlabel="MultiLog configuration",
+        default_ylabel="Throughput (Mop/s)",
         default_xticks=[],  # x-axis ticks/limits set manually below
         default_ymax=default_ymax,
     )
 
     # Override anything apply_axis_cfg may have set on the x-axis: bars sit at
     # integer positions, and the labels are the (k, m) tuples, not numbers.
-    # Rotate labels so 6-7 tuples fit a half-column-wide axis without overlap.
+    # Slight rotation lets us keep a near-base font size while fitting 6-7
+    # tuples along a half-column-wide axis.
     ax.set_xticks(xs)
-    ax.set_xticklabels(labels, rotation=45, ha="right", rotation_mode="anchor")
+    ax.set_xticklabels(
+        labels,
+        fontsize=plt.rcParams["font.size"] * 0.85,
+        rotation=30,
+        ha="right",
+        rotation_mode="anchor",
+    )
     ax.set_xlim(-0.6, n - 0.4)
+
+    ncol, legend_width = resolve_legend_geom(plot_cfg, 2)
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
+    if plot_cfg.get("legend_separate"):
+        save_legend(ax, out_path, width=legend_width, **legend_kwargs)
+    else:
+        handles, labels_legend = row_major_handles(ax, ncol)
+        ax.legend(
+            handles,
+            labels_legend,
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.0),
+            **legend_kwargs,
+        )
 
     save_fig(fig, out_path)
 

@@ -12,3 +12,5 @@ dependencies: [aof_replay_spectrum_64]
 
 scale: 0.5
 yticks: [0, 20, 40, 60, 80, 100, 120]
+legend_separate: true
+legend_scale: 0.5
