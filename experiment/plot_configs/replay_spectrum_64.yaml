@@ -1,0 +1,14 @@
+# Plot: replay_spectrum_64
+# Bar plot of replay throughput across (k, m) combos along the k*m=64
+# diagonal (see configs/aof_replay_spectrum_64.yaml). Bars are sorted by
+# k ascending: leftmost is the all-virtual extreme (1, 64), rightmost is
+# the all-physical extreme (64, 1).
+
+name: replay_spectrum_64
+description: "Replay throughput across (k, m) combos on the k*m=64 diagonal."
+template: replay_spectrum
+
+dependencies: [aof_replay_spectrum_64]
+
+scale: 0.5
+yticks: [0, 20, 40, 60, 80, 100, 120]

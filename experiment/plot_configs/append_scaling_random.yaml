@@ -1,12 +1,15 @@
 # Plot: append_scaling_random
 # Append throughput vs. primary worker threads, one curve per
 # aof_physical_sublog_count, EnqueueRandom workload (sec:6.2).
+# The NoPrefix dependency adds one upper-bound curve at the highest
+# sublog count (default max(APPEND_M_VALUES); override with `noprefix_m`).
 
 name: append_scaling_random
 description: "Append throughput vs. threads, EnqueueRandom (sec:6.2)."
 template: append
 
-dependencies: [aof_enqueue_random]
+# Order: [MultiLog 2-D sweep, NoPrefix 2-D sweep]
+dependencies: [aof_enqueue_random, aof_enqueue_random_noprefix]
 
 scale: 0.5
 xticks: [1, 8, 16, 32, 64]

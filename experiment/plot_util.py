@@ -58,7 +58,26 @@ PLOT_CONFIG_KEYS = {
     "xgrid",
     "ygrid",
     "legend_separate",
+    "legend_scale",
 }
+
+
+def resolve_legend_geom(plot_cfg: dict, base_ncol: int) -> tuple[int, float]:
+    """Scale a base column count and host width by plot_cfg's `legend_scale`.
+
+    `legend_scale` is the legend counterpart of `scale`: it multiplies the
+    standalone-legend host width (default SINGLE_COLUMN_WIDTH) and rescales
+    the column count proportionally so a wider host actually uses the room
+    (and a narrower host collapses entries into fewer columns). Defaults
+    to 1.0; ncol is clamped to at least 1.
+
+    For inline legends, only the scaled ncol is meaningful -- the axis
+    extent is controlled by `scale`.
+    """
+    legend_scale = float(plot_cfg.get("legend_scale", 1.0))
+    ncol = max(1, round(base_ncol * legend_scale))
+    width = SINGLE_COLUMN_WIDTH * legend_scale
+    return ncol, width
 
 
 def load_result(experiment: str) -> dict:

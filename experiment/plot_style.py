@@ -54,9 +54,11 @@ MULTILOG_CMAP = "autumn"
 
 color_map = {
     "single_log": "#2c7bb6",
-    "multilog_virtual": _sample_cmap(MULTILOG_CMAP, 0.50),
-    "multilog_physical": _sample_cmap(MULTILOG_CMAP, 0.10),
+    "multilog_virtual": "#FF8C8E",
+    "multilog_physical": _sample_cmap(MULTILOG_CMAP, 0.00),
     "noprefix": "#9467bd",
+    "noprefix_m64": "#9467bd",
+    "noprefix_physical": "#9467bd",
     "no_aof": "#abd9e9",
     "aof_single": "#2c7bb6",
     "aof_multilog": "red",
@@ -69,10 +71,12 @@ color_map = {
 }
 
 linestyle_map = {
-    "single_log": "-",
+    "single_log": "--",
     "multilog_virtual": "-",
     "multilog_physical": "-",
     "noprefix": ":",
+    "noprefix_m64": ":",
+    "noprefix_physical": ":",
     "no_aof": "-",
     "aof_single": "-",
     "aof_multilog": "-",
@@ -91,10 +95,12 @@ linestyle_map = {
 }
 
 marker_map = {
-    "single_log": ".",
-    "multilog_virtual": "o",
-    "multilog_physical": "s",
-    "noprefix": "^",
+    "single_log": None,
+    "multilog_virtual": "v",
+    "multilog_physical": "o",
+    "noprefix": ".",
+    "noprefix_m64": ".",
+    "noprefix_physical": ".",
     "no_aof": "d",
     "aof_single": ".",
     "aof_multilog": "o",
@@ -107,10 +113,12 @@ marker_map = {
 }
 
 labels_map = {
-    "single_log": "Single Log",
+    "single_log": "SingleLog",
     "multilog_virtual": "MultiLog(1,x)",
     "multilog_physical": "MultiLog(x)",
     "noprefix": "NoPrefix",
+    "noprefix_m64": "NoPrefix(64)",
+    "noprefix_physical": "NoPrefix(x)",
     "no_aof": "Garnet w/o Log",
     "aof_single": "Garnet w/ Log",
     "aof_multilog": "Garnet w/ MultiLog(64)",
@@ -128,3 +136,8 @@ zorder_map = {
 # Single Log baseline (slate blue, dashed) is the reference -- keep it on top.
 zorder_map["single_log"] = 11
 zorder_map["multilog_m1"] = 11
+# NoPrefix is the upper-bound reference; render it above Single Log so the
+# gap to MultiLog stays visible where the two cross.
+zorder_map["noprefix"] = 12
+zorder_map["noprefix_m64"] = 12
+zorder_map["noprefix_physical"] = 12
