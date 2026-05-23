@@ -27,6 +27,10 @@ namespace Garnet.server
         readonly Func<byte[]> cookieGeneratorCallback;
         readonly bool usingSingleLog;
         readonly bool usingSinglePhysicalLog;
+        readonly ulong physicalSublogMask;
+        readonly int physicalSublogShift;
+        readonly int replayTaskMask;
+        readonly int replayTaskShift;
 
         public static unsafe long GetSequenceNumberFromCookie(byte[] cookie)
         {
@@ -46,6 +50,12 @@ namespace Garnet.server
         public GarnetLog(GarnetAppendOnlyFile appendOnlyFile, GarnetServerOptions serverOptions, TsavoriteLogSettings[] logSettings, ILogger logger = null)
         {
             Debug.Assert(serverOptions.EnableFastCommit || serverOptions.AofPhysicalSublogCount == 1, "Cannot use sharded-log without FastCommit!");
+            Debug.Assert(BitOperations.IsPow2(serverOptions.AofPhysicalSublogCount), "AofPhysicalSublogCount must be a power of two!");
+            Debug.Assert(BitOperations.IsPow2(serverOptions.AofReplayTaskCount), "AofReplayTaskCount must be a power of two!");
+            this.physicalSublogMask = (ulong)serverOptions.AofPhysicalSublogCount - 1;
+            this.physicalSublogShift = BitOperations.Log2((uint)serverOptions.AofPhysicalSublogCount);
+            this.replayTaskMask = serverOptions.AofReplayTaskCount - 1;
+            this.replayTaskShift = BitOperations.Log2((uint)serverOptions.AofReplayTaskCount);
             this.appendOnlyFile = appendOnlyFile;
             this.cookieGeneratorCallback = () =>
             {
@@ -84,18 +94,19 @@ namespace Garnet.server
             => GarnetKeyComparer.StaticGetHashCode64((FixedSpanByteKey)key);
 
         // Routing decomposes the hash into two independent dimensions:
-        //   physicalSublogIdx = hash % physicalCount       (low part)
-        //   replayTag         = (hash / physicalCount) & 0x3F  (next 6 bits, encoded in AOF header)
-        //   replayTaskIdx     = replayTag % replayCount    (replica derives this from header)
-        //   virtualSublogIdx  = physicalSublogIdx * replayCount + replayTaskIdx
+        //   physicalSublogIdx = hash & physicalSublogMask                 (low physicalSublogShift bits)
+        //   replayTag         = (hash >> physicalSublogShift) & 0x3F      (next 6 bits, encoded in AOF header)
+        //   replayTaskIdx     = replayTag & replayTaskMask                (replica derives this from header)
+        //   virtualSublogIdx  = (physicalSublogIdx << replayTaskShift) | replayTaskIdx
+        // physicalCount and replayCount are constrained to powers of two so all div/mod/mul degenerate to shift/mask.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int GetPhysicalSublogIdx(long hash) => (int)((ulong)hash % (ulong)serverOptions.AofPhysicalSublogCount);
+        public int GetPhysicalSublogIdx(long hash) => (int)((ulong)hash & physicalSublogMask);
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public byte GetReplayTag(long hash) => (byte)(((ulong)hash / (ulong)serverOptions.AofPhysicalSublogCount) & AofHeader.ReplayTagMask);
+        public byte GetReplayTag(long hash) => (byte)(((ulong)hash >> physicalSublogShift) & AofHeader.ReplayTagMask);
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int GetReplayTaskIdx(long hash) => GetReplayTaskIdxFromTag(GetReplayTag(hash));
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int GetVirtualSublogIdx(long hash) => GetPhysicalSublogIdx(hash) * serverOptions.AofReplayTaskCount + GetReplayTaskIdx(hash);
+        public int GetVirtualSublogIdx(long hash) => (GetPhysicalSublogIdx(hash) << replayTaskShift) | GetReplayTaskIdx(hash);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int GetPhysicalSublogIdx(ReadOnlySpan<byte> key) => GetPhysicalSublogIdx(HASH(key));
@@ -107,7 +118,7 @@ namespace Garnet.server
         public int GetVirtualSublogIdx(ReadOnlySpan<byte> key) => GetVirtualSublogIdx(HASH(key));
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int GetReplayTaskIdxFromTag(byte replayTag) => replayTag % serverOptions.AofReplayTaskCount;
+        public int GetReplayTaskIdxFromTag(byte replayTag) => replayTag & replayTaskMask;
 
         public AofAddress BeginAddress
         {
