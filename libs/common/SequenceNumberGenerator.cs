@@ -32,7 +32,7 @@ namespace Garnet.common
 
         // Probe once at startup. If the native library is loadable and the call
         // succeeds, use it; otherwise fall back to Stopwatch.GetTimestamp().
-        // The branch on `useNative` is a static readonly bool — the JIT treats
+        // The branch on `useNative` is a static readonly bool; the JIT treats
         // it as a constant after tier-up and erases the unused side.
         static readonly bool useNative = ProbeNative();
 

@@ -237,9 +237,7 @@ namespace Resp.benchmark
         }
 
         // Hex-encode keyLen characters derived from MurmurHash3(i). High-entropy bytes
-        // ensure Utility.HashBytes(key) % k is near-uniform for k up to 64 — unlike the
-        // previous "i.ToString().PadLeft(keyLen, 'X')" which clustered low bits and left
-        // 6/12/24 of the 16/32/64 buckets empty.
+        // ensure Utility.HashBytes(key) % k is near-uniform for k up to 64.
         // If keyLen > 16 (very unusual), the tail is padded with '0'.
         static unsafe void FormatHexKey(byte[] dest, int offset, int keyLen, int i)
         {
