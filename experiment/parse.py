@@ -48,6 +48,8 @@ AOF_METRIC_NAME_MAP = {
 
 HEADER_RE = re.compile(r"min\s*\(us\)")
 AOF_METRIC_RE = re.compile(r"^\[(?P<name>[^\]]+)\]:\s*(?P<value>.+)$")
+AOF_LATENCY_LINE_RE = re.compile(r"^\[Reader latency us\]\s+(?P<value>.+)$")
+AOF_LATENCY_FIELD_RE = re.compile(r"(?P<key>p\d+(?:\.\d+)?|max|mean)=(?P<value>[-+]?\d[\d,]*(?:\.\d+)?)")
 AOF_NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
 OFFLINE_OPERATION_RE = re.compile(r"^Operation type:\s*(?P<value>.+)$")
 
@@ -179,6 +181,17 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
     with open(path) as f:
         for raw_line in f:
             line = raw_line.strip()
+
+            lat_match = AOF_LATENCY_LINE_RE.match(line)
+            if lat_match and current is not None:
+                for field in AOF_LATENCY_FIELD_RE.finditer(lat_match.group("value")):
+                    key = "reader_lat_" + field.group("key").replace(".", "_")
+                    current[key] = _parse_number(field.group("value"))
+                for key in current:
+                    if key not in columns:
+                        columns.append(key)
+                continue
+
             match = AOF_METRIC_RE.match(line)
             if not match:
                 continue
@@ -203,8 +216,8 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
             elif current is not None:
                 metric_key = AOF_METRIC_NAME_MAP.get(name, _snake_case(name))
                 metric_value = _parse_number(value)
-                if metric_key == "throughput":
-                    current["throughput"] = (
+                if metric_key in ("throughput", "reader_throughput"):
+                    current[metric_key] = (
                         None if metric_value is None else metric_value / 1_000_000.0
                     )
                 else:
@@ -349,6 +362,12 @@ def _build_summary_rows(runs: dict[str, dict]) -> dict[str, list[dict[str, str]]
         if benchmark == "aof":
             row["throughput_mrec_s"] = fmt("throughput")
             row["bandwidth_gib_s"] = fmt("bandwidth")
+            if (stats.get("reader_throughput") or {}).get("median") is not None:
+                row["reader_throughput_mops_s"] = fmt("reader_throughput")
+                for pct in ("p50", "p90", "p99", "p99_9"):
+                    key = f"reader_lat_{pct}"
+                    if (stats.get(key) or {}).get("median") is not None:
+                        row[f"{key}_us"] = fmt(key)
             row["time_ms"] = fmt("time_ms")
             row["bytes"] = fmt("bytes", decimals=0)
         elif benchmark == "offline":

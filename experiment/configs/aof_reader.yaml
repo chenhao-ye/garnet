@@ -1,0 +1,33 @@
+# Experiment: aof_reader
+# Sweep AOF physical sublog count with a single in-proc reader running alongside
+# ReplayDirect. Switches the bench to single-pass mode (first replay worker to
+# exhaust pages signals stop; reader drains).
+
+name: aof_reader
+description: "Scale AOF physical sublog count (1-64) with one in-proc reader during ReplayDirect"
+benchmark: aof
+no_server: true
+repeat: 7
+
+affinity:
+  client:
+    numa_node: 0
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 1000000
+    aof_gen_pages: 256
+    aof_replay_reader: 1
+
+sweep:
+  client_params:
+    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32, 64]
