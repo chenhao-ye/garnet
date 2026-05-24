@@ -23,7 +23,7 @@ namespace Garnet.server
         public long CurrentVersion { get; private set; } = currentVersion;
         readonly GarnetServerOptions serverOptions = serverOptions;
 
-        readonly VirtualSublogReplayState[] vsrs = [.. Enumerable.Range(0, serverOptions.AofVirtualSublogCount).Select(_ => new VirtualSublogReplayState())];
+        readonly VirtualSublogReplayState[] vsrs = [.. Enumerable.Range(0, serverOptions.AofVirtualSublogCount).Select(_ => new VirtualSublogReplayState(appendOnlyFile.Log.physicalSublogShift + appendOnlyFile.Log.replayTaskShift))];
 
         /// <summary>
         /// Get sequence number for provided key.

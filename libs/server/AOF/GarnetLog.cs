@@ -28,9 +28,9 @@ namespace Garnet.server
         readonly bool usingSingleLog;
         readonly bool usingSinglePhysicalLog;
         readonly ulong physicalSublogMask;
-        readonly int physicalSublogShift;
+        internal readonly int physicalSublogShift;
         readonly int replayTaskMask;
-        readonly int replayTaskShift;
+        internal readonly int replayTaskShift;
 
         public static unsafe long GetSequenceNumberFromCookie(byte[] cookie)
         {
