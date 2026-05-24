@@ -108,6 +108,7 @@ namespace Resp.benchmark
 
                 if (useReaders)
                 {
+                    instance.server.StoreWrapper.appendOnlyFile.CreateOrUpdateKeySequenceManager();
                     readerSessions = instance.server.GetRespSessions(options.AofReplayReader);
                     readerHistograms = new LongHistogram[options.AofReplayReader];
                     for (var i = 0; i < options.AofReplayReader; i++)
@@ -279,7 +280,7 @@ namespace Resp.benchmark
         // BeforeConsistentReadKey unblocks and observes `done=true` on its next iteration.
         void ReleaseReadersOnExit(int physicalSublogIdx)
             => instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager
-                .UpdatePhysicalSublogMaxSequenceNumber(physicalSublogIdx, long.MaxValue);
+                ?.UpdatePhysicalSublogMaxSequenceNumber(physicalSublogIdx, long.MaxValue);
 
         unsafe void RunAofReplayBench(int threadId)
         {
