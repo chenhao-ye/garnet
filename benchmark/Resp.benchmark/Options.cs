@@ -128,6 +128,9 @@ namespace Resp.benchmark
         [Option("aof-replay-reader", Required = false, Default = 0, HelpText = "Reader threads to spawn during replay bench (0 = disabled). Switches replay to single-pass. Ignored for non-replay benches.")]
         public int AofReplayReader { get; set; }
 
+        [Option("aof-reader-skip", Required = false, Default = false, HelpText = "Pre-set every physical sublog's max sequence number to long.MaxValue at run start. Readers' consistency check is always pass, isolating the consistent-read fast-path cost from the wait path.")]
+        public bool AofReaderSkip { get; set; }
+
         /*
          * InProc/AofBench server options
          */

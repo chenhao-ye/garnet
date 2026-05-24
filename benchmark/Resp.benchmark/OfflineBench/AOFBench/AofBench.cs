@@ -109,6 +109,9 @@ namespace Resp.benchmark
                 if (useReaders)
                 {
                     instance.server.StoreWrapper.appendOnlyFile.CreateOrUpdateKeySequenceManager();
+                    if (options.AofReaderSkip)
+                        for (var i = 0; i < options.AofPhysicalSublogCount; i++)
+                            RaiseSublogFrontierToMax(i);
                     readerSessions = instance.server.GetRespSessions(options.AofReplayReader);
                     readerHistograms = new LongHistogram[options.AofReplayReader];
                     for (var i = 0; i < options.AofReplayReader; i++)
@@ -275,10 +278,10 @@ namespace Resp.benchmark
             _ = Interlocked.Add(ref total_bytes_processed, bytesEnqueued);
         }
 
-        // After the loop in single-pass mode, raises the frontier of this thread's
-        // physical sublog to long.MaxValue so any reader still waiting on it inside
-        // BeforeConsistentReadKey unblocks and observes `done=true` on its next iteration.
-        void ReleaseReadersOnExit(int physicalSublogIdx)
+        // Set the physical sublog's frontier to long.MaxValue.
+        // Any reader currently parked inside BeforeConsistentReadKey on this sublog returns immediately.
+        // Subsequent reads on this sublog skip the wait path.
+        void RaiseSublogFrontierToMax(int physicalSublogIdx)
             => instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager
                 ?.UpdatePhysicalSublogMaxSequenceNumber(physicalSublogIdx, long.MaxValue);
 
@@ -322,7 +325,7 @@ namespace Resp.benchmark
             }
 
             if (singlePass)
-                ReleaseReadersOnExit(threadId);
+                RaiseSublogFrontierToMax(threadId);
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -368,7 +371,7 @@ namespace Resp.benchmark
             }
 
             if (singlePass)
-                ReleaseReadersOnExit(threadId);
+                RaiseSublogFrontierToMax(threadId);
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -414,7 +417,7 @@ namespace Resp.benchmark
             }
 
             if (singlePass)
-                ReleaseReadersOnExit(threadId);
+                RaiseSublogFrontierToMax(threadId);
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
