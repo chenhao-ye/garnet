@@ -61,6 +61,9 @@ namespace Resp.benchmark
 
         readonly int keyLen;
 
+        public byte[] GlobalKeys => globalKeys;
+        public int KeyLen => keyLen;
+
         public AofGen(Options options)
         {
             this.options = options;

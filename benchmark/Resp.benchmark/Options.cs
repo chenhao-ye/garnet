@@ -128,6 +128,9 @@ namespace Resp.benchmark
         [Option("aof-gen-records", Required = false, Default = 0, HelpText = "Per-thread KV pair buffer length for AOF enqueue bench (0 = 2 * --dbsize).")]
         public int AofGenRecords { get; set; }
 
+        [Option("aof-replay-reader", Required = false, Default = 0, HelpText = "Reader threads to spawn during replay bench (0 = disabled). Switches replay to single-pass. Ignored for non-replay benches.")]
+        public int AofReplayReader { get; set; }
+
         /*
          * InProc/AofBench server options
          */
