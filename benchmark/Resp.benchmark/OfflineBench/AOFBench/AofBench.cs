@@ -274,6 +274,13 @@ namespace Resp.benchmark
             _ = Interlocked.Add(ref total_bytes_processed, bytesEnqueued);
         }
 
+        // After the loop in single-pass mode, raises the frontier of this thread's
+        // physical sublog to long.MaxValue so any reader still waiting on it inside
+        // BeforeConsistentReadKey unblocks and observes `done=true` on its next iteration.
+        void ReleaseReadersOnExit(int physicalSublogIdx)
+            => instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager
+                .UpdatePhysicalSublogMaxSequenceNumber(physicalSublogIdx, long.MaxValue);
+
         unsafe void RunAofReplayBench(int threadId)
         {
             var buffers = aofGen.GetPageBuffers(threadId);
@@ -313,7 +320,8 @@ namespace Resp.benchmark
                 }
             }
 
-            //Console.WriteLine($"[{threadId}] - Pages send: {pagesSend:N0}, Total AOF bytes send: {totalBytes:N0}, Total records replayed:{recordsReplayedCount:N0}");
+            if (singlePass)
+                ReleaseReadersOnExit(threadId);
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -358,7 +366,8 @@ namespace Resp.benchmark
                 }
             }
 
-            //Console.WriteLine($"[{threadId}] - Pages send: {pagesSend:N0}, Total AOF bytes send: {totalBytes:N0}, Total records replayed:{recordsReplayedCount:N0}");
+            if (singlePass)
+                ReleaseReadersOnExit(threadId);
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -403,7 +412,8 @@ namespace Resp.benchmark
                 }
             }
 
-            //Console.WriteLine($"[{threadId}] - Pages send: {pagesSend:N0}, Total AOF bytes send: {totalBytes:N0}, Total records replayed:{recordsReplayedCount:N0}");
+            if (singlePass)
+                ReleaseReadersOnExit(threadId);
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
