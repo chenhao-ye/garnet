@@ -149,7 +149,7 @@ namespace Resp.benchmark
                 foreach (var worker in workers)
                     worker.Start();
                 if (readers != null)
-                {   
+                {
                     foreach (var r in readers)
                         r.Start();
                 }

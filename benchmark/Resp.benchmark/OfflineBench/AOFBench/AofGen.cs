@@ -282,9 +282,16 @@ namespace Resp.benchmark
             Console.WriteLine($"Generated number of AOF bytes: {total_number_of_aof_bytes:N0}");
         }
 
+        // Pseudo sequence number generator: numRecords * PaceTicksPerRecord + threadId.
+        // The numRecords * PaceTicksPerRecord component gives every record a monotonic
+        // virtual-wall-clock seq (one tick per microsecond at PaceTicksPerRecord = 2000).
+        // Adding threadId in the low bits guarantees uniqueness across sublogs without
+        // disturbing the time ordering, since PaceTicksPerRecord >> threadCount.
+        const long PaceTicksPerRecord = 2000;
+
         unsafe void GeneratePages(int threadId)
         {
-            var seqNumGen = new SequenceNumberGenerator(0);
+            long numRecords = 0;
             var rng = new Random(789110123 + threadId);
             var buf = kvPairBuffers[threadId];
             var keys = buf.Keys;
@@ -335,11 +342,12 @@ namespace Resp.benchmark
                                         storeVersion = aofHeader.storeVersion,
                                         sessionID = aofHeader.sessionID
                                     },
-                                    sequenceNumber = seqNumGen.GetSequenceNumber()
+                                    sequenceNumber = numRecords * PaceTicksPerRecord + threadId
                                 };
                                 if (!garnetLog.GetSubLog(threadId).DummyEnqueue(
                                     ref pageOffset, pageEnd, extendedAofHeader, key, v, ref input))
                                     break;
+                                numRecords++;
                             }
                             page.recordCount++;
                         }
