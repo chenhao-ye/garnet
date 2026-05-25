@@ -60,6 +60,7 @@ namespace Garnet.server
         /// </summary>
         /// <param name="keyHash"></param>
         /// <returns></returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         long GetSublogFrontierSequenceNumber(long keyHash)
             => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].GetFrontierSequenceNumber(keyHash);
 
@@ -68,6 +69,7 @@ namespace Garnet.server
         /// </summary>
         /// <param name="keyHash"></param>
         /// <returns></returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         long GetKeySequenceNumber(long keyHash)
             => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].GetKeySequenceNumber(keyHash);
 
@@ -165,6 +167,7 @@ namespace Garnet.server
         /// <param name="hash"></param>
         /// <param name="replicaReadSessionContext"></param>
         /// <param name="ct"></param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void BeforeConsistentReadKey(long hash, ref ReplicaReadSessionContext replicaReadSessionContext, CancellationToken ct)
         {
             // Check version
@@ -182,6 +185,7 @@ namespace Garnet.server
         ///     we cannot be certain at prepare phase what is the actual sequence number.
         /// </summary>
         /// <param name="replicaReadSessionContext"></param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void AfterConsistentReadKey(ref ReplicaReadSessionContext replicaReadSessionContext)
         {
             replicaReadSessionContext.maximumSessionSequenceNumber = Math.Max(

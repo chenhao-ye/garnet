@@ -40,6 +40,7 @@ namespace Garnet.server
         /// </summary>
         /// <param name="hash">The hash value for which to retrieve the frontier sequence number.</param>
         /// <returns>The frontier sequence number corresponding to the specified hash value.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public readonly long GetFrontierSequenceNumber(long hash)
             => Math.Max(sketch[GetSketchSlot(hash)], sketchMaxValue);
 
@@ -48,6 +49,7 @@ namespace Garnet.server
         /// </summary>
         /// <param name="hash">The hash value for which to retrieve the sequence number.</param>
         /// <returns>The sequence number corresponding to the given hash key.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public readonly long GetKeySequenceNumber(long hash)
             => sketch[GetSketchSlot(hash)];
 
