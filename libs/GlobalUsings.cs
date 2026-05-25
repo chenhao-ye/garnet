@@ -35,6 +35,26 @@ global using TransactionalConsistentReadGarnetApi = Garnet.server.GarnetApi<
         Tsavorite.core.TransactionalConsistentReadContext<Garnet.common.FixedSpanByteKey, Garnet.server.UnifiedInput, Garnet.server.UnifiedOutput, long, Garnet.server.UnifiedSessionFunctions,
             /* UnifiedStoreFunctions */ Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
             Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>>;
+global using SnapshotReadGarnetApi = Garnet.server.GarnetApi<
+        Tsavorite.core.SnapshotReadContext<Garnet.common.FixedSpanByteKey, Garnet.server.StringInput, Garnet.server.StringOutput, long, Garnet.server.MainSessionFunctions,
+            /* MainStoreFunctions */ Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+            Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>,
+        Tsavorite.core.SnapshotReadContext<Garnet.common.FixedSpanByteKey, Garnet.server.ObjectInput, Garnet.server.ObjectOutput, long, Garnet.server.ObjectSessionFunctions,
+            /* ObjectStoreFunctions */ Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+            Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>,
+        Tsavorite.core.SnapshotReadContext<Garnet.common.FixedSpanByteKey, Garnet.server.UnifiedInput, Garnet.server.UnifiedOutput, long, Garnet.server.UnifiedSessionFunctions,
+            /* UnifiedStoreFunctions */ Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+            Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>>;
+global using TransactionalSnapshotReadGarnetApi = Garnet.server.GarnetApi<
+        Tsavorite.core.TransactionalSnapshotReadContext<Garnet.common.FixedSpanByteKey, Garnet.server.StringInput, Garnet.server.StringOutput, long, Garnet.server.MainSessionFunctions,
+            /* MainStoreFunctions */ Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+            Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>,
+        Tsavorite.core.TransactionalSnapshotReadContext<Garnet.common.FixedSpanByteKey, Garnet.server.ObjectInput, Garnet.server.ObjectOutput, long, Garnet.server.ObjectSessionFunctions,
+            /* ObjectStoreFunctions */ Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+            Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>,
+        Tsavorite.core.TransactionalSnapshotReadContext<Garnet.common.FixedSpanByteKey, Garnet.server.UnifiedInput, Garnet.server.UnifiedOutput, long, Garnet.server.UnifiedSessionFunctions,
+            /* UnifiedStoreFunctions */ Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+            Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>>;
 #endif
 
 #if SERVER_PROJECT || TEST_PROJECT || HOST_PROJECT
@@ -169,6 +189,59 @@ global using ConsistentReadUnifiedBasicContext = Tsavorite.core.ConsistentReadCo
     Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>;
 
 global using ConsistentReadUnifiedTransactionalContext = Tsavorite.core.TransactionalConsistentReadContext<
+    Garnet.common.FixedSpanByteKey,
+    Garnet.server.UnifiedInput,
+    Garnet.server.UnifiedOutput,
+    long,
+    Garnet.server.UnifiedSessionFunctions,
+    Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+    Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>;
+
+global using SnapshotReadStringBasicContext = Tsavorite.core.SnapshotReadContext<
+    Garnet.common.FixedSpanByteKey,
+    Garnet.server.StringInput,
+    Garnet.server.StringOutput,
+    long,
+    Garnet.server.MainSessionFunctions,
+    Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+    Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>;
+
+global using SnapshotReadStringTransactionalContext = Tsavorite.core.TransactionalSnapshotReadContext<
+    Garnet.common.FixedSpanByteKey,
+    Garnet.server.StringInput,
+    Garnet.server.StringOutput,
+    long,
+    Garnet.server.MainSessionFunctions,
+    Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+    Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>;
+
+global using SnapshotReadObjectBasicContext = Tsavorite.core.SnapshotReadContext<
+    Garnet.common.FixedSpanByteKey,
+    Garnet.server.ObjectInput,
+    Garnet.server.ObjectOutput,
+    long, Garnet.server.ObjectSessionFunctions,
+    Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+    Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>;
+
+global using SnapshotReadObjectTransactionalContext = Tsavorite.core.TransactionalSnapshotReadContext<
+    Garnet.common.FixedSpanByteKey,
+    Garnet.server.ObjectInput,
+    Garnet.server.ObjectOutput,
+    long,
+    Garnet.server.ObjectSessionFunctions,
+    Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+    Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>;
+
+global using SnapshotReadUnifiedBasicContext = Tsavorite.core.SnapshotReadContext<
+    Garnet.common.FixedSpanByteKey,
+    Garnet.server.UnifiedInput,
+    Garnet.server.UnifiedOutput,
+    long,
+    Garnet.server.UnifiedSessionFunctions,
+    Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>,
+    Tsavorite.core.ObjectAllocator<Tsavorite.core.StoreFunctions<Garnet.common.GarnetKeyComparer, Garnet.server.GarnetRecordTriggers>>>;
+
+global using SnapshotReadUnifiedTransactionalContext = Tsavorite.core.TransactionalSnapshotReadContext<
     Garnet.common.FixedSpanByteKey,
     Garnet.server.UnifiedInput,
     Garnet.server.UnifiedOutput,

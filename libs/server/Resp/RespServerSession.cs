@@ -91,6 +91,11 @@ namespace Garnet.server
         internal TransactionManager txnManager;
         internal ConsistentReadGarnetApi consistentReadGarnetApi;
         internal TransactionalConsistentReadGarnetApi txnConsistentReadApi;
+        internal SnapshotReadGarnetApi snapshotReadGarnetApi;
+        internal TransactionalSnapshotReadGarnetApi txnSnapshotReadApi;
+        // Cached at session construction: true when --aof-read-protocol=snapshot is active.
+        // Picks which api+context pair the consistent-read branch dispatches to.
+        private bool useSnapshotReadProtocol;
         internal ReadSessionState readSessionState;
 
         readonly IGarnetAuthenticator _authenticator;
@@ -486,7 +491,10 @@ namespace Garnet.server
                 if (consistent)
                 {
                     Debug.Assert(consistentReadDBSession != null);
-                    ProcessMessages(ref consistentReadGarnetApi, ref txnConsistentReadApi);
+                    if (useSnapshotReadProtocol)
+                        ProcessMessages(ref snapshotReadGarnetApi, ref txnSnapshotReadApi);
+                    else
+                        ProcessMessages(ref consistentReadGarnetApi, ref txnConsistentReadApi);
                 }
                 else
                 {
@@ -1606,11 +1614,30 @@ namespace Garnet.server
                 dbStorageSession.stringTransactionalContext, dbStorageSession.objectTransactionalContext,
                 dbStorageSession.unifiedTransactionalContext);
 
-            var consistentReadGarnetApi = new ConsistentReadGarnetApi(dbStorageSession, dbStorageSession.consistentReadContext,
-                dbStorageSession.objectStoreConsistentReadContext, dbStorageSession.unifiedStoreConsistentReadContext);
-            var txnConsistentReadApi = new TransactionalConsistentReadGarnetApi(dbStorageSession,
-                dbStorageSession.transactionalConsistentReadContext, dbStorageSession.objectStoreTransactionalConsistentReadContext,
-                dbStorageSession.unifiedStoreTransactionalConsistentReadContext);
+            // Construct the consistent-read api pair matching the configured protocol. The unused
+            // pair stays at default; the per-Read protocol branch from ConsistentReadContext is
+            // gone, replaced by the once-at-startup choice in `useSnapshotReadProtocol`.
+            useSnapshotReadProtocol = !storeWrapper.serverOptions.AofReadWithTimestamp;
+            ConsistentReadGarnetApi consistentReadGarnetApi = default;
+            TransactionalConsistentReadGarnetApi txnConsistentReadApi = default;
+            SnapshotReadGarnetApi snapshotReadGarnetApi = default;
+            TransactionalSnapshotReadGarnetApi txnSnapshotReadApi = default;
+            if (useSnapshotReadProtocol)
+            {
+                snapshotReadGarnetApi = new SnapshotReadGarnetApi(dbStorageSession, dbStorageSession.snapshotReadContext,
+                    dbStorageSession.objectStoreSnapshotReadContext, dbStorageSession.unifiedStoreSnapshotReadContext);
+                txnSnapshotReadApi = new TransactionalSnapshotReadGarnetApi(dbStorageSession,
+                    dbStorageSession.transactionalSnapshotReadContext, dbStorageSession.objectStoreTransactionalSnapshotReadContext,
+                    dbStorageSession.unifiedStoreTransactionalSnapshotReadContext);
+            }
+            else
+            {
+                consistentReadGarnetApi = new ConsistentReadGarnetApi(dbStorageSession, dbStorageSession.consistentReadContext,
+                    dbStorageSession.objectStoreConsistentReadContext, dbStorageSession.unifiedStoreConsistentReadContext);
+                txnConsistentReadApi = new TransactionalConsistentReadGarnetApi(dbStorageSession,
+                    dbStorageSession.transactionalConsistentReadContext, dbStorageSession.objectStoreTransactionalConsistentReadContext,
+                    dbStorageSession.unifiedStoreTransactionalConsistentReadContext);
+            }
 
             var consistentReadTransactionManager = new TransactionManager(
                 storeWrapper,
@@ -1632,7 +1659,9 @@ namespace Garnet.server
                 dbLockableGarnetApi,
                 consistentReadTransactionManager,
                 consistentReadGarnetApi,
-                txnConsistentReadApi);
+                txnConsistentReadApi,
+                snapshotReadGarnetApi,
+                txnSnapshotReadApi);
         }
 
         /// <summary>
@@ -1648,6 +1677,8 @@ namespace Garnet.server
             this.transactionalGarnetApi = dbSession.TransactionalGarnetApi;
             this.consistentReadGarnetApi = dbSession.ConsistentGarnetApi;
             this.txnConsistentReadApi = dbSession.TransactionalConsistentGarnetApi;
+            this.snapshotReadGarnetApi = dbSession.SnapshotGarnetApi;
+            this.txnSnapshotReadApi = dbSession.TransactionalSnapshotGarnetApi;
             this.storageSession.UpdateRespProtocolVersion(this.respProtocolVersion);
         }
 

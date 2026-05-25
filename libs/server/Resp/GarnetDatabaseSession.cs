@@ -41,6 +41,16 @@ namespace Garnet.server
         public TransactionalConsistentReadGarnetApi TransactionalConsistentGarnetApi { get; }
 
         /// <summary>
+        /// Snapshot Garnet API (populated only when AofReadWithTimestamp is false).
+        /// </summary>
+        public SnapshotReadGarnetApi SnapshotGarnetApi { get; }
+
+        /// <summary>
+        /// Lockable Snapshot Garnet API
+        /// </summary>
+        public TransactionalSnapshotReadGarnetApi TransactionalSnapshotGarnetApi { get; }
+
+        /// <summary>
         /// Transaction manager
         /// </summary>
         public TransactionManager TransactionManager { get; }
@@ -54,7 +64,9 @@ namespace Garnet.server
             TransactionalGarnetApi lockableGarnetApi,
             TransactionManager txnManager,
             ConsistentReadGarnetApi consistentGarnetApi = default,
-            TransactionalConsistentReadGarnetApi transactionalConsistentGarnetApi = default)
+            TransactionalConsistentReadGarnetApi transactionalConsistentGarnetApi = default,
+            SnapshotReadGarnetApi snapshotGarnetApi = default,
+            TransactionalSnapshotReadGarnetApi transactionalSnapshotGarnetApi = default)
         {
             this.Id = id;
             this.StorageSession = storageSession;
@@ -63,6 +75,8 @@ namespace Garnet.server
             this.TransactionManager = txnManager;
             this.ConsistentGarnetApi = consistentGarnetApi;
             this.TransactionalConsistentGarnetApi = transactionalConsistentGarnetApi;
+            this.SnapshotGarnetApi = snapshotGarnetApi;
+            this.TransactionalSnapshotGarnetApi = transactionalSnapshotGarnetApi;
         }
 
         public GarnetDatabaseSession(int id, GarnetDatabaseSession srcSession)

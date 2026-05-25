@@ -26,6 +26,8 @@ namespace Garnet.server
         public StringTransactionalContext stringTransactionalContext;
         public ConsistentReadStringBasicContext consistentReadContext;
         public ConsistentReadStringTransactionalContext transactionalConsistentReadContext;
+        public SnapshotReadStringBasicContext snapshotReadContext;
+        public SnapshotReadStringTransactionalContext transactionalSnapshotReadContext;
 
         SectorAlignedMemory sectorAlignedMemoryHll1;
         SectorAlignedMemory sectorAlignedMemoryHll2;
@@ -41,6 +43,8 @@ namespace Garnet.server
         public ObjectTransactionalContext objectTransactionalContext;
         public ConsistentReadObjectBasicContext objectStoreConsistentReadContext;
         public ConsistentReadObjectTransactionalContext objectStoreTransactionalConsistentReadContext;
+        public SnapshotReadObjectBasicContext objectStoreSnapshotReadContext;
+        public SnapshotReadObjectTransactionalContext objectStoreTransactionalSnapshotReadContext;
 
         /// <summary>
         /// Session Contexts for vector store
@@ -55,6 +59,8 @@ namespace Garnet.server
         public UnifiedTransactionalContext unifiedTransactionalContext;
         public ConsistentReadUnifiedBasicContext unifiedStoreConsistentReadContext;
         public ConsistentReadUnifiedTransactionalContext unifiedStoreTransactionalConsistentReadContext;
+        public SnapshotReadUnifiedBasicContext unifiedStoreSnapshotReadContext;
+        public SnapshotReadUnifiedTransactionalContext unifiedStoreTransactionalSnapshotReadContext;
 
         internal readonly ScratchBufferBuilder scratchBufferBuilder;
         public readonly FunctionsState functionsState;
@@ -128,6 +134,8 @@ namespace Garnet.server
                 objectTransactionalContext = objectStoreSession.TransactionalContext;
                 objectStoreConsistentReadContext = objectStoreSession.ConsistentReadContext;
                 objectStoreTransactionalConsistentReadContext = objectStoreSession.TransactionalConsistentReadContext;
+                objectStoreSnapshotReadContext = objectStoreSession.SnapshotReadContext;
+                objectStoreTransactionalSnapshotReadContext = objectStoreSession.TransactionalSnapshotReadContext;
             }
 
             var unifiedStoreFunctions = new UnifiedSessionFunctions(functionsState, readSessionState);
@@ -140,11 +148,15 @@ namespace Garnet.server
             stringTransactionalContext = session.TransactionalContext;
             consistentReadContext = session.ConsistentReadContext;
             transactionalConsistentReadContext = session.TransactionalConsistentReadContext;
+            snapshotReadContext = session.SnapshotReadContext;
+            transactionalSnapshotReadContext = session.TransactionalSnapshotReadContext;
 
             unifiedBasicContext = unifiedStoreSession.BasicContext;
             unifiedTransactionalContext = unifiedStoreSession.TransactionalContext;
             unifiedStoreConsistentReadContext = unifiedStoreSession.ConsistentReadContext;
             unifiedStoreTransactionalConsistentReadContext = unifiedStoreSession.TransactionalConsistentReadContext;
+            unifiedStoreSnapshotReadContext = unifiedStoreSession.SnapshotReadContext;
+            unifiedStoreTransactionalSnapshotReadContext = unifiedStoreSession.TransactionalSnapshotReadContext;
 
             vectorBasicContext = vectorSession.BasicContext;
             vectorTransactionalContext = vectorSession.TransactionalContext;

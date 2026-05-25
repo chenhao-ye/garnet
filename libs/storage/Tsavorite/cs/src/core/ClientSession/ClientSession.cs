@@ -36,6 +36,8 @@ namespace Tsavorite.core
         readonly BasicContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> bContext;
         readonly ConsistentReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> crContext;
         readonly TransactionalConsistentReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> tcrContext;
+        readonly SnapshotReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> srContext;
+        readonly TransactionalSnapshotReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> tsrContext;
 
         internal const string NotAsyncSessionErr = "Session does not support async operations";
 
@@ -96,11 +98,21 @@ namespace Tsavorite.core
         {
             if (enableConsistentRead)
             {
-                crContext = new(this, getSnapshotAddress);
-                tcrContext = new(this, getSnapshotAddress);
-                bContext = crContext.BasicContext;
+                if (getSnapshotAddress != null)
+                {
+                    srContext = new(this, getSnapshotAddress);
+                    tsrContext = new(this, getSnapshotAddress);
+                    bContext = srContext.BasicContext;
+                    lContext = tsrContext.TransactionalContext;
+                }
+                else
+                {
+                    crContext = new(this);
+                    tcrContext = new(this);
+                    bContext = crContext.BasicContext;
+                    lContext = tcrContext.TransactionalContext;
+                }
                 uContext = new(this);
-                lContext = tcrContext.TransactionalContext;
                 luContext = new(this);
             }
             else
@@ -162,14 +174,26 @@ namespace Tsavorite.core
         public BasicContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> BasicContext => bContext;
 
         /// <summary>
-        /// Return the consistent read context;
+        /// Return the timestamp-based consistent read context. Populated only when the session was
+        /// created with timestamp protocol (i.e., null getSnapshotAddress).
         /// </summary>
         public ConsistentReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> ConsistentReadContext => crContext;
 
         /// <summary>
-        /// Return the transactional consistent read context
+        /// Return the timestamp-based transactional consistent read context.
         /// </summary>
         public TransactionalConsistentReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> TransactionalConsistentReadContext => tcrContext;
+
+        /// <summary>
+        /// Return the snapshot-based read context. Populated only when the session was created
+        /// with snapshot protocol (i.e., non-null getSnapshotAddress).
+        /// </summary>
+        public SnapshotReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> SnapshotReadContext => srContext;
+
+        /// <summary>
+        /// Return the snapshot-based transactional read context.
+        /// </summary>
+        public TransactionalSnapshotReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator> TransactionalSnapshotReadContext => tsrContext;
 
         #region ITsavoriteContext
 
