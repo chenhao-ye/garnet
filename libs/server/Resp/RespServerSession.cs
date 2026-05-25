@@ -1583,7 +1583,7 @@ namespace Garnet.server
             var dbRes = storeWrapper.TryGetOrAddDatabase(dbId, out var database, out _);
             Debug.Assert(dbRes, "Should always find database if we're switching to it");
 
-            readSessionState = new ReadSessionState(storeWrapper.appendOnlyFile, storeWrapper.serverOptions);
+            readSessionState = new ReadSessionState(storeWrapper.appendOnlyFile);
 
             // NOTE: We need to create storage session to tie it to the consistent read API
             var dbStorageSession = new StorageSession(
