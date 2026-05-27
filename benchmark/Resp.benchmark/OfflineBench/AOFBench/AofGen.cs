@@ -284,7 +284,12 @@ namespace Resp.benchmark
 
         unsafe void GeneratePages(int threadId)
         {
-            var seqNumGen = new SequenceNumberGenerator(0);
+            // Each record's pseudo sequence number is pseudoClock * pseudoTimestampPace + threadId.
+            // The pseudoClock * pseudoTimestampPace term advances a virtual wall-clock by pseudoTimestampPace ticks per record, emulating an rdtsc-based generator.
+            // The low-order threadId makes the value unique across sublogs without perturbing the time ordering, since pseudoTimestampPace exceeds the sublog count.
+            long pseudoClock = 0;
+            long pseudoTimestampPace = options.PseudoTimestampPace;
+
             var rng = new Random(789110123 + threadId);
             var buf = kvPairBuffers[threadId];
             var keys = buf.Keys;
@@ -335,11 +340,12 @@ namespace Resp.benchmark
                                         storeVersion = aofHeader.storeVersion,
                                         sessionID = aofHeader.sessionID
                                     },
-                                    sequenceNumber = seqNumGen.GetSequenceNumber()
+                                    sequenceNumber = pseudoClock * pseudoTimestampPace + threadId
                                 };
                                 if (!garnetLog.GetSubLog(threadId).DummyEnqueue(
                                     ref pageOffset, pageEnd, extendedAofHeader, key, v, ref input))
                                     break;
+                                pseudoClock++;
                             }
                             page.recordCount++;
                         }

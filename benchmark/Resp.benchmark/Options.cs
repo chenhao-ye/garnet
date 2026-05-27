@@ -131,6 +131,9 @@ namespace Resp.benchmark
         [Option("aof-reader-skip", Required = false, Default = false, HelpText = "Pre-set every physical sublog's max sequence number to long.MaxValue at run start. Readers' consistency check is always pass, isolating the consistent-read fast-path cost from the wait path.")]
         public bool AofReaderSkip { get; set; }
 
+        [Option("pseudo-timestamp-pace", Required = false, Default = 2000, HelpText = "Ticks the generated pseudo timestamp advances per AOF record. Emulates a wall-clock sequence generator (at ~2 GHz, 2000 is ~1us per record).")]
+        public int PseudoTimestampPace { get; set; }
+
         /*
          * InProc/AofBench server options
          */
