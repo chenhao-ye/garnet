@@ -29,6 +29,7 @@ namespace Resp.benchmark
                 CommitFrequencyMs = options.CommitFrequencyMs,
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
                 AofReplayTaskCount = options.AofReplayTaskCount,
+                AofReplayDriftThreshold = options.AofReplayDriftThreshold,
                 ReplicationOffsetMaxLag = 0,
                 CheckpointDir = OperatingSystem.IsLinux() ? "/tmp" : null,
             };
@@ -149,7 +150,7 @@ namespace Resp.benchmark
                 foreach (var worker in workers)
                     worker.Start();
                 if (readers != null)
-                {   
+                {
                     foreach (var r in readers)
                         r.Start();
                 }
@@ -326,6 +327,9 @@ namespace Resp.benchmark
 
             if (singlePass)
                 RaiseSublogFrontierToMax(threadId);
+            // This replay thread is done; release any active barrier round so it does not strand a peer
+            // blocked waiting for this thread to arrive.
+            instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Disable();
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -372,6 +376,9 @@ namespace Resp.benchmark
 
             if (singlePass)
                 RaiseSublogFrontierToMax(threadId);
+            // This replay thread is done; release any active barrier round so it does not strand a peer
+            // blocked waiting for this thread to arrive.
+            instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Disable();
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -418,6 +425,9 @@ namespace Resp.benchmark
 
             if (singlePass)
                 RaiseSublogFrontierToMax(threadId);
+            // This replay thread is done; release any active barrier round so it does not strand a peer
+            // blocked waiting for this thread to arrive.
+            instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Disable();
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);

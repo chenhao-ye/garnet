@@ -82,6 +82,13 @@ namespace Garnet.server
         public int AofReplayTaskCount = 1;
 
         /// <summary>
+        /// Cross-sublog replay drift, in sequence-number units, a replica reader tolerates before it
+        /// triggers the replay-align barrier. A larger value lets sublogs diverge further (less reader
+        /// blocking, looser bound); -1 disables the barrier.
+        /// </summary>
+        public int AofReplayDriftThreshold = 20000;
+
+        /// <summary>
         /// Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.
         /// </summary>
         public int AofReplayRingSize = 16384;

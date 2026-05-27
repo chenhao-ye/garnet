@@ -158,6 +158,9 @@ namespace Resp.benchmark
         [Option("aof-replay-task-count", Required = false, Default = 1, HelpText = "Number of replay tasks per physical sublog at the replica.")]
         public int AofReplayTaskCount { get; set; }
 
+        [Option("aof-replay-drift-threshold", Required = false, Default = 20000, HelpText = "Cross-sublog replay drift, in sequence-number units, a replica reader tolerates before triggering the replay-align barrier. -1 disables the barrier.")]
+        public int AofReplayDriftThreshold { get; set; }
+
         [Option("aof-memory-size", Required = false, Default = "64m", HelpText = "Total AOF memory buffer used in bytes (rounds down to power of 2) - spills to disk after this limit.")]
         public string AofMemorySize { get; set; }
 
