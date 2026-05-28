@@ -3,11 +3,12 @@
 # over loopback TCP, running alongside ReplayDirect, sweeping AOF physical sublog
 # count. With --client GarnetClientSession the bench's (replica-role) server binds
 # a real loopback listener on --port; the in-process replay path is unchanged.
-# itp=1 => one GET in flight => true per-op read round-trip latency (directly
-# comparable to aof_reader's in-proc per-op p50, but including TCP/RESP cost).
+# itp=128 => 128 GETs in flight per reader thread => pipelined throughput; the
+# reported reader latency is per-batch (one CompletePending per 128 GETs), so
+# effective per-op latency is batch / 128.
 
 name: aof_reader_gcs
-description: "Scale AOF physical sublog count (1-64) with one loopback GarnetClientSession reader (itp=1) during ReplayDirect"
+description: "GarnetClientSession readers during ReplayDirect: 2-D Cartesian sweep over AOF physical sublog count (1-64) x reader-thread count (1-64), itp=128"
 benchmark: aof
 no_server: true
 repeat: 7
@@ -24,15 +25,15 @@ base:
     aof_null_device: true
     client: GarnetClientSession
     port: 7379
-    itp: 1
+    itp: 128
     aof_commit_freq: -1
     aof_memory_size: 256m
     keylength: 8
     valuelength: 8
     dbsize: 10000000
-    aof_gen_pages: 256
-    aof_replay_reader: 1
+    aof_gen_pages: 1024
 
 sweep:
   client_params:
     aof_physical_sublog_count: [1, 2, 4, 8, 16, 32, 64]
+    aof_replay_reader: [1, 2, 4, 8, 16, 32, 64]
