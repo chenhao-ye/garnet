@@ -7,6 +7,7 @@ using System.Text;
 using Garnet.server;
 using HdrHistogram;
 using Tsavorite.core;
+using GarnetClientSession = Garnet.client.GarnetClientSession;
 
 namespace Resp.benchmark
 {
@@ -89,7 +90,9 @@ namespace Resp.benchmark
             var workers = new Thread[threads];
 
             var useReaders = options.IsReplayEnabled && options.AofReplayReader > 0;
+            var networkReaders = useReaders && options.Client == ClientType.GarnetClientSession;
             RespServerSession[] readerSessions = null;
+            GarnetClientSession[] readerClients = null;
             LongHistogram[] readerHistograms = null;
 
             Console.WriteLine($"Epoch instance count:{LightEpoch.ActiveInstanceCount()}");
@@ -113,10 +116,28 @@ namespace Resp.benchmark
                     if (options.AofReaderSkip)
                         for (var i = 0; i < options.AofPhysicalSublogCount; i++)
                             RaiseSublogFrontierToMax(i);
-                    readerSessions = instance.server.GetRespSessions(options.AofReplayReader);
                     readerHistograms = new LongHistogram[options.AofReplayReader];
                     for (var i = 0; i < options.AofReplayReader; i++)
                         readerHistograms[i] = new LongHistogram(HistogramLowerBound, HistogramUpperBound, HistogramSigFigs);
+                    if (networkReaders)
+                    {
+                        // Size the send buffer to hold a full intra-thread-parallel batch of GET commands.
+                        var sendBufferSize = Math.Max(1 << 17, 64 * options.IntraThreadParallelism);
+                        readerClients = new GarnetClientSession[options.AofReplayReader];
+                        for (var i = 0; i < options.AofReplayReader; i++)
+                        {
+                            var c = new GarnetClientSession(instance.endpoint, new(sendBufferSize));
+                            c.Connect();
+                            // This node is set to a replica role; allow reads on it.
+                            c.Execute("READONLY");
+                            c.CompletePending();
+                            readerClients[i] = c;
+                        }
+                    }
+                    else
+                    {
+                        readerSessions = instance.server.GetRespSessions(options.AofReplayReader);
+                    }
                 }
 
                 // Run the experiment.
@@ -140,9 +161,19 @@ namespace Resp.benchmark
                     for (var idx = 0; idx < options.AofReplayReader; idx++)
                     {
                         var x = idx;
-                        var session = readerSessions[idx];
                         var hist = readerHistograms[idx];
-                        readers[idx] = new Thread(() => RunReader(x, session, hist));
+                        if (networkReaders)
+                        {
+                            var client = readerClients[idx];
+                            readers[idx] = options.IntraThreadParallelism > 1
+                                ? new Thread(() => RunReaderGarnetClientSessionParallel(x, client, options.IntraThreadParallelism, hist))
+                                : new Thread(() => RunReaderGarnetClientSession(x, client, hist));
+                        }
+                        else
+                        {
+                            var session = readerSessions[idx];
+                            readers[idx] = new Thread(() => RunReader(x, session, hist));
+                        }
                     }
                 }
 
@@ -229,6 +260,9 @@ namespace Resp.benchmark
                 if (readerSessions != null)
                     foreach (var s in readerSessions)
                         s?.Dispose();
+                if (readerClients != null)
+                    foreach (var c in readerClients)
+                        c?.Dispose();
                 waiter.Reset();
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
@@ -468,6 +502,55 @@ namespace Resp.benchmark
                     prev = now;
                     opsCompleted++;
                 }
+            }
+            _ = Interlocked.Add(ref readerOperationsCompleted, opsCompleted);
+        }
+
+        // Network reader: one GET in flight per thread over a real TCP connection. Records per-op
+        // round-trip latency. Aggregate throughput scales with the number of reader threads.
+        void RunReaderGarnetClientSession(int threadId, GarnetClientSession client, LongHistogram hist)
+        {
+            var keys = aofGen.GlobalKeys;
+            var keyLen = aofGen.KeyLen;
+            var keyCount = keys.Length / keyLen;
+            var rng = new Random(0xCAFE + threadId);
+            var opsCompleted = 0L;
+
+            waiter.Wait();
+
+            while (!done)
+            {
+                var key = Encoding.ASCII.GetString(keys, rng.Next(keyCount) * keyLen, keyLen);
+                var start = Stopwatch.GetTimestamp();
+                client.Execute("GET", key);
+                client.CompletePending(true);
+                hist.RecordValue(Stopwatch.GetTimestamp() - start);
+                opsCompleted++;
+            }
+            _ = Interlocked.Add(ref readerOperationsCompleted, opsCompleted);
+        }
+
+        // Network reader with intra-thread parallelism: keeps `parallel` GETs in flight per thread,
+        // then waits for the batch (unless --burst). Records per-batch latency.
+        void RunReaderGarnetClientSessionParallel(int threadId, GarnetClientSession client, int parallel, LongHistogram hist)
+        {
+            var keys = aofGen.GlobalKeys;
+            var keyLen = aofGen.KeyLen;
+            var keyCount = keys.Length / keyLen;
+            var rng = new Random(0xCAFE + threadId);
+            var opsCompleted = 0L;
+            var wait = !options.Burst;
+
+            waiter.Wait();
+
+            while (!done)
+            {
+                var start = Stopwatch.GetTimestamp();
+                for (var i = 0; i < parallel; i++)
+                    client.ExecuteBatch("GET", Encoding.ASCII.GetString(keys, rng.Next(keyCount) * keyLen, keyLen));
+                client.CompletePending(wait);
+                hist.RecordValue(Stopwatch.GetTimestamp() - start);
+                opsCompleted += parallel;
             }
             _ = Interlocked.Add(ref readerOperationsCompleted, opsCompleted);
         }
