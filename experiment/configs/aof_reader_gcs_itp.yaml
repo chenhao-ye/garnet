@@ -1,0 +1,40 @@
+# Experiment: aof_reader_gcs_itp
+# GarnetClientSession reader throughput/latency vs intra-thread pipelining (--itp),
+# at 1 and 2 physical sublogs, during ReplayDirect over a loopback connection.
+#   itp=1     : one GET in flight  => per-op round-trip latency (RTT-bound tput).
+#   itp>1     : the reader keeps `itp` GETs in flight per CompletePending,
+#               amortizing the round-trip to raise single-connection throughput;
+#               recorded latency then becomes per-batch (one sample per batch),
+#               matching the online bench's pipelined runner.
+# 2-D Cartesian sweep => 6 runs.
+
+name: aof_reader_gcs_itp
+description: "GarnetClientSession reader: sweep --itp (1, 64, 32768) x physical sublog count (1, 2) during ReplayDirect"
+benchmark: aof
+no_server: true
+repeat: 7
+
+affinity:
+  client:
+    numa_node: 0
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: GarnetClientSession
+    port: 7379
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    aof_gen_pages: 256
+    aof_replay_reader: 1
+
+sweep:
+  client_params:
+    aof_physical_sublog_count: [1]
+    itp: [1, 8, 64, 512, 4096, 32768]
