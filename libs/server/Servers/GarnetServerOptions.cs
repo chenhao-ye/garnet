@@ -89,6 +89,14 @@ namespace Garnet.server
         public int AofReplayDriftThreshold = 20000;
 
         /// <summary>
+        /// Records the replay thread applies between flushes of its private running max to the shared
+        /// per-virtual-sublog sketchMaxValue. Batching the flush amortizes the cross-core invalidation
+        /// of the reader-read cache line. 1 = flush every record (no batching); larger = less frequent
+        /// flush, more frontier staleness (can hurt reader p99.9 if too large).
+        /// </summary>
+        public int AofReplayFlushFreq = 16;
+
+        /// <summary>
         /// Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.
         /// </summary>
         public int AofReplayRingSize = 16384;

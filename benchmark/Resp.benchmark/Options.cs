@@ -161,6 +161,9 @@ namespace Resp.benchmark
         [Option("aof-replay-drift-threshold", Required = false, Default = 20000, HelpText = "Cross-sublog replay drift, in sequence-number units, a replica reader tolerates before triggering the replay-align barrier. -1 disables the barrier.")]
         public int AofReplayDriftThreshold { get; set; }
 
+        [Option("aof-replay-flush-freq", Required = false, Default = 16, HelpText = "Records the replay thread applies between flushes of its private running max to the shared sketchMaxValue. 1 = flush every record (no batching).")]
+        public int AofReplayFlushFreq { get; set; }
+
         [Option("aof-memory-size", Required = false, Default = "64m", HelpText = "Total AOF memory buffer used in bytes (rounds down to power of 2) - spills to disk after this limit.")]
         public string AofMemorySize { get; set; }
 

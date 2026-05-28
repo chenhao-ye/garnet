@@ -3,6 +3,7 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Tsavorite.core;
 
@@ -12,6 +13,13 @@ namespace Garnet.server
     {
         const int SketchSlotSize = 1 << 15;
         const int SketchSlotMask = SketchSlotSize - 1;
+
+        // Records the replay thread applies between flushes of its private running max to the shared
+        // sketchMaxValue. Batching the flush keeps the reader-read sketchMaxValue cache line stable
+        // between flushes instead of being invalidated on every replayed record. Configured via
+        // serverOptions.AofReplayFlushFreq (1 = flush every record, i.e. no batching).
+        readonly int flushFreq;
+
         readonly int sketchShift;  // physicalSublogShift + replayTaskShift
 
         readonly long[] sketch = new long[SketchSlotSize];
@@ -20,9 +28,28 @@ namespace Garnet.server
         readonly SemaphoreSlim updateSignal = new(0);
         int waiterCount;
 
-        public readonly long Max => sketchMaxValue;
+        // Per-sublog single-writer accumulator, separately allocated so the replay thread's per-record
+        // writes to it do not invalidate the cache line holding sketchMaxValue (which the reader reads).
+        readonly WriterState writer = new();
 
-        public VirtualSublogReplayState(int sketchShift)
+        // Padded to 128 bytes with the data fields placed in the middle so that adjacent heap
+        // allocations (e.g. neighbouring sublogs' WriterStates) cannot share the cache line holding
+        // localMax/flushCounter -- preventing inter-replay-thread false sharing. 128 bytes also
+        // covers the x86 adjacent-line prefetcher; matches the BCL false-sharing-padding convention.
+        [StructLayout(LayoutKind.Explicit, Size = 128)]
+        sealed class WriterState
+        {
+            [FieldOffset(64)] public long localMax;
+            [FieldOffset(72)] public int flushCounter;
+        }
+
+        // True running max: the flushed value or the not-yet-flushed accumulator, whichever is larger.
+        // The hot reader path reads the sketchMaxValue field directly (GetFrontierSequenceNumber); this
+        // property is used only off the hot path (drift detection, recovery), where the un-flushed max
+        // must remain visible for correctness.
+        public readonly long Max => Math.Max(sketchMaxValue, writer.localMax);
+
+        public VirtualSublogReplayState(int sketchShift, int flushFreq)
         {
             var size = SketchSlotSize;
             if ((size & (size - 1)) != 0)
@@ -30,6 +57,7 @@ namespace Garnet.server
             Array.Clear(sketch);
             sketchMaxValue = 0;
             this.sketchShift = sketchShift;
+            this.flushFreq = flushFreq;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -74,7 +102,17 @@ namespace Garnet.server
         public void UpdateKeySequenceNumber(long hash, long sequenceNumber)
         {
             _ = Utility.MonotonicUpdate(ref sketch[GetSketchSlot(hash)], sequenceNumber, out _);
-            _ = Utility.MonotonicUpdate(ref sketchMaxValue, sequenceNumber, out _);
+            // Accumulate the sublog max in the private writer state and flush it to the shared
+            // sketchMaxValue only every FlushFreq records. One replay thread per sublog, so the
+            // accumulator needs no synchronization; the flush is atomic to coexist with
+            // UpdateMaxSequenceNumber (e.g. a time-advance on this sublog).
+            if (sequenceNumber > writer.localMax)
+                writer.localMax = sequenceNumber;
+            if (++writer.flushCounter >= flushFreq)
+            {
+                writer.flushCounter = 0;
+                _ = Utility.MonotonicUpdate(ref sketchMaxValue, writer.localMax, out _);
+            }
             SignalAdvanceTime();
         }
 
