@@ -125,11 +125,14 @@ namespace Garnet.server
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void UpdateVirtualSublogKeySequenceNumber(int virtualSublogIdx, long keyHash, long sequenceNumber)
         {
-            // Pause this replay thread when it has run ahead of an active round's target, bounding
-            // drift from the lagging sublogs. Fast path is a single Volatile.Read + compare when no
-            // round is active.
-            replayBarrier.CheckAndWait(vsrs[virtualSublogIdx].Max);
-            vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
+            // Check the barrier only on flush boundaries, not on every record. Between flushes the
+            // sublog's sketchMaxValue is constant, so a barrier check before every update is wasted
+            // work -- the leader's frontier cannot cross the target until the next flush.
+            // Net effect: the per-record hot path is one MonotonicUpdate plus a counter increment;
+            // the barrier check (and its cross-thread Volatile.Read of currentRound) amortizes to
+            // once per flushFreq records.
+            if (vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber))
+                replayBarrier.CheckAndWait(vsrs[virtualSublogIdx].Max);
         }
 
         /// <summary>
@@ -163,9 +166,12 @@ namespace Garnet.server
         /// </summary>
         /// <param name="hash"></param>
         /// <param name="replicaReadSessionContext"></param>
+        /// <param name="waiter">Session-owned reusable wakeup primitive; replaced with a fresh
+        /// instance by <see cref="VirtualSublogReplayState.WaitForSequenceNumber"/> on cancel/timeout.</param>
         /// <param name="ct">Cancellation token that aborts the wait when the session ends.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        void VerifyKeyFreshness(long hash, ref ReplicaReadSessionContext replicaReadSessionContext, CancellationToken ct)
+        void VerifyKeyFreshness(long hash, ref ReplicaReadSessionContext replicaReadSessionContext,
+                                ref ConsistentReadWaiter waiter, CancellationToken ct)
         {
             var virtualSublogIdx = (short)appendOnlyFile.Log.GetVirtualSublogIdx(hash);
 
@@ -182,6 +188,7 @@ namespace Garnet.server
                     vsrs[virtualSublogIdx].WaitForSequenceNumber(
                         hash,
                         replicaReadSessionContext.maximumSessionSequenceNumber,
+                        ref waiter,
                         ct,
                         replicaSyncTimeoutMs);
                 }
@@ -225,15 +232,17 @@ namespace Garnet.server
         /// </summary>
         /// <param name="hash"></param>
         /// <param name="replicaReadSessionContext"></param>
+        /// <param name="waiter">Session-owned reusable wakeup primitive.</param>
         /// <param name="ct">Cancellation token that aborts the wait when the session ends.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void BeforeConsistentReadKey(long hash, ref ReplicaReadSessionContext replicaReadSessionContext, CancellationToken ct)
+        public void BeforeConsistentReadKey(long hash, ref ReplicaReadSessionContext replicaReadSessionContext,
+                                            ref ConsistentReadWaiter waiter, CancellationToken ct)
         {
             // Check version
             CheckConsistencyManagerVersion(ref replicaReadSessionContext);
 
             // Verify key freshness
-            VerifyKeyFreshness(hash, ref replicaReadSessionContext, ct);
+            VerifyKeyFreshness(hash, ref replicaReadSessionContext, ref waiter, ct);
         }
 
         /// <summary>
@@ -256,13 +265,15 @@ namespace Garnet.server
         /// </summary>
         /// <param name="key"></param>
         /// <param name="batchReadContext"></param>
+        /// <param name="waiter">Session-owned reusable wakeup primitive.</param>
         /// <param name="ct">Cancellation token that aborts the wait when the session ends.</param>
         /// <param name="hash"></param>
-        public void BeforeConsistentReadKeyBatch(ReadOnlySpan<byte> key, ref ReplicaReadSessionContext batchReadContext, CancellationToken ct, out long hash)
+        public void BeforeConsistentReadKeyBatch(ReadOnlySpan<byte> key, ref ReplicaReadSessionContext batchReadContext,
+                                                 ref ConsistentReadWaiter waiter, CancellationToken ct, out long hash)
         {
             // Verify key freshness
             hash = GarnetLog.HASH(key);
-            VerifyKeyFreshness(hash, ref batchReadContext, ct);
+            VerifyKeyFreshness(hash, ref batchReadContext, ref waiter, ct);
 
             // Keep track of max sequence number to check for updates after batch read.
             batchReadContext.maximumSessionSequenceNumber = Math.Max(
