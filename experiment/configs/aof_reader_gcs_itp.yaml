@@ -31,7 +31,7 @@ base:
     keylength: 8
     valuelength: 8
     dbsize: 10000000
-    aof_gen_pages: 1024
+    aof_gen_pages: 256
     aof_replay_reader: 1
 
 sweep:
