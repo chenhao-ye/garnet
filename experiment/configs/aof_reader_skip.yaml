@@ -23,7 +23,7 @@ base:
     aof_memory_size: 256m
     keylength: 8
     valuelength: 8
-    dbsize: 1000000
+    dbsize: 10000000
     aof_gen_pages: 256
     aof_replay_reader: 1
     aof_reader_skip: true

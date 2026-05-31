@@ -22,7 +22,7 @@ base:
     op_percent: [100]
     keylength: 8
     valuelength: 8
-    dbsize: 1000000
+    dbsize: 10000000
     runtime: 60
     itp: 32768
     disable_console_logger: true

@@ -77,7 +77,7 @@ base:                             # parameters common to every run
     online: true
     op_workload: [SET]
     op_percent: [100]
-    dbsize: 1000000
+    dbsize: 10000000
     runtime: 60
     disable_console_logger: true
   server_params:                  # passed to GarnetServer (omit for no_server)

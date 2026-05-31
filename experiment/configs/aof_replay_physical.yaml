@@ -25,7 +25,7 @@ base:
     aof_memory_size: 256m
     keylength: 8
     valuelength: 8
-    dbsize: 1000000
+    dbsize: 10000000
 
 sweep:
   client_params:
