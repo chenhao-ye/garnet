@@ -1,0 +1,33 @@
+# Experiment: aof_reader_skip
+# Same setup as aof_reader, with --aof-reader-skip enabled so the reader bypasses
+# the consistency wait path. Isolates the consistent-read fast-path cost.
+
+name: aof_reader_skip
+description: "Reader with consistency wait bypassed (--aof-reader-skip); sweep AOF physical sublog count"
+benchmark: aof
+no_server: true
+repeat: 7
+
+affinity:
+  client:
+    numa_node: 0
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 1000000
+    aof_gen_pages: 256
+    aof_replay_reader: 1
+    aof_reader_skip: true
+
+sweep:
+  client_params:
+    aof_physical_sublog_count: [1, 2]

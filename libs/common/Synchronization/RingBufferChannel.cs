@@ -35,7 +35,7 @@ namespace Garnet.common
         [FieldOffset(8)] public long BufferTail;
 
         /// <summary>
-        /// Published write cursor — the highest index the consumer may read.
+        /// Published write cursor -- the highest index the consumer may read.
         /// Written by the producer with release semantics every batchSize writes
         /// (or on Flush / Complete); read by the consumer with acquire semantics.
         /// </summary>
@@ -51,7 +51,7 @@ namespace Garnet.common
     internal struct ConsumerControl
     {
         /// <summary>
-        /// Read cursor — the next index the consumer will read. Written by the
+        /// Read cursor -- the next index the consumer will read. Written by the
         /// consumer with release semantics on each successful read; read by the
         /// producer with acquire semantics when checking for free slots.
         /// </summary>

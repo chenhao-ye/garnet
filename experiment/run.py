@@ -59,6 +59,7 @@ CLIENT_BOOL_PARAMS = {
     "client_hist",
     "aof_bench",
     "disable_prefix_consistency",
+    "aof_reader_skip",
 }
 SERVER_BOOL_PARAMS = {"aof", "aof_null_device", "cluster", "tls", "disable_prefix_consistency"}
 

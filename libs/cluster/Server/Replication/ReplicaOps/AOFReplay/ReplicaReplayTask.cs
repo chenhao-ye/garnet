@@ -14,10 +14,6 @@ namespace Garnet.cluster
 {
     /// <summary>
     /// Slot type carried by the replay <see cref="RingBufferChannel{TRecord}"/>.
-    /// Holds only a pre-header AOF record pointer; payload length is recovered
-    /// on the consumer side. The struct is exactly 8 bytes so that 8 slots fit
-    /// in one 64B cacheline — keep it that way if you extend it (extending will
-    /// break the "one publish = one cacheline" invariant at the default batchSize).
     /// </summary>
     [StructLayout(LayoutKind.Sequential, Size = 8)]
     internal readonly unsafe struct ReplayRecord
@@ -182,7 +178,7 @@ namespace Garnet.cluster
                             replicationManager.ReplicationCheckpointStartOffset[physicalSublogIdx] = replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
                         }
                     }
-                    // Read returned false ⇒ batch completed (or cancellation set the Completed flag).
+                    // Read returned false => batch completed (or cancellation set the Completed flag).
                     replayBatchContext.LeaderFollowerBarrier.SignalCompleted(cts.Token);
                 }
             }

@@ -9,6 +9,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Numerics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
@@ -805,6 +806,12 @@ namespace Garnet
 
             if (AofPhysicalSublogCount > 1 && !EnableFastCommit.GetValueOrDefault())
                 throw new Exception("Cannot use sharded-log without FastCommit!");
+
+            if (!BitOperations.IsPow2(AofPhysicalSublogCount))
+                throw new Exception("AofPhysicalSublogCount must be a power of two so that hash routing can use shift/mask instead of div/mod.");
+
+            if (!BitOperations.IsPow2(AofReplayTaskCount))
+                throw new Exception("AofReplayTaskCount must be a power of two so that virtual-sublog routing can use shift/mask instead of div/mod.");
 
             if (!string.IsNullOrEmpty(AofReadProtocol) && AofReadProtocol.Equals("snapshot", StringComparison.OrdinalIgnoreCase) && AofPhysicalSublogCount > 1)
                 throw new Exception("Cannot use snapshot read protocol with multiple physical AOF sublogs. Snapshot read protocol requires AofPhysicalSublogCount == 1.");

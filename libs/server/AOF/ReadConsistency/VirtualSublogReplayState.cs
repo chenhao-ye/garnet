@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using Tsavorite.core;
 
@@ -11,6 +12,7 @@ namespace Garnet.server
     {
         const int SketchSlotSize = 1 << 15;
         const int SketchSlotMask = SketchSlotSize - 1;
+        readonly int sketchShift;  // physicalSublogShift + replayTaskShift
 
         readonly long[] sketch = new long[SketchSlotSize];
         long sketchMaxValue;
@@ -20,30 +22,36 @@ namespace Garnet.server
 
         public readonly long Max => sketchMaxValue;
 
-        public VirtualSublogReplayState()
+        public VirtualSublogReplayState(int sketchShift)
         {
             var size = SketchSlotSize;
             if ((size & (size - 1)) != 0)
                 throw new InvalidOperationException($"Size ({SketchSlotSize}) must be a power of 2");
             Array.Clear(sketch);
             sketchMaxValue = 0;
+            this.sketchShift = sketchShift;
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        readonly int GetSketchSlot(long hash) => (int)(((ulong)hash >> sketchShift) & SketchSlotMask);
 
         /// <summary>
         /// Gets the current frontier sequence number associated with the specified hash value.
         /// </summary>
         /// <param name="hash">The hash value for which to retrieve the frontier sequence number.</param>
         /// <returns>The frontier sequence number corresponding to the specified hash value.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public readonly long GetFrontierSequenceNumber(long hash)
-            => Math.Max(sketch[hash & SketchSlotMask], sketchMaxValue);
+            => Math.Max(sketch[GetSketchSlot(hash)], sketchMaxValue);
 
         /// <summary>
         /// Gets the sequence number associated with the specified hash key.
         /// </summary>
         /// <param name="hash">The hash value for which to retrieve the sequence number.</param>
         /// <returns>The sequence number corresponding to the given hash key.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public readonly long GetKeySequenceNumber(long hash)
-            => sketch[hash & SketchSlotMask];
+            => sketch[GetSketchSlot(hash)];
 
         /// <summary>
         /// Updates the maximum observed sequence number.
@@ -65,7 +73,7 @@ namespace Garnet.server
         /// current value to have an effect.</param>
         public void UpdateKeySequenceNumber(long hash, long sequenceNumber)
         {
-            _ = Utility.MonotonicUpdate(ref sketch[hash & SketchSlotMask], sequenceNumber, out _);
+            _ = Utility.MonotonicUpdate(ref sketch[GetSketchSlot(hash)], sequenceNumber, out _);
             _ = Utility.MonotonicUpdate(ref sketchMaxValue, sequenceNumber, out _);
             SignalAdvanceTime();
         }
@@ -94,8 +102,10 @@ namespace Garnet.server
         /// </summary>
         /// <param name="hash">The hash value identifying the session whose sequence number is being monitored.</param>
         /// <param name="maximumSessionSequenceNumber">The target sequence number to wait for.</param>
-        /// <param name="ct">A cancellation token that can be used to cancel the wait operation.</param>
-        public void WaitForSequenceNumber(long hash, long maximumSessionSequenceNumber, CancellationToken ct)
+        /// <param name="ct">Cancellation token that aborts the wait when signaled.</param>
+        /// <param name="timeoutMs">Maximum time in milliseconds to wait for a single broadcast wakeup.</param>
+        /// <exception cref="OperationCanceledException">Thrown when ct is canceled or when an iteration times out.</exception>
+        public void WaitForSequenceNumber(long hash, long maximumSessionSequenceNumber, CancellationToken ct, int timeoutMs)
         {
             while (true)
             {
@@ -109,7 +119,8 @@ namespace Garnet.server
 
                 try
                 {
-                    updateSignal.Wait(ct);
+                    if (!updateSignal.Wait(timeoutMs, ct))
+                        throw new OperationCanceledException($"{nameof(WaitForSequenceNumber)} timed out after {timeoutMs}ms");
                 }
                 finally
                 {
