@@ -4,6 +4,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using Tsavorite.core;
 
@@ -96,6 +97,20 @@ namespace Garnet.server
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public readonly long GetKeySequenceNumber(long hash)
             => sketch[GetSketchSlot(hash)];
+
+        /// <summary>
+        /// Issues a temporal prefetch of the sketch slot for the given hash so the post-read update
+        /// finds it resident. The replay thread writes this slot, so an uncached read of it is a
+        /// cross-core coherence miss on the post-read critical path; prefetching here overlaps that
+        /// miss with the store read.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public readonly unsafe void PrefetchKeySequenceNumber(long hash)
+        {
+            if (Sse.IsSupported)
+                fixed (long* p = &sketch[GetSketchSlot(hash)])
+                    Sse.Prefetch0(p);
+        }
 
         /// <summary>
         /// Updates the maximum observed sequence number.

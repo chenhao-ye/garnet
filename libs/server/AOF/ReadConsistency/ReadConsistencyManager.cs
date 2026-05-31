@@ -169,6 +169,9 @@ namespace Garnet.server
         {
             var virtualSublogIdx = (short)appendOnlyFile.Log.GetVirtualSublogIdx(hash);
 
+            // Prefetch the key's sketch slot so the post-read update (AfterConsistentReadKey) finds it resident
+            vsrs[virtualSublogIdx].PrefetchKeySequenceNumber(hash);
+
             // Here we have to wait for replay to catch up
             // Don't have to wait if reading from same sublog or maximumSessionTimestamp is behind the sublog frontier timestamp
             if (replicaReadSessionContext.lastVirtualSublogIdx != -1 && replicaReadSessionContext.lastVirtualSublogIdx != virtualSublogIdx)
