@@ -24,16 +24,10 @@ base:
     aof_memory_size: 256m
     keylength: 8
     valuelength: 8
-    dbsize: 1000000
+    dbsize: 10000000
     disable_prefix_consistency: true
 
 sweep:
   client_params:
     aof_physical_sublog_count: [1, 2, 4, 8, 16, 32, 64]
     threads: [1, 2, 4, 8, 16, 32, 64]
-
-plot:
-  xticks: [1, 8, 16, 32, 64]
-  yticks: [0, 100, 200, 300, 400]
-  legend_separate: true
-  scale: 0.5
