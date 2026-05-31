@@ -14,22 +14,29 @@ namespace Garnet.server
         const int SketchSlotSize = 1 << 15;
         const int SketchSlotMask = SketchSlotSize - 1;
 
-        // Records the replay thread applies between flushes of its private running max to the shared
-        // sketchMaxValue. Batching the flush keeps the reader-read sketchMaxValue cache line stable
-        // between flushes instead of being invalidated on every replayed record. Configured via
+        // Records the replay thread applies between flushes of its private running max to the shared published max.
+        // Batching the flush keeps the reader-read sketchMax cache line stable between
+        // flushes instead of being invalidated on every replayed record. Configured via
         // serverOptions.AofReplayFlushFreq (1 = flush every record, i.e. no batching).
         readonly int flushFreq;
 
         readonly int sketchShift;  // physicalSublogShift + replayTaskShift
 
         readonly long[] sketch = new long[SketchSlotSize];
-        long sketchMaxValue;
+
+        // The published sublog max sequence number. The replay thread writes it (flushing the private
+        // accumulator, and on time-advance) and the reader reads it on the frontier check, so it is
+        // true-shared and bounces between cores. It lives in its own cache-line-isolated object so its
+        // writes never invalidate the reader's immutable sketch / sketchShift fields, and the replay
+        // thread's per-record WriterState writes never invalidate this reader-read value.
+        readonly PublishedMax sketchMax = new();
+
         readonly object @lock = new();
         readonly SemaphoreSlim updateSignal = new(0);
         int waiterCount;
 
         // Per-sublog single-writer accumulator, separately allocated so the replay thread's per-record
-        // writes to it do not invalidate the cache line holding sketchMaxValue (which the reader reads).
+        // writes to it do not invalidate the cache line holding sketchMax (which the reader reads).
         readonly WriterState writer = new();
 
         // Padded to 128 bytes with the data fields placed in the middle so that adjacent heap
@@ -43,11 +50,20 @@ namespace Garnet.server
             [FieldOffset(72)] public int flushCounter;
         }
 
+        // Cache-line-isolated cell for the published max (see sketchMax). 128 bytes with the value in
+        // the middle isolates it from neighbouring allocations and the x86 adjacent-line prefetcher,
+        // matching the WriterState convention.
+        [StructLayout(LayoutKind.Explicit, Size = 128)]
+        sealed class PublishedMax
+        {
+            [FieldOffset(64)] public long value;
+        }
+
         // True running max: the flushed value or the not-yet-flushed accumulator, whichever is larger.
-        // The hot reader path reads the sketchMaxValue field directly (GetFrontierSequenceNumber); this
+        // The hot reader path reads the sketchMax cell directly (GetFrontierSequenceNumber); this
         // property is used only off the hot path (drift detection, recovery), where the un-flushed max
         // must remain visible for correctness.
-        public readonly long Max => Math.Max(sketchMaxValue, writer.localMax);
+        public readonly long Max => Math.Max(sketchMax.value, writer.localMax);
 
         public VirtualSublogReplayState(int sketchShift, int flushFreq)
         {
@@ -55,7 +71,7 @@ namespace Garnet.server
             if ((size & (size - 1)) != 0)
                 throw new InvalidOperationException($"Size ({SketchSlotSize}) must be a power of 2");
             Array.Clear(sketch);
-            sketchMaxValue = 0;
+            sketchMax.value = 0;
             this.sketchShift = sketchShift;
             this.flushFreq = flushFreq;
         }
@@ -70,7 +86,7 @@ namespace Garnet.server
         /// <returns>The frontier sequence number corresponding to the specified hash value.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public readonly long GetFrontierSequenceNumber(long hash)
-            => Math.Max(sketch[GetSketchSlot(hash)], sketchMaxValue);
+            => Math.Max(sketch[GetSketchSlot(hash)], sketchMax.value);
 
         /// <summary>
         /// Gets the sequence number associated with the specified hash key.
@@ -88,7 +104,7 @@ namespace Garnet.server
         /// <param name="sequenceNumber">The sequence number to compare against the current maximum.</param>
         public void UpdateMaxSequenceNumber(long sequenceNumber)
         {
-            _ = Utility.MonotonicUpdate(ref sketchMaxValue, sequenceNumber, out _);
+            _ = Utility.MonotonicUpdate(ref sketchMax.value, sequenceNumber, out _);
             SignalAdvanceTime();
         }
 
@@ -103,7 +119,7 @@ namespace Garnet.server
         {
             _ = Utility.MonotonicUpdate(ref sketch[GetSketchSlot(hash)], sequenceNumber, out _);
             // Accumulate the sublog max in the private writer state and flush it to the shared
-            // sketchMaxValue only every FlushFreq records. One replay thread per sublog, so the
+            // published max only every FlushFreq records. One replay thread per sublog, so the
             // accumulator needs no synchronization; the flush is atomic to coexist with
             // UpdateMaxSequenceNumber (e.g. a time-advance on this sublog).
             if (sequenceNumber > writer.localMax)
@@ -111,7 +127,7 @@ namespace Garnet.server
             if (++writer.flushCounter >= flushFreq)
             {
                 writer.flushCounter = 0;
-                _ = Utility.MonotonicUpdate(ref sketchMaxValue, writer.localMax, out _);
+                _ = Utility.MonotonicUpdate(ref sketchMax.value, writer.localMax, out _);
             }
             SignalAdvanceTime();
         }
