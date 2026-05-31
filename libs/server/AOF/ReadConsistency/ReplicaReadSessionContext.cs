@@ -10,7 +10,7 @@ using Tsavorite.core;
 
 namespace Garnet.server
 {
-    [StructLayout(LayoutKind.Explicit, Size = 26)]
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
     public struct ReplicaReadSessionContext
     {
         /// <summary>
@@ -36,6 +36,14 @@ namespace Garnet.server
         /// </summary>
         [FieldOffset(24)]
         public short lastVirtualSublogIdx;
+
+        /// <summary>
+        /// Per-session cached lower-bound view of each virtual sublog's published max sequence number.
+        /// Lets the freshness check skip reading the constantly-replay-written global published max when
+        /// the cached value already proves freshness. Allocated and reset by CheckConsistencyManagerVersion.
+        /// </summary>
+        [FieldOffset(32)]
+        public long[] cachedSublogMax;
     }
 
     public class ReadSessionState : IDisposable

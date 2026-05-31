@@ -155,6 +155,10 @@ namespace Garnet.server
                 replicaReadSessionContext.sessionVersion = CurrentVersion;
                 replicaReadSessionContext.lastVirtualSublogIdx = -1;
                 replicaReadSessionContext.maximumSessionSequenceNumber = 0;
+                if (replicaReadSessionContext.cachedSublogMax == null)
+                    replicaReadSessionContext.cachedSublogMax = new long[serverOptions.AofVirtualSublogCount];
+                else
+                    Array.Clear(replicaReadSessionContext.cachedSublogMax);
             }
         }
 
@@ -172,21 +176,28 @@ namespace Garnet.server
             // Prefetch the key's sketch slot so the post-read update (AfterConsistentReadKey) finds it resident
             vsrs[virtualSublogIdx].PrefetchKeySequenceNumber(hash);
 
-            // Here we have to wait for replay to catch up
-            // Don't have to wait if reading from same sublog or maximumSessionTimestamp is behind the sublog frontier timestamp
+            // Wait for replay to catch up only when reading a different sublog than the last read:
+            // consecutive same-sublog reads are prefix-consistent by construction.
             if (replicaReadSessionContext.lastVirtualSublogIdx != -1 && replicaReadSessionContext.lastVirtualSublogIdx != virtualSublogIdx)
             {
-                // Optimistic check without lock
-                if (replicaReadSessionContext.maximumSessionSequenceNumber >= GetSublogFrontierSequenceNumber(hash))
+                var maxSessionSeqNum = replicaReadSessionContext.maximumSessionSequenceNumber;
+                if (maxSessionSeqNum >= replicaReadSessionContext.cachedSublogMax[virtualSublogIdx])
                 {
-                    // About to wait. If the replay-side drift is large enough to be worth bounding, install a barrier round
-                    BoundReplayDrift();
+                    // Refresh the cached view from the live published max.
+                    var publishedMax = vsrs[virtualSublogIdx].Max;
+                    replicaReadSessionContext.cachedSublogMax[virtualSublogIdx] = publishedMax;
 
-                    vsrs[virtualSublogIdx].WaitForSequenceNumber(
-                        hash,
-                        replicaReadSessionContext.maximumSessionSequenceNumber,
-                        ct,
-                        replicaSyncTimeoutMs);
+                    if (maxSessionSeqNum >= publishedMax)
+                    {
+                        // About to wait. If the replay-side drift is large enough to be worth bounding, install a barrier round
+                        BoundReplayDrift();
+
+                        vsrs[virtualSublogIdx].WaitForSequenceNumber(
+                            hash,
+                            maxSessionSeqNum,
+                            ct,
+                            replicaSyncTimeoutMs);
+                    }
                 }
             }
 
