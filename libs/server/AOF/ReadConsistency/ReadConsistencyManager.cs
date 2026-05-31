@@ -28,7 +28,7 @@ namespace Garnet.server
         /// </summary>
         readonly int replicaSyncTimeoutMs = (int)serverOptions.ReplicaSyncTimeout.TotalMilliseconds;
 
-        readonly VirtualSublogReplayState[] vsrs = [.. Enumerable.Range(0, serverOptions.AofVirtualSublogCount).Select(_ => new VirtualSublogReplayState(appendOnlyFile.Log.physicalSublogShift + appendOnlyFile.Log.replayTaskShift, serverOptions.AofReplayFlushFreq))];
+        readonly VirtualSublogReplayState[] vsrs = [.. Enumerable.Range(0, serverOptions.AofVirtualSublogCount).Select(_ => new VirtualSublogReplayState(appendOnlyFile.Log.physicalSublogShift + appendOnlyFile.Log.replayTaskShift))];
 
         /// <summary>
         /// Maximum allowed drift (in sequence-number units) between leading and trailing sublog

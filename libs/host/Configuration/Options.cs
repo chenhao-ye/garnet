@@ -217,10 +217,6 @@ namespace Garnet
         [Option("aof-replay-drift-threshold", Required = false, HelpText = "Cross-sublog replay drift, in sequence-number units, a replica reader tolerates before triggering the replay-align barrier. -1 disables the barrier.")]
         public int AofReplayDriftThreshold { get; set; }
 
-        [IntRangeValidation(1, 65536, isRequired: false)]
-        [Option("aof-replay-flush-freq", Required = false, HelpText = "Records the replay thread applies between flushes of its private running max to the shared sketchMaxValue. 1 = flush every record (no batching).")]
-        public int AofReplayFlushFreq { get; set; }
-
         [IntRangeValidation(64, 1 << 20, isRequired: false)]
         [Option("aof-replay-ring-size", Required = false, HelpText = "Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.")]
         public int AofReplayRingSize { get; set; }
@@ -873,7 +869,6 @@ namespace Garnet
                 AofPhysicalSublogCount = AofPhysicalSublogCount,
                 AofReplayTaskCount = AofReplayTaskCount,
                 AofReplayDriftThreshold = AofReplayDriftThreshold,
-                AofReplayFlushFreq = AofReplayFlushFreq,
                 AofReplayRingSize = AofReplayRingSize,
                 AofReplayRingBatch = AofReplayRingBatch,
                 AofTailWitnessFreq = AofTailWitnessFreq,
