@@ -31,7 +31,6 @@ namespace Resp.benchmark
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
                 AofReplayTaskCount = options.AofReplayTaskCount,
                 AofReplayDriftThreshold = options.AofReplayDriftThreshold,
-                AofReplayFlushFreq = options.AofReplayFlushFreq,
                 ReplicationOffsetMaxLag = 0,
                 CheckpointDir = OperatingSystem.IsLinux() ? "/tmp" : null,
             };
@@ -48,6 +47,8 @@ namespace Resp.benchmark
         long total_pages_processed = 0;
         long total_records_replayed = 0;
         long total_records_enqueued = 0;
+
+        CountdownEvent warmupDone;
 
         volatile bool done = false;
 
@@ -89,6 +90,9 @@ namespace Resp.benchmark
         {
             aofGen.BuildKVPairBuffersForRun(threads);
             var workers = new Thread[threads];
+
+            if (options.IsReplayEnabled)
+                warmupDone = new CountdownEvent(threads);
 
             var useReaders = options.IsReplayEnabled && options.AofReplayReader > 0;
             var networkReaders = useReaders && options.Client == ClientType.GarnetClientSession;
@@ -178,19 +182,21 @@ namespace Resp.benchmark
                     }
                 }
 
-                // Start threads.
                 foreach (var worker in workers)
                     worker.Start();
-                if (readers != null)
-                {
-                    foreach (var r in readers)
-                        r.Start();
-                }
 
-                waiter.Set();
+                if (options.IsReplayEnabled)
+                {
+                    warmupDone.Wait();
+                    if (readers != null)
+                        foreach (var r in readers)
+                            r.Start();
+                }
 
                 Stopwatch swatch = new();
                 swatch.Start();
+                waiter.Set();
+
                 if (useReaders)  // replay timestamp must be monotonic => run a single-pass over AOF pages
                 {
                     // Single-pass: the first replay worker to exhaust pages sets `done`
@@ -257,6 +263,7 @@ namespace Resp.benchmark
                 total_records_replayed = 0;
                 total_records_enqueued = 0;
                 total_bytes_processed = 0;
+                total_pages_processed = 0;
                 readerOperationsCompleted = 0;
                 if (readerSessions != null)
                     foreach (var s in readerSessions)
@@ -265,6 +272,8 @@ namespace Resp.benchmark
                     foreach (var c in readerClients)
                         c?.Dispose();
                 waiter.Reset();
+                warmupDone?.Dispose();
+                warmupDone = null;
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
                 Console.WriteLine("------------------------------");
@@ -321,6 +330,40 @@ namespace Resp.benchmark
             => instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager
                 ?.UpdatePhysicalSublogMaxSequenceNumber(physicalSublogIdx, long.MaxValue);
 
+        // Untimed warmup pass: replay this sublog's warmup page-set (one upsert per key, shuffled)
+        // through the same Consume variant as the measured run, so Tsavorite records are allocated,
+        // every key is populated for readers, and the replay JIT is warmed. currentAddress is passed
+        // by ref so the measured pass continues the address sequence (warmup pages occupy [64..W]).
+        unsafe void ReplayWarmup(int threadId, AofBenchType mode, ref long currentAddress)
+        {
+            var pages = aofGen.GetWarmupPageBuffers(threadId);
+            for (var pos = 0; pos < pages.Length; pos++)
+            {
+                var currPage = pages[pos];
+                if (currPage.payloadLength == 0)
+                    continue;
+                fixed (byte* payloadPtr = currPage.payload)
+                {
+                    var nextAddress = currentAddress + currPage.payloadLength;
+                    switch (mode)
+                    {
+                        case AofBenchType.Replay:
+                            aofReplayStream[threadId].Consume(payloadPtr, currPage.payloadLength, currentAddress, nextAddress, isProtected: false);
+                            break;
+                        case AofBenchType.ReplayNoResp:
+                            aofReplayStream[threadId].ConsumeNoResp(payloadPtr, currPage.payloadLength, currentAddress, nextAddress, isProtected: false);
+                            break;
+                        case AofBenchType.ReplayDirect:
+                            aofReplayStream[threadId].ConsumeDirect(payloadPtr, currPage.payloadLength, currentAddress, nextAddress, isProtected: false);
+                            break;
+                        default:
+                            throw new Exception($"ReplayWarmup does not support AofBenchType {mode}");
+                    }
+                    currentAddress = currentAddress == 64 ? currPage.Length : currentAddress + currPage.Length;
+                }
+            }
+        }
+
         unsafe void RunAofReplayBench(int threadId)
         {
             var buffers = aofGen.GetPageBuffers(threadId);
@@ -332,10 +375,12 @@ namespace Resp.benchmark
             var recordsReplayedCount = 0L;
             var singlePass = options.AofReplayReader > 0;
 
-            waiter.Wait();
-
             // Initialize stream for replay
             aofReplayStream[threadId].InitializeReplayStream();
+
+            ReplayWarmup(threadId, AofBenchType.Replay, ref currentAddress);
+            warmupDone.Signal();
+            waiter.Wait();
 
             while (!done)
             {
@@ -381,10 +426,12 @@ namespace Resp.benchmark
             var recordsReplayedCount = 0L;
             var singlePass = options.AofReplayReader > 0;
 
-            waiter.Wait();
-
             // Initialize stream for replay
             aofReplayStream[threadId].InitializeReplayStream();
+
+            ReplayWarmup(threadId, AofBenchType.ReplayNoResp, ref currentAddress);
+            warmupDone.Signal();
+            waiter.Wait();
 
             while (!done)
             {
@@ -430,10 +477,12 @@ namespace Resp.benchmark
             var recordsReplayedCount = 0L;
             var singlePass = options.AofReplayReader > 0;
 
-            waiter.Wait();
-
             // Initialize stream for replay
             aofReplayStream[threadId].InitializeReplayStream();
+
+            ReplayWarmup(threadId, AofBenchType.ReplayDirect, ref currentAddress);
+            warmupDone.Signal();
+            waiter.Wait();
 
             while (!done)
             {

@@ -1,10 +1,11 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using Tsavorite.core;
 
@@ -15,20 +16,20 @@ namespace Garnet.server
         const int SketchSlotSize = 1 << 15;
         const int SketchSlotMask = SketchSlotSize - 1;
 
-        // Records the replay thread applies between flushes of its private running max to the shared
-        // sketchMaxValue. Batching the flush keeps the reader-read sketchMaxValue cache line stable
-        // between flushes instead of being invalidated on every replayed record. Configured via
-        // serverOptions.AofReplayFlushFreq (1 = flush every record, i.e. no batching).
-        readonly int flushFreq;
-
         readonly int sketchShift;  // physicalSublogShift + replayTaskShift
 
         readonly long[] sketch = new long[SketchSlotSize];
-        long sketchMaxValue;
+
+        // The published sublog max sequence number, written by the replay thread on every record (and
+        // on time-advance) and read by the reader on the frontier check, so it is true-shared and
+        // bounces between cores. It lives in its own cache-line-isolated object so its writes never
+        // invalidate the reader's immutable sketch / sketchShift fields.
+        readonly PublishedMax sketchMax = new();
+
         readonly object @lock = new();
 
         // Min-heap of pending readers keyed by their target sequence number. Mutated only under @lock.
-        // The replay thread pops and signals the prefix of waiters whose target sketchMaxValue has
+        // The replay thread pops and signals the prefix of waiters whose target the published max has
         // crossed; cancelled/timed-out waiters are tombstoned via ConsistentReadWaiter.Cancelled and
         // dropped lazily during the next signal pass.
         readonly PriorityQueue<ConsistentReadWaiter, long> waitQueue = new();
@@ -38,36 +39,23 @@ namespace Garnet.server
         // May briefly point at a cancelled tombstone after a timeout/ct; the next signal pass cleans it.
         long minWaiterTarget = long.MaxValue;
 
-        // Per-sublog single-writer accumulator, separately allocated so the replay thread's per-record
-        // writes to it do not invalidate the cache line holding sketchMaxValue (which the reader reads).
-        readonly WriterState writer = new();
-
-        // Padded to 128 bytes with the data fields placed in the middle so that adjacent heap
-        // allocations (e.g. neighbouring sublogs' WriterStates) cannot share the cache line holding
-        // localMax/flushCounter -- preventing inter-replay-thread false sharing. 128 bytes also
-        // covers the x86 adjacent-line prefetcher; matches the BCL false-sharing-padding convention.
+        // Cache-line-isolated cell for the published sketch max
         [StructLayout(LayoutKind.Explicit, Size = 128)]
-        sealed class WriterState
+        sealed class PublishedMax
         {
-            [FieldOffset(64)] public long localMax;
-            [FieldOffset(72)] public int flushCounter;
+            [FieldOffset(64)] public long value;
         }
 
-        // True running max: the flushed value or the not-yet-flushed accumulator, whichever is larger.
-        // The hot reader path reads the sketchMaxValue field directly (GetFrontierSequenceNumber); this
-        // property is used only off the hot path (drift detection, recovery), where the un-flushed max
-        // must remain visible for correctness.
-        public readonly long Max => Math.Max(sketchMaxValue, writer.localMax);
+        public readonly long Max => sketchMax.value;
 
-        public VirtualSublogReplayState(int sketchShift, int flushFreq)
+        public VirtualSublogReplayState(int sketchShift)
         {
             var size = SketchSlotSize;
             if ((size & (size - 1)) != 0)
                 throw new InvalidOperationException($"Size ({SketchSlotSize}) must be a power of 2");
             Array.Clear(sketch);
-            sketchMaxValue = 0;
+            sketchMax.value = 0;
             this.sketchShift = sketchShift;
-            this.flushFreq = flushFreq;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -80,7 +68,7 @@ namespace Garnet.server
         /// <returns>The frontier sequence number corresponding to the specified hash value.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public readonly long GetFrontierSequenceNumber(long hash)
-            => Math.Max(sketch[GetSketchSlot(hash)], sketchMaxValue);
+            => Math.Max(sketch[GetSketchSlot(hash)], sketchMax.value);
 
         /// <summary>
         /// Gets the sequence number associated with the specified hash key.
@@ -92,65 +80,64 @@ namespace Garnet.server
             => sketch[GetSketchSlot(hash)];
 
         /// <summary>
+        /// Issues a temporal prefetch of the sketch slot for the given hash so the post-read update
+        /// finds it resident. The replay thread writes this slot, so an uncached read of it is a
+        /// cross-core coherence miss on the post-read critical path; prefetching here overlaps that
+        /// miss with the store read.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public readonly unsafe void PrefetchKeySequenceNumber(long hash)
+        {
+            if (Sse.IsSupported)
+                Sse.Prefetch0(Unsafe.AsPointer(ref sketch[GetSketchSlot(hash)]));
+        }
+
+        /// <summary>
         /// Updates the maximum observed sequence number.
         /// </summary>
         /// <remarks>Updates are thread-safe and guaranteed to be monotonically increasing.</remarks>
         /// <param name="sequenceNumber">The sequence number to compare against the current maximum.</param>
         public void UpdateMaxSequenceNumber(long sequenceNumber)
         {
-            _ = Utility.MonotonicUpdate(ref sketchMaxValue, sequenceNumber, out _);
+            _ = Utility.MonotonicUpdate(ref sketchMax.value, sequenceNumber, out _);
             SignalIfFrontierAdvanced();
         }
 
         /// <summary>
         /// Updates the sequence number associated with the specified key hash.
-        /// Returns true if this update crossed a flush boundary (sketchMaxValue was advanced and any
-        /// pending readers were signaled). The caller uses the flush-boundary signal to amortize
-        /// expensive cross-thread coordination (barrier checks, reader wakeups) to roughly once
-        /// per <c>flushFreq</c> records.
         /// </summary>
         /// <remarks>Updates are thread-safe and guaranteed to be monotonically increasing.</remarks>
         /// <param name="hash">The hash value identifying the key whose sequence number is to be updated.</param>
         /// <param name="sequenceNumber">The new sequence number to associate with the specified key hash. Must be greater than or equal to the
         /// current value to have an effect.</param>
-        public bool UpdateKeySequenceNumber(long hash, long sequenceNumber)
+        public void UpdateKeySequenceNumber(long hash, long sequenceNumber)
         {
             _ = Utility.MonotonicUpdate(ref sketch[GetSketchSlot(hash)], sequenceNumber, out _);
-            // Accumulate the sublog max in the private writer state and flush it to the shared
-            // sketchMaxValue only every FlushFreq records. One replay thread per sublog, so the
-            // accumulator needs no synchronization; the flush is atomic to coexist with
-            // UpdateMaxSequenceNumber (e.g. a time-advance on this sublog).
-            if (sequenceNumber > writer.localMax)
-                writer.localMax = sequenceNumber;
-            if (++writer.flushCounter >= flushFreq)
-            {
-                writer.flushCounter = 0;
-                _ = Utility.MonotonicUpdate(ref sketchMaxValue, writer.localMax, out _);
-                // Only signal at flush boundaries: between flushes sketchMaxValue is constant and the
-                // gate would skip anyway. A slot-specific satisfaction (a record whose sketch[slot] write
-                // alone would unblock a waiter on that slot) is therefore delayed by at most flushFreq
-                // records, bounded by replicaSyncTimeoutMs.
-                SignalIfFrontierAdvanced();
-                return true;
-            }
-            return false;
+            // Publish the sublog max on every record. The reader's frontier is max(sketch[slot],
+            // sketchMax.value); sketchMax.value is advanced here in lockstep with the slot, so it is
+            // always >= any slot value. A waiter's release condition therefore reduces to the published
+            // max crossing its target (see SignalIfFrontierAdvanced) with no per-slot lag. The published
+            // max lives on its own cache line, so this per-record write does not invalidate the reader's
+            // immutable sketch / sketchShift fields.
+            _ = Utility.MonotonicUpdate(ref sketchMax.value, sequenceNumber, out _);
+            SignalIfFrontierAdvanced();
         }
 
         /// <summary>
-        /// Pops and signals the prefix of waiters whose target sequence number has been crossed by
-        /// the current sketchMaxValue. The fast path (no waiters or smallest target still ahead of
-        /// sketchMaxValue) is lock-free.
+        /// Pops and signals the prefix of waiters whose target sequence number has been crossed by the
+        /// current published max. The fast path (no waiters, or the smallest target still ahead of the
+        /// published max) is lock-free.
         /// </summary>
         void SignalIfFrontierAdvanced()
         {
-            // Fast path: smallest live target is still ahead of sketchMaxValue (or the queue is empty,
-            // in which case minWaiterTarget is long.MaxValue).
-            if (Volatile.Read(ref sketchMaxValue) <= Volatile.Read(ref minWaiterTarget))
+            // Fast path: smallest live target is still ahead of the published max (or the queue is
+            // empty, in which case minWaiterTarget is long.MaxValue).
+            if (Volatile.Read(ref sketchMax.value) <= Volatile.Read(ref minWaiterTarget))
                 return;
 
             lock (@lock)
             {
-                long maxVal = sketchMaxValue;
+                long maxVal = sketchMax.value;
                 while (waitQueue.TryPeek(out var top, out var target))
                 {
                     // Tombstones (cancelled/timed-out waiters) are dropped unconditionally.
@@ -192,7 +179,7 @@ namespace Garnet.server
 
             lock (@lock)
             {
-                // Re-check under @lock — atomic with Enqueue so a signal cannot race in between.
+                // Re-check under @lock -- atomic with Enqueue so a signal cannot race in between.
                 if (maximumSessionSequenceNumber < GetFrontierSequenceNumber(hash))
                     return;
                 waitQueue.Enqueue(waiter, maximumSessionSequenceNumber);
