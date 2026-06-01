@@ -79,8 +79,7 @@ namespace Garnet.server
         public readonly unsafe void PrefetchKeySequenceNumber(long hash)
         {
             if (Sse.IsSupported)
-                fixed (long* p = &sketch[GetSketchSlot(hash)])
-                    Sse.Prefetch0(p);
+                Sse.Prefetch0(Unsafe.AsPointer(ref sketch[GetSketchSlot(hash)]));
         }
 
         /// <summary>
