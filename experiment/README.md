@@ -51,8 +51,8 @@ uv run experiment/run.py online_set online_set_aof online_set_multilog
 
 | Script | Role |
 |--------|------|
-| `check.py` | Static validation of a config against `Resp.benchmark`'s `Options.cs` -- flags unknown params and params that are silently ignored/overridden for the chosen mode. Exits non-zero on any ERROR. |
-| `run.py` | Expands the sweep, launches server + client per run, captures raw output, records the repository's git provenance to `meta.yaml`, then auto-invokes `parse.py`. |
+| `check.py` | Static validation of a config against `Resp.benchmark`'s `Options.cs` -- flags unknown params and params that are silently ignored/overridden for the chosen mode. Also validates the optional `check` section (e.g. `num_cores`) against the machine / affinity. Exits non-zero on any ERROR. |
+| `run.py` | Runs `check.py` first (aborts on error), expands the sweep, launches server + client per run, captures raw output, records the repository's git provenance to `meta.yaml`, then auto-invokes `parse.py`. |
 | `parse.py` | Parses each run's `benchmark/output.txt` into per-metric stats (median/mean/std/min/max), writes `result.yaml` (with git provenance from `meta.yaml`) and a human-readable `summary.txt`. |
 | `plot.py` | Renders a figure from a `plot_configs/<name>.yaml`, pulling series out of one or more experiments' `result.yaml`. |
 | `config.py` | Shared library (not a CLI): config loading, sweep expansion, run-name encoding, path resolution. |
@@ -100,6 +100,7 @@ sweep:                            # Cartesian product across listed dimensions
 | `no_server` | `false` | If true, the server is not launched (e.g. the embedded `InProc` AofBench creates its own). `server_params` are then ignored (check.py warns). |
 | `repeat` | `1` | Run each combo `repeat` times; `parse.py` splits the samples into `repeat` chunks and emits one median row per chunk. |
 | `affinity` | none | NUMA pinning per role (see below). |
+| `check` | none | Optional pre-run requirements validated by `check.py` (currently `num_cores`); see below. |
 | `prepare` | none | An extra benchmark invocation run *before* the main benchmark of every run (e.g. to preload keys). |
 | `base` | **required** | `client_params` (required) and `server_params` (optional) shared by all runs. |
 | `sweep` *or* `sweep_combo` | none | The parameter sweep (mutually exclusive). |
@@ -157,9 +158,30 @@ sibling NUMA nodes under sub-NUMA clustering) without oversubscribing one node.
 `cpus` (a `numactl --physcpubind` string) takes precedence over `numa_node`
 for CPU binding; memory is always bound to `numa_node`.
 
+### Check requirements
+
+An optional `check` section (placed after `affinity`) declares machine
+requirements that `check.py` verifies before the experiment runs:
+
+```yaml
+check:
+  num_cores: 64   # need at least 64 logical CPUs
+```
+
+| Key | Meaning |
+|-----|---------|
+| `num_cores` | Minimum logical CPUs the run needs. The available count is the **client** affinity binding when set (its `cpus` list, or the CPUs of its `numa_node`(s) read from `/sys/.../node*/cpulist`), otherwise the whole machine (`os.cpu_count()`); `check.py` errors if it is smaller. |
+
+The section is optional -- omit it to skip the requirement. Unknown keys or a
+non-positive `num_cores` are errors. Because `run.py` runs `check.py` before each
+run (see below) and aborts on any error, an under-provisioned machine fails fast
+instead of wasting build/run time.
+
 ## `run.py` Lifecycle
 
-Per invocation, for each config:
+Per invocation, for each config, `run.py` first runs `check.py` and aborts on any
+ERROR (unknown params, mode mismatches, or unmet `check` requirements such as
+`num_cores`). It then:
 
 1. **Kill leftovers** -- `pkill -f` the server and benchmark project stems.
 2. **Wipe results** -- `rm -rf result/<name>/` then recreate it (no stale data).
