@@ -31,6 +31,7 @@ namespace Resp.benchmark
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
                 AofReplayTaskCount = options.AofReplayTaskCount,
                 AofReplayDriftThreshold = options.AofReplayDriftThreshold,
+                AofBarrierSpinUs = options.AofBarrierSpinUs,
                 ReplicationOffsetMaxLag = 0,
                 CheckpointDir = OperatingSystem.IsLinux() ? "/tmp" : null,
             };
