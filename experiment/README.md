@@ -15,12 +15,12 @@ plot_configs/<name>.yaml ──plot.py──> result/<name>/<name>.pdf + .png
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) -- runs the scripts and manages the Python
-  deps (`matplotlib`, `numpy`, `pyyaml`) declared in `code/pyproject.toml`.
+  deps (`matplotlib`, `numpy`, `pyyaml`) declared in `pyproject.toml`.
   Each script has a `#!/usr/bin/env -S uv run` shebang.
 - .NET SDK (net10.0) -- to build and run `Resp.benchmark` and `GarnetServer`.
 - `numactl` -- only if a config uses the `affinity` block (NUMA pinning).
 
-All commands below are run from the repo root (`code/`).
+All commands below are run from the repository root.
 
 ## Quick Start
 
@@ -52,8 +52,8 @@ uv run experiment/run.py online_set online_set_aof online_set_multilog
 | Script | Role |
 |--------|------|
 | `check.py` | Static validation of a config against `Resp.benchmark`'s `Options.cs` -- flags unknown params and params that are silently ignored/overridden for the chosen mode. Exits non-zero on any ERROR. |
-| `run.py` | Expands the sweep, launches server + client per run, captures raw output, then auto-invokes `parse.py`. |
-| `parse.py` | Parses each run's `benchmark/output.txt` into per-metric stats (median/mean/std/min/max), writes `result.yaml` and a human-readable `summary.txt`. |
+| `run.py` | Expands the sweep, launches server + client per run, captures raw output, records the repository's git provenance to `meta.yaml`, then auto-invokes `parse.py`. |
+| `parse.py` | Parses each run's `benchmark/output.txt` into per-metric stats (median/mean/std/min/max), writes `result.yaml` (with git provenance from `meta.yaml`) and a human-readable `summary.txt`. |
 | `plot.py` | Renders a figure from a `plot_configs/<name>.yaml`, pulling series out of one or more experiments' `result.yaml`. |
 | `config.py` | Shared library (not a CLI): config loading, sweep expansion, run-name encoding, path resolution. |
 | `plot_util.py` / `plot_style.py` | Shared plotting helpers: `result.yaml` loaders, figure factory, save/legend helpers, and the color/marker/label style maps. |
@@ -145,10 +145,15 @@ optionally prefixed with `numactl` when affinity is set.
 ```yaml
 affinity:
   server:  { numa_node: 0 }              # --cpunodebind=0 --membind=0
-  client:  { numa_node: 1, cpus: "8-15" }  # --physcpubind=8-15 --membind=1
+  client:  { numa_node: "0,1" }          # --cpunodebind=0,1 --membind=0,1 (multi-node)
+  # client:  { numa_node: 1, cpus: "8-15" }  # --physcpubind=8-15 --membind=1
   # prepare: defaults to the client spec if omitted
 ```
 
+`numa_node` is the `numactl` node spec for both `--cpunodebind` and `--membind`:
+an int for one node (`0`) or a node-list string for several (`"0,1"`, `"0-1"`).
+Use the multi-node form to give a role a whole socket's worth of cores (e.g. two
+sibling NUMA nodes under sub-NUMA clustering) without oversubscribing one node.
 `cpus` (a `numactl --physcpubind` string) takes precedence over `numa_node`
 for CPU binding; memory is always bound to `numa_node`.
 
@@ -158,7 +163,9 @@ Per invocation, for each config:
 
 1. **Kill leftovers** -- `pkill -f` the server and benchmark project stems.
 2. **Wipe results** -- `rm -rf result/<name>/` then recreate it (no stale data).
-3. **Snapshot** the experiment config to `result/<name>/config.yaml`.
+3. **Snapshot** the experiment config to `result/<name>/config.yaml`, and capture
+   the repository's git provenance (commit / branch / dirty, at run time) to
+   `result/<name>/meta.yaml`.
 4. **Expand** the sweep into runs.
 5. For each run:
    a. Launch the server (skipped if `no_server`), wait until its
@@ -193,6 +200,9 @@ For each metric column, `parse.py` records `median`, `mean`, `std`, `min`,
 - **`result.yaml`** -- machine-readable; consumed by `plot.py`. Shape:
   ```yaml
   experiment_name: online_set
+  git_commit: 36080c93...           # repo HEAD at run time (from meta.yaml)
+  git_branch: chenhaoy/wakeup-optim
+  git_dirty: true                   # tracked files differed from HEAD at run time
   sweep_params: { client.threads: [1, 2, 4, ...] }
   warmup_rows_discarded: 5
   runs:
@@ -203,8 +213,17 @@ For each metric column, `parse.py` records `median`, `mean`, `std`, `min`,
       samples: [ {...}, ... ]
       stats: { tpt_mops: {median: ..., mean: ..., std: ...}, ... }
   ```
+  The `git_*` keys are copied from `meta.yaml`; if it is absent (results produced
+  before this feature), they are omitted entirely so the format stays backward
+  compatible.
+- **`meta.yaml`** -- run-time provenance written by `run.py`: `git_commit`,
+  `git_branch`, and `git_dirty` for the repository (the source that built
+  the binary). Persisted so a later standalone `parse.py` reports the commit that
+  *produced* the results, not the current HEAD. Any field is `null` if git was
+  unavailable; `git_dirty` ignores untracked files (here: configs/docs/`result/`).
 - **`summary.txt`** -- human-readable text table, grouped by benchmark mode,
-  one row per run with the swept params and headline metrics.
+  one row per run with the swept params and headline metrics. Its header echoes
+  the provenance, e.g. `Git: chenhaoy/wakeup-optim @ 36080c93e39c (dirty)`.
 
 ## `result/` Layout
 
@@ -212,8 +231,9 @@ For each metric column, `parse.py` records `median`, `mean`, `std`, `min`,
 result/
   <experiment>/
     config.yaml             # snapshot of the experiment config (by run.py)
-    result.yaml             # aggregated stats (by parse.py)
-    summary.txt             # text table (by parse.py)
+    meta.yaml               # repo git provenance captured at run time (by run.py)
+    result.yaml             # aggregated stats + git provenance (by parse.py)
+    summary.txt             # text table, git provenance in header (by parse.py)
     <run_name>/             # e.g. c.threads.16
       _server.log           # GarnetServer stdout/stderr for this run
       config.yaml           # resolved params + exact commands for this run
