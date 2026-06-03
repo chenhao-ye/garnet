@@ -81,6 +81,7 @@ class ExperimentSpec:
     repeat: int
     combos: list[dict[str, dict[str, Any]]]
     affinity: Affinity
+    check: dict[str, Any]
     config: dict[str, Any]
     config_path: Path
 
@@ -149,6 +150,16 @@ def _parse_affinity(config: dict[str, Any]) -> Affinity:
     return Affinity(server=server, client=client, prepare=prepare)
 
 
+def _parse_check(config: dict[str, Any]) -> dict[str, Any]:
+    """The optional 'check' section: pre-run requirements validated by check.py."""
+    raw = config.get("check")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"'check' must be a mapping, got {type(raw).__name__}")
+    return dict(raw)
+
+
 def load_experiment_spec(
     config_path: str | Path,
     *,
@@ -195,6 +206,7 @@ def load_experiment_spec(
         repeat=int(config.get("repeat", 1)),
         combos=combos,
         affinity=_parse_affinity(config),
+        check=_parse_check(config),
         config=config,
         config_path=path,
     )

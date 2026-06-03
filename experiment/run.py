@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 import yaml
+from check import main as check_main
 from config import (
     REPO_ROOT,
     Affinity,
@@ -370,15 +371,16 @@ def execute_run(
 
 def _run_one(config: str) -> None:
     spec = load_experiment_spec(config_path_for(config), default_name=Path(config).stem)
+    # Validate the config (and machine/affinity core requirements) before any work
+    if check_main([config]) != 0:
+        raise SystemExit(f"check reported errors for '{config}'; aborting run")
     if not spec.prepare_params:
         logger.warning("empty prepare.client_params")
     if not spec.base_server_params:
         logger.warning("empty base.server_params")
 
     if spec.affinity.any_set() and shutil.which("numactl") is None:
-        raise RuntimeError(
-            "affinity configured in YAML but 'numactl' is not on PATH"
-        )
+        raise RuntimeError("affinity configured in YAML but 'numactl' is not on PATH")
 
     exp_dir = result_dir(spec.name)
 
