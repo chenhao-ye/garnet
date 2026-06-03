@@ -36,7 +36,9 @@ SWEEP_PARAM_PREFIXES = {"client_params": "client", "server_params": "server"}
 
 @dataclass(frozen=True)
 class AffinitySpec:
-    numa_node: int
+    # numa_node is the numactl node spec for --cpunodebind/--membind: an int for a
+    # single node (e.g. 0) or a node-list string for several (e.g. "0,1", "0-1").
+    numa_node: int | str
     cpus: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -105,9 +107,18 @@ def _parse_affinity_block(role: str, block: Any) -> AffinitySpec | None:
     if "numa_node" not in block:
         raise ValueError(f"affinity.{role} requires 'numa_node'")
     numa_node = block["numa_node"]
-    if not isinstance(numa_node, int) or isinstance(numa_node, bool):
+    if isinstance(numa_node, bool) or not isinstance(numa_node, (int, str)):
         raise ValueError(
-            f"affinity.{role}.numa_node must be an int, got {type(numa_node).__name__}"
+            f"affinity.{role}.numa_node must be an int or a numactl node-list "
+            f'string (e.g. 0 or "0,1"), got {type(numa_node).__name__}'
+        )
+    if isinstance(numa_node, int):
+        if numa_node < 0:
+            raise ValueError(f"affinity.{role}.numa_node must be >= 0, got {numa_node}")
+    elif not re.fullmatch(r"\d+([,-]\d+)*", numa_node):
+        raise ValueError(
+            f"affinity.{role}.numa_node string must be a numactl node list "
+            f'like "0,1" or "0-1", got {numa_node!r}'
         )
     cpus = block.get("cpus")
     if cpus is not None and not isinstance(cpus, str):
