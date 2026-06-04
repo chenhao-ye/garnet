@@ -303,7 +303,6 @@ def validate_aof_mode(
         "batchsize",
         "skipload",
         "pool",
-        "itp",
         "sync",
         "op_workload",
         "op_percent",
@@ -354,6 +353,22 @@ def validate_aof_mode(
                 "WARNING",
                 scope,
                 f"embedded InProc AOF bench ignores connection parameter(s): {format_values(ignored)}",
+            )
+
+    # 'itp' pipelines GETs only on the GarnetClientSession reader path (AofBench sizes the
+    # client send buffer by it and runs the parallel reader loop when itp > 1); it has no
+    # effect for InProc readers or when no reader threads run.
+    if "itp" in specified_keys:
+        reader_counts = param_values(base_params, sweep_client_params, "aof_replay_reader")
+        gcs_reader_possible = "GarnetClientSession" in client_values and any(
+            (count or 0) > 0 for count in reader_counts
+        )
+        if not gcs_reader_possible:
+            add_issue(
+                issues,
+                "WARNING",
+                scope,
+                "'itp' only affects GarnetClientSession reader threads (aof_replay_reader > 0); it is ignored for this config",
             )
 
 
