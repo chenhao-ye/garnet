@@ -1,0 +1,36 @@
+# Experiment: aof_reader_pages
+# Sensitivity of aof_reader to aof_gen_pages now that warmup covers all keys.
+# 2-D Cartesian sweep: physical sublog count (1-16) x aof_gen_pages (128-1024).
+# With warmup pre-populating every key, aof_gen_pages should only size the measured
+# window, so replay throughput / reader latency are expected to be ~flat across page
+# counts; this run checks that (and whether 128 pages is too short to be stable).
+# Largest cell 16 x 1024 x 4m ~= 64 GB of pre-generated pages, which fits on numa:0.
+
+name: aof_reader_pages
+description: "aof_reader sensitivity to aof_gen_pages: sublog count (1-16) x gen pages (128-1024)"
+benchmark: aof
+no_server: true
+repeat: 7
+
+affinity:
+  client:
+    numa_node: 0
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    aof_replay_reader: 1
+
+sweep:
+  client_params:
+    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32]
+    aof_gen_pages: [128, 256, 512, 1024]

@@ -405,14 +405,28 @@ def _render_text_table(rows: list[dict[str, str]], columns: list[str]) -> str:
     return "\n".join([header, separator, *body])
 
 
+def _git_summary_line(git_meta: dict | None) -> str:
+    git_meta = git_meta or {}
+    commit = git_meta.get("git_commit")
+    if commit is None:
+        return "Git: unknown"
+    dirty = git_meta.get("git_dirty")
+    state = "dirty" if dirty else "clean" if dirty is not None else "unknown"
+    return f"Git: {git_meta.get('git_branch')} @ {commit[:12]} ({state})"
+
+
 def _write_summary_file(
-    exp_dir: Path, experiment_name: str, warmup: int, runs: dict
+    exp_dir: Path,
+    experiment_name: str,
+    warmup: int,
+    runs: dict,
+    git_meta: dict | None = None,
 ) -> Path:
     grouped_rows = _build_summary_rows(runs)
-    lines = [
-        f"Experiment: {experiment_name}",
-        f"Warmup rows discarded: {warmup}",
-    ]
+    lines = [f"Experiment: {experiment_name}"]
+    if git_meta:
+        lines.append(_git_summary_line(git_meta))
+    lines.append(f"Warmup rows discarded: {warmup}")
 
     benchmark_column_order = {
         "aof": [
@@ -522,6 +536,17 @@ def _collect_runs(run_dirs: list, warmup: int) -> tuple[dict, dict[str, list]]:
     return runs, sweep_params
 
 
+def _read_meta(exp_dir: Path) -> dict:
+    """Read run-time provenance (git) persisted by run.py. Empty dict if meta.yaml is
+    absent -- e.g. results produced before this feature -- in which case callers skip
+    the git fields entirely for backward compatibility."""
+    meta_path = exp_dir / "meta.yaml"
+    if not meta_path.exists():
+        return {}
+    with open(meta_path) as f:
+        return yaml.safe_load(f) or {}
+
+
 def _process_one(config: str, warmup: int) -> None:
     spec = load_experiment_spec(config_path_for(config), default_name=Path(config).stem)
 
@@ -537,17 +562,23 @@ def _process_one(config: str, warmup: int) -> None:
 
     runs, sweep_params = _collect_runs(run_dirs, warmup)
 
+    git_meta = _read_meta(exp_dir)
+
     result = {
         "experiment_name": spec.name,
         "sweep_params": sweep_params,
         "warmup_rows_discarded": warmup,
         "runs": runs,
     }
+    if git_meta:
+        result["git_commit"] = git_meta.get("git_commit")
+        result["git_branch"] = git_meta.get("git_branch")
+        result["git_dirty"] = git_meta.get("git_dirty")
 
     out_path = exp_dir / "result.yaml"
     with open(out_path, "w") as f:
         yaml.dump(result, f)
-    summary_path = _write_summary_file(exp_dir, spec.name, warmup, runs)
+    summary_path = _write_summary_file(exp_dir, spec.name, warmup, runs, git_meta)
     print(f"\nResult written to: {out_path}")
     print(f"Summary written to: {summary_path}")
 

@@ -7,6 +7,7 @@ using System.Text;
 using Garnet.server;
 using HdrHistogram;
 using Tsavorite.core;
+using GarnetClientSession = Garnet.client.GarnetClientSession;
 
 namespace Resp.benchmark
 {
@@ -29,6 +30,7 @@ namespace Resp.benchmark
                 CommitFrequencyMs = options.CommitFrequencyMs,
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
                 AofReplayTaskCount = options.AofReplayTaskCount,
+                AofReplayDriftThreshold = options.AofReplayDriftThreshold,
                 ReplicationOffsetMaxLag = 0,
                 CheckpointDir = OperatingSystem.IsLinux() ? "/tmp" : null,
             };
@@ -45,6 +47,8 @@ namespace Resp.benchmark
         long total_pages_processed = 0;
         long total_records_replayed = 0;
         long total_records_enqueued = 0;
+
+        CountdownEvent warmupDone;
 
         volatile bool done = false;
 
@@ -87,8 +91,13 @@ namespace Resp.benchmark
             aofGen.BuildKVPairBuffersForRun(threads);
             var workers = new Thread[threads];
 
+            if (options.IsReplayEnabled)
+                warmupDone = new CountdownEvent(threads);
+
             var useReaders = options.IsReplayEnabled && options.AofReplayReader > 0;
+            var networkReaders = useReaders && options.Client == ClientType.GarnetClientSession;
             RespServerSession[] readerSessions = null;
+            GarnetClientSession[] readerClients = null;
             LongHistogram[] readerHistograms = null;
 
             Console.WriteLine($"Epoch instance count:{LightEpoch.ActiveInstanceCount()}");
@@ -112,10 +121,28 @@ namespace Resp.benchmark
                     if (options.AofReaderSkip)
                         for (var i = 0; i < options.AofPhysicalSublogCount; i++)
                             RaiseSublogFrontierToMax(i);
-                    readerSessions = instance.server.GetRespSessions(options.AofReplayReader);
                     readerHistograms = new LongHistogram[options.AofReplayReader];
                     for (var i = 0; i < options.AofReplayReader; i++)
                         readerHistograms[i] = new LongHistogram(HistogramLowerBound, HistogramUpperBound, HistogramSigFigs);
+                    if (networkReaders)
+                    {
+                        // Size the send buffer to hold a full intra-thread-parallel batch of GET commands.
+                        var sendBufferSize = Math.Max(1 << 17, 64 * options.IntraThreadParallelism);
+                        readerClients = new GarnetClientSession[options.AofReplayReader];
+                        for (var i = 0; i < options.AofReplayReader; i++)
+                        {
+                            var c = new GarnetClientSession(instance.endpoint, new(sendBufferSize));
+                            c.Connect();
+                            // This node is set to a replica role; allow reads on it.
+                            c.Execute("READONLY");
+                            c.CompletePending();
+                            readerClients[i] = c;
+                        }
+                    }
+                    else
+                    {
+                        readerSessions = instance.server.GetRespSessions(options.AofReplayReader);
+                    }
                 }
 
                 // Run the experiment.
@@ -139,25 +166,37 @@ namespace Resp.benchmark
                     for (var idx = 0; idx < options.AofReplayReader; idx++)
                     {
                         var x = idx;
-                        var session = readerSessions[idx];
                         var hist = readerHistograms[idx];
-                        readers[idx] = new Thread(() => RunReader(x, session, hist));
+                        if (networkReaders)
+                        {
+                            var client = readerClients[idx];
+                            readers[idx] = options.IntraThreadParallelism > 1
+                                ? new Thread(() => RunReaderGarnetClientSessionParallel(x, client, options.IntraThreadParallelism, hist))
+                                : new Thread(() => RunReaderGarnetClientSession(x, client, hist));
+                        }
+                        else
+                        {
+                            var session = readerSessions[idx];
+                            readers[idx] = new Thread(() => RunReader(x, session, hist));
+                        }
                     }
                 }
 
-                // Start threads.
                 foreach (var worker in workers)
                     worker.Start();
-                if (readers != null)
-                {   
-                    foreach (var r in readers)
-                        r.Start();
-                }
 
-                waiter.Set();
+                if (options.IsReplayEnabled)
+                {
+                    warmupDone.Wait();
+                    if (readers != null)
+                        foreach (var r in readers)
+                            r.Start();
+                }
 
                 Stopwatch swatch = new();
                 swatch.Start();
+                waiter.Set();
+
                 if (useReaders)  // replay timestamp must be monotonic => run a single-pass over AOF pages
                 {
                     // Single-pass: the first replay worker to exhaust pages sets `done`
@@ -224,11 +263,17 @@ namespace Resp.benchmark
                 total_records_replayed = 0;
                 total_records_enqueued = 0;
                 total_bytes_processed = 0;
+                total_pages_processed = 0;
                 readerOperationsCompleted = 0;
                 if (readerSessions != null)
                     foreach (var s in readerSessions)
                         s?.Dispose();
+                if (readerClients != null)
+                    foreach (var c in readerClients)
+                        c?.Dispose();
                 waiter.Reset();
+                warmupDone?.Dispose();
+                warmupDone = null;
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
                 Console.WriteLine("------------------------------");
@@ -285,6 +330,40 @@ namespace Resp.benchmark
             => instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager
                 ?.UpdatePhysicalSublogMaxSequenceNumber(physicalSublogIdx, long.MaxValue);
 
+        // Untimed warmup pass: replay this sublog's warmup page-set (one upsert per key, shuffled)
+        // through the same Consume variant as the measured run, so Tsavorite records are allocated,
+        // every key is populated for readers, and the replay JIT is warmed. currentAddress is passed
+        // by ref so the measured pass continues the address sequence (warmup pages occupy [64..W]).
+        unsafe void ReplayWarmup(int threadId, AofBenchType mode, ref long currentAddress)
+        {
+            var pages = aofGen.GetWarmupPageBuffers(threadId);
+            for (var pos = 0; pos < pages.Length; pos++)
+            {
+                var currPage = pages[pos];
+                if (currPage.payloadLength == 0)
+                    continue;
+                fixed (byte* payloadPtr = currPage.payload)
+                {
+                    var nextAddress = currentAddress + currPage.payloadLength;
+                    switch (mode)
+                    {
+                        case AofBenchType.Replay:
+                            aofReplayStream[threadId].Consume(payloadPtr, currPage.payloadLength, currentAddress, nextAddress, isProtected: false);
+                            break;
+                        case AofBenchType.ReplayNoResp:
+                            aofReplayStream[threadId].ConsumeNoResp(payloadPtr, currPage.payloadLength, currentAddress, nextAddress, isProtected: false);
+                            break;
+                        case AofBenchType.ReplayDirect:
+                            aofReplayStream[threadId].ConsumeDirect(payloadPtr, currPage.payloadLength, currentAddress, nextAddress, isProtected: false);
+                            break;
+                        default:
+                            throw new Exception($"ReplayWarmup does not support AofBenchType {mode}");
+                    }
+                    currentAddress = currentAddress == 64 ? currPage.Length : currentAddress + currPage.Length;
+                }
+            }
+        }
+
         unsafe void RunAofReplayBench(int threadId)
         {
             var buffers = aofGen.GetPageBuffers(threadId);
@@ -296,10 +375,12 @@ namespace Resp.benchmark
             var recordsReplayedCount = 0L;
             var singlePass = options.AofReplayReader > 0;
 
-            waiter.Wait();
-
             // Initialize stream for replay
             aofReplayStream[threadId].InitializeReplayStream();
+
+            ReplayWarmup(threadId, AofBenchType.Replay, ref currentAddress);
+            warmupDone.Signal();
+            waiter.Wait();
 
             while (!done)
             {
@@ -326,6 +407,9 @@ namespace Resp.benchmark
 
             if (singlePass)
                 RaiseSublogFrontierToMax(threadId);
+            // This replay thread is done; release any active barrier round so it does not strand a peer
+            // blocked waiting for this thread to arrive.
+            instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Disable();
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -342,10 +426,12 @@ namespace Resp.benchmark
             var recordsReplayedCount = 0L;
             var singlePass = options.AofReplayReader > 0;
 
-            waiter.Wait();
-
             // Initialize stream for replay
             aofReplayStream[threadId].InitializeReplayStream();
+
+            ReplayWarmup(threadId, AofBenchType.ReplayNoResp, ref currentAddress);
+            warmupDone.Signal();
+            waiter.Wait();
 
             while (!done)
             {
@@ -372,6 +458,9 @@ namespace Resp.benchmark
 
             if (singlePass)
                 RaiseSublogFrontierToMax(threadId);
+            // This replay thread is done; release any active barrier round so it does not strand a peer
+            // blocked waiting for this thread to arrive.
+            instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Disable();
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -388,10 +477,12 @@ namespace Resp.benchmark
             var recordsReplayedCount = 0L;
             var singlePass = options.AofReplayReader > 0;
 
-            waiter.Wait();
-
             // Initialize stream for replay
             aofReplayStream[threadId].InitializeReplayStream();
+
+            ReplayWarmup(threadId, AofBenchType.ReplayDirect, ref currentAddress);
+            warmupDone.Signal();
+            waiter.Wait();
 
             while (!done)
             {
@@ -418,6 +509,9 @@ namespace Resp.benchmark
 
             if (singlePass)
                 RaiseSublogFrontierToMax(threadId);
+            // This replay thread is done; release any active barrier round so it does not strand a peer
+            // blocked waiting for this thread to arrive.
+            instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Disable();
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -458,6 +552,55 @@ namespace Resp.benchmark
                     prev = now;
                     opsCompleted++;
                 }
+            }
+            _ = Interlocked.Add(ref readerOperationsCompleted, opsCompleted);
+        }
+
+        // Network reader: one GET in flight per thread over a real TCP connection. Records per-op
+        // round-trip latency. Aggregate throughput scales with the number of reader threads.
+        void RunReaderGarnetClientSession(int threadId, GarnetClientSession client, LongHistogram hist)
+        {
+            var keys = aofGen.GlobalKeys;
+            var keyLen = aofGen.KeyLen;
+            var keyCount = keys.Length / keyLen;
+            var rng = new Random(0xCAFE + threadId);
+            var opsCompleted = 0L;
+
+            waiter.Wait();
+
+            while (!done)
+            {
+                var key = Encoding.ASCII.GetString(keys, rng.Next(keyCount) * keyLen, keyLen);
+                var start = Stopwatch.GetTimestamp();
+                client.Execute("GET", key);
+                client.CompletePending(true);
+                hist.RecordValue(Stopwatch.GetTimestamp() - start);
+                opsCompleted++;
+            }
+            _ = Interlocked.Add(ref readerOperationsCompleted, opsCompleted);
+        }
+
+        // Network reader with intra-thread parallelism: keeps `parallel` GETs in flight per thread,
+        // then waits for the batch (unless --burst). Records per-batch latency.
+        void RunReaderGarnetClientSessionParallel(int threadId, GarnetClientSession client, int parallel, LongHistogram hist)
+        {
+            var keys = aofGen.GlobalKeys;
+            var keyLen = aofGen.KeyLen;
+            var keyCount = keys.Length / keyLen;
+            var rng = new Random(0xCAFE + threadId);
+            var opsCompleted = 0L;
+            var wait = !options.Burst;
+
+            waiter.Wait();
+
+            while (!done)
+            {
+                var start = Stopwatch.GetTimestamp();
+                for (var i = 0; i < parallel; i++)
+                    client.ExecuteBatch("GET", Encoding.ASCII.GetString(keys, rng.Next(keyCount) * keyLen, keyLen));
+                client.CompletePending(wait);
+                hist.RecordValue(Stopwatch.GetTimestamp() - start);
+                opsCompleted += parallel;
             }
             _ = Interlocked.Add(ref readerOperationsCompleted, opsCompleted);
         }

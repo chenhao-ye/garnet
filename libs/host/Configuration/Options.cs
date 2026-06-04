@@ -213,6 +213,10 @@ namespace Garnet
         [Option("aof-replay-task-count", Required = false, HelpText = "Number of replay tasks per physical sublog at the replica.")]
         public int AofReplayTaskCount { get; set; }
 
+        [IntRangeValidation(-1, int.MaxValue, isRequired: false)]
+        [Option("aof-replay-drift-threshold", Required = false, HelpText = "Cross-sublog replay drift, in sequence-number units, a replica reader tolerates before triggering the replay-align barrier. -1 disables the barrier.")]
+        public int AofReplayDriftThreshold { get; set; }
+
         [IntRangeValidation(64, 1 << 20, isRequired: false)]
         [Option("aof-replay-ring-size", Required = false, HelpText = "Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.")]
         public int AofReplayRingSize { get; set; }
@@ -864,6 +868,7 @@ namespace Garnet
                 AofPageSize = AofPageSize,
                 AofPhysicalSublogCount = AofPhysicalSublogCount,
                 AofReplayTaskCount = AofReplayTaskCount,
+                AofReplayDriftThreshold = AofReplayDriftThreshold,
                 AofReplayRingSize = AofReplayRingSize,
                 AofReplayRingBatch = AofReplayRingBatch,
                 AofTailWitnessFreq = AofTailWitnessFreq,
