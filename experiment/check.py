@@ -39,6 +39,7 @@ SUPPORTED_SERVER_PARAMS = {
     "aof_memory",
     "aof_memory_size",
     "aof_page_size",
+    "disable_prefix_consistency",
 }
 
 
