@@ -41,6 +41,12 @@ namespace Resp.benchmark
         Page[][] pageBuffers;
 
         /// <summary>
+        /// Warmup pages: threads x pageNum. One StoreUpsert per key (shuffled), replayed untimed
+        /// before the measured pass on every replay run. Built by <see cref="GenerateWarmupData"/>.
+        /// </summary>
+        Page[][] warmupPageBuffers;
+
+        /// <summary>
         /// Per-thread flat key buffer + shared value (one entry per thread).
         /// Rebuilt by <see cref="BuildKVPairBuffersForRun"/> at the start of every Run() so the partition matches the current threadCount.
         /// </summary>
@@ -57,6 +63,7 @@ namespace Resp.benchmark
         long total_number_of_aof_bytes = 0L;
 
         public Page[] GetPageBuffers(int threadIdx) => pageBuffers[threadIdx];
+        public Page[] GetWarmupPageBuffers(int threadIdx) => warmupPageBuffers[threadIdx];
         public KVPairBuffer GetKVPairBuffer(int threadIdx) => kvPairBuffers[threadIdx];
 
         readonly int keyLen;
@@ -262,11 +269,14 @@ namespace Resp.benchmark
 
             Console.WriteLine($"Generating AoFBench Data!");
             var threads = options.AofPhysicalSublogCount;
+            // startClock must be larger than the max warmup clock
+            var startClock = GenerateWarmupData(threads) + options.PseudoTimestampPace;
+
             var workers = new Thread[threads];
             for (var idx = 0; idx < threads; ++idx)
             {
                 var x = idx;
-                workers[idx] = new Thread(() => GeneratePages(x));
+                workers[idx] = new Thread(() => GeneratePages(x, startClock));
             }
 
             Stopwatch swatch = new();
@@ -283,9 +293,134 @@ namespace Resp.benchmark
             Console.WriteLine($"Generated number of AOF bytes: {total_number_of_aof_bytes:N0}");
         }
 
-        unsafe void GeneratePages(int threadId)
+        // Build the warmup page-set in parallel (one thread per sublog) and log a plain summary.
+        // Returns the highest final warmup clock across sublogs (0 in single-log mode, which carries
+        // no sequence numbers).
+        long GenerateWarmupData(int threads)
         {
-            var seqNumGen = new SequenceNumberGenerator(0);
+            warmupPageBuffers = new Page[threads][];
+            var finalClocks = new long[threads];
+            var workers = new Thread[threads];
+            for (var idx = 0; idx < threads; ++idx)
+            {
+                var x = idx;
+                workers[idx] = new Thread(() => finalClocks[x] = GenerateWarmupPages(x));
+            }
+
+            Stopwatch swatch = new();
+            swatch.Start();
+            foreach (var worker in workers)
+                worker.Start();
+            foreach (var worker in workers)
+                worker.Join();
+            swatch.Stop();
+
+            long warmupPages = 0, warmupRecords = 0, warmupBytes = 0, maxClock = 0;
+            for (var t = 0; t < threads; t++)
+            {
+                warmupPages += warmupPageBuffers[t].Length;
+                foreach (var p in warmupPageBuffers[t])
+                {
+                    warmupRecords += p.recordCount;
+                    warmupBytes += p.payloadLength;
+                }
+                if (finalClocks[t] > maxClock) maxClock = finalClocks[t];
+            }
+            var seconds = swatch.ElapsedMilliseconds / 1000.0;
+            // Plain (non-bracketed) line: parse.py keys on "[name]: value" blocks, so warmup
+            // logging must avoid that format to not create a spurious sample.
+            Console.WriteLine($"Generated warmup {warmupRecords:N0} records ({warmupBytes:N0} bytes) across {threads} sublogs in {warmupPages:N0} pages ({seconds:N2} secs)");
+            return maxClock;
+        }
+
+        // Build one StoreUpsert per key for this sublog, in shuffled order.
+        // Each sharded record's sequence number is the running pseudoClock.
+        // Returns the final clock so the measured pass can start strictly above it.
+        unsafe long GenerateWarmupPages(int threadId)
+        {
+            long pseudoClock = threadId;
+            long pseudoTimestampPace = options.PseudoTimestampPace;
+
+            var buf = kvPairBuffers[threadId];
+            var keys = buf.Keys;
+            var value = buf.Value;
+            var myCount = buf.Count;
+            var useShardedHeader = options.AofPhysicalSublogCount > 1 || options.AofReplayTaskCount > 1;
+            var pageSize = 1 << aofServerOptions.AofPageSizeBits();
+
+            // Shuffle key indices so first-touch allocations happen in random order.
+            var order = new int[myCount];
+            for (var i = 0; i < myCount; i++) order[i] = i;
+            new Random(0x5EED + threadId).Shuffle(order);
+
+            var pages = new List<Page>();
+            fixed (byte* keysPtr = keys)
+            fixed (byte* valuePtr = value)
+            {
+                var valueLen = value.Length;
+                var keyPos = 0;
+                while (keyPos < myCount)
+                {
+                    var page = new Page(pageSize);
+                    var isFirstPage = pages.Count == 0;
+                    fixed (byte* pagePtr = page.payload)
+                    {
+                        var pageOffset = pagePtr;
+                        var pageEnd = pageOffset + page.Length - (isFirstPage ? 64 : 0);
+                        // Fill the page; a key that does not fit leaves keyPos unadvanced so it is
+                        // retried on the next page (every key is emitted exactly once).
+                        while (keyPos < myCount)
+                        {
+                            var idx = order[keyPos];
+                            var keyPtr = keysPtr + idx * keyLen;
+                            var key = SpanByte.FromPinnedPointer(keyPtr, keyLen);
+                            var v = SpanByte.FromPinnedPointer(valuePtr, valueLen);
+                            StringInput input = default;
+                            var aofHeader = new AofHeader { opType = AofEntryType.StoreUpsert, storeVersion = 1, sessionID = 0 };
+                            if (!useShardedHeader)
+                            {
+                                if (!garnetLog.GetSubLog(threadId).DummyEnqueue(
+                                    ref pageOffset, pageEnd, aofHeader, key, v, ref input))
+                                    break;
+                            }
+                            else
+                            {
+                                var replayTag = garnetLog.GetReplayTag(new ReadOnlySpan<byte>(keyPtr, keyLen));
+                                var extendedAofHeader = new AofShardedHeader
+                                {
+                                    basicHeader = new AofHeader
+                                    {
+                                        padding = AofHeader.MakePadding(AofHeaderType.ShardedHeader, replayTag),
+                                        opType = aofHeader.opType,
+                                        storeVersion = aofHeader.storeVersion,
+                                        sessionID = aofHeader.sessionID
+                                    },
+                                    sequenceNumber = pseudoClock
+                                };
+                                if (!garnetLog.GetSubLog(threadId).DummyEnqueue(
+                                    ref pageOffset, pageEnd, extendedAofHeader, key, v, ref input))
+                                    break;
+                                pseudoClock += pseudoTimestampPace;
+                            }
+                            page.recordCount++;
+                            keyPos++;
+                        }
+                        page.payloadLength = (int)(pageOffset - pagePtr);
+                    }
+                    if (page.recordCount == 0)
+                        throw new Exception($"Warmup record for sublog {threadId} does not fit in a {pageSize}-byte page.");
+                    pages.Add(page);
+                }
+            }
+            warmupPageBuffers[threadId] = pages.ToArray();
+            return pseudoClock;
+        }
+
+        unsafe void GeneratePages(int threadId, long startPseudoClock)
+        {
+            long pseudoClock = startPseudoClock + threadId;
+            long pseudoTimestampPace = options.PseudoTimestampPace;
+
             var rng = new Random(789110123 + threadId);
             var buf = kvPairBuffers[threadId];
             var keys = buf.Keys;
@@ -309,7 +444,7 @@ namespace Resp.benchmark
                     fixed (byte* pagePtr = page.payload)
                     {
                         var pageOffset = pagePtr;
-                        var pageEnd = pageOffset + page.Length - (pageIdx == 0 ? 64 : 0);
+                        var pageEnd = pageOffset + page.Length;
                         while (true)
                         {
                             int idx = rng.Next(myCount);
@@ -336,11 +471,12 @@ namespace Resp.benchmark
                                         storeVersion = aofHeader.storeVersion,
                                         sessionID = aofHeader.sessionID
                                     },
-                                    sequenceNumber = seqNumGen.GetSequenceNumber()
+                                    sequenceNumber = pseudoClock
                                 };
                                 if (!garnetLog.GetSubLog(threadId).DummyEnqueue(
                                     ref pageOffset, pageEnd, extendedAofHeader, key, v, ref input))
                                     break;
+                                pseudoClock += pseudoTimestampPace;
                             }
                             page.recordCount++;
                         }

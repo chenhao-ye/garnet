@@ -24,10 +24,10 @@ base:
     aof_memory_size: 256m
     keylength: 8
     valuelength: 8
-    dbsize: 1000000
+    dbsize: 10000000
     aof_gen_pages: 256
     aof_replay_reader: 1
 
 sweep:
   client_params:
-    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32, 64]
+    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32]

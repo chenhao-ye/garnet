@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import itertools
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -513,6 +514,84 @@ def print_issues(issues: list[Issue], config_path: Path) -> None:
     print(f"Summary: {errors} error(s), {warnings} warning(s) in {config_path}")
 
 
+def _expand_cpu_list(spec: Any) -> list[int]:
+    """Expand a numactl / sysfs list like '0,2,4-6' into [0, 2, 4, 5, 6]."""
+    result: list[int] = []
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            result.extend(range(int(lo), int(hi) + 1))
+        else:
+            result.append(int(part))
+    return result
+
+
+def _cores_in_numa_nodes(node_spec: Any) -> int | None:
+    """Total logical CPUs across the given NUMA node(s); None if topology unreadable."""
+    total = 0
+    for node in _expand_cpu_list(node_spec):
+        cpulist = Path(f"/sys/devices/system/node/node{node}/cpulist")
+        if not cpulist.exists():
+            return None
+        total += len(_expand_cpu_list(cpulist.read_text().strip()))
+    return total
+
+
+def _available_cores(client: Any) -> tuple[int | None, str]:
+    """Logical CPUs the experiment may use, with a human description. Uses the client
+    affinity binding when set (the role that runs the workload), else the whole machine."""
+    if client is None:
+        return os.cpu_count(), "whole machine"
+    if client.cpus is not None:
+        return len(_expand_cpu_list(client.cpus)), f"cpus={client.cpus}"
+    return _cores_in_numa_nodes(client.numa_node), f"numa_node={client.numa_node}"
+
+
+def validate_check_section(
+    issues: list[Issue], *, check_cfg: dict[str, Any], affinity: Any
+) -> None:
+    """Validate the optional 'check' section: pre-run machine requirements."""
+    if not check_cfg:
+        return
+    unknown = sorted(set(check_cfg) - {"num_cores"})
+    if unknown:
+        add_issue(
+            issues, "ERROR", "check", f"unknown key(s) in 'check': {format_values(unknown)}"
+        )
+
+    num_cores = check_cfg.get("num_cores")
+    if num_cores is None:
+        return
+    if isinstance(num_cores, bool) or not isinstance(num_cores, int) or num_cores <= 0:
+        add_issue(
+            issues,
+            "ERROR",
+            "check",
+            f"'num_cores' must be a positive integer, got {num_cores!r}",
+        )
+        return
+
+    available, where = _available_cores(affinity.client)
+    if available is None:
+        add_issue(
+            issues,
+            "WARNING",
+            "check",
+            f"cannot determine available cores ({where}); skipping num_cores check",
+        )
+        return
+    if num_cores > available:
+        add_issue(
+            issues,
+            "ERROR",
+            "check",
+            f"num_cores={num_cores} exceeds available logical CPUs ({available}, {where})",
+        )
+
+
 def _check_one(config: str, supported_client_params: set[str]) -> bool:
     """Validate one config. Returns True if any ERROR-level issues were found."""
     spec = load_experiment_spec(config_path_for(config), default_name=Path(config).stem)
@@ -590,11 +669,13 @@ def _check_one(config: str, supported_client_params: set[str]) -> bool:
         specified_keys=specified_keys,
     )
 
+    validate_check_section(issues, check_cfg=spec.check, affinity=spec.affinity)
+
     print_issues(issues, spec.config_path)
     return any(issue.level == "ERROR" for issue in issues)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate experiment configs against Resp.benchmark behavior"
     )
@@ -603,15 +684,15 @@ def main() -> None:
         nargs="+",
         help="One or more experiment config names (or paths).",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     supported_client_params = option_names_from_options_cs(OPTIONS_CS_PATH)
     any_errors = False
     for config in args.configs:
         if _check_one(config, supported_client_params):
             any_errors = True
-    sys.exit(1 if any_errors else 0)
+    return 1 if any_errors else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

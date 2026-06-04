@@ -10,7 +10,7 @@ using Tsavorite.core;
 
 namespace Garnet.server
 {
-    [StructLayout(LayoutKind.Explicit, Size = 26)]
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
     public struct ReplicaReadSessionContext
     {
         /// <summary>
@@ -36,6 +36,14 @@ namespace Garnet.server
         /// </summary>
         [FieldOffset(24)]
         public short lastVirtualSublogIdx;
+
+        /// <summary>
+        /// Per-session cached lower-bound view of each virtual sublog's published max sequence number.
+        /// Lets the freshness check skip reading the constantly-replay-written global published max when
+        /// the cached value already proves freshness. Allocated and reset by CheckConsistencyManagerVersion.
+        /// </summary>
+        [FieldOffset(32)]
+        public long[] cachedSublogMax;
     }
 
     public class ReadSessionState : IDisposable
@@ -60,6 +68,14 @@ namespace Garnet.server
         /// Canceled in Dispose to wake any in-flight wait inside the read consistency manager.
         /// </summary>
         readonly CancellationTokenSource cts;
+
+        /// <summary>
+        /// Reusable wakeup primitive for the consistent-read wait path. Initialized in the constructor
+        /// and replaced in-place by <see cref="VirtualSublogReplayState.WaitForSequenceNumber"/> if the
+        /// previous wait was cancelled or timed out (the retired instance lingers as a tombstone in the
+        /// virtual sublog's wait queue until the next signal pass dequeues it).
+        /// </summary>
+        ConsistentReadWaiter consistentReadWaiter;
 
         /// <summary>
         /// Array of key hashes used for consistent read key batch.
@@ -91,6 +107,7 @@ namespace Garnet.server
             this.appendOnlyFile = appendOnlyFile;
             replicaReadContext = new() { sessionVersion = -1, maximumSessionSequenceNumber = 0, lastVirtualSublogIdx = -1 };
             cts = new();
+            consistentReadWaiter = new ConsistentReadWaiter();
         }
 
         /// <summary>
@@ -104,7 +121,8 @@ namespace Garnet.server
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void BeforeConsistentReadKeyCallback(long hash)
-            => appendOnlyFile.readConsistencyManager.BeforeConsistentReadKey(hash, ref replicaReadContext, cts.Token);
+            => appendOnlyFile.readConsistencyManager.BeforeConsistentReadKey(
+                hash, ref replicaReadContext, ref consistentReadWaiter, cts.Token);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void AfterConsistentReadKeyCallback()
@@ -133,7 +151,8 @@ namespace Garnet.server
             for (var i = 0; i < parameters.Length; i++)
             {
                 var key = parameters[i];
-                consistencyManager.BeforeConsistentReadKeyBatch(key.ReadOnlySpan, ref batchReadContext, cts.Token, out var hash);
+                consistencyManager.BeforeConsistentReadKeyBatch(
+                    key.ReadOnlySpan, ref batchReadContext, ref consistentReadWaiter, cts.Token, out var hash);
                 keyHashCache[i] = hash;
             }
         }

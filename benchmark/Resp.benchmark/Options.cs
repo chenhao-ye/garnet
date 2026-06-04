@@ -131,6 +131,9 @@ namespace Resp.benchmark
         [Option("aof-reader-skip", Required = false, Default = false, HelpText = "Pre-set every physical sublog's max sequence number to long.MaxValue at run start. Readers' consistency check is always pass, isolating the consistent-read fast-path cost from the wait path.")]
         public bool AofReaderSkip { get; set; }
 
+        [Option("pseudo-timestamp-pace", Required = false, Default = 2000, HelpText = "Ticks the generated pseudo timestamp advances per AOF record. Emulates a wall-clock sequence generator (at ~2 GHz, 2000 is ~1us per record).")]
+        public int PseudoTimestampPace { get; set; }
+
         /*
          * InProc/AofBench server options
          */
@@ -157,6 +160,9 @@ namespace Resp.benchmark
 
         [Option("disable-prefix-consistency", Required = false, HelpText = "Disable prefix-consistent replica reads (NoPrefix baseline). Requires AofPhysicalSublogCount > 1 or AofReplayTaskCount > 1.")]
         public bool DisablePrefixConsistency { get; set; }
+
+        [Option("aof-replay-drift-threshold", Required = false, Default = 20000, HelpText = "Cross-sublog replay drift, in sequence-number units, a replica reader tolerates before triggering the replay-align barrier. -1 disables the barrier.")]
+        public int AofReplayDriftThreshold { get; set; }
 
         [Option("aof-memory-size", Required = false, Default = "64m", HelpText = "Total AOF memory buffer used in bytes (rounds down to power of 2) - spills to disk after this limit.")]
         public string AofMemorySize { get; set; }
