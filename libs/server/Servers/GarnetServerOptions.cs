@@ -97,7 +97,7 @@ namespace Garnet.server
         /// and hurt read tail latency). 0 disables the proactive check, leaving readers about to
         /// wait as the only round source.
         /// </summary>
-        public int AofReplayDriftCheckFreq = 0;
+        public int AofReplayDriftCheckFreq = 50;
 
         /// <summary>
         /// How long a replay thread spins at the replay-align barrier before falling back to a kernel wait:
