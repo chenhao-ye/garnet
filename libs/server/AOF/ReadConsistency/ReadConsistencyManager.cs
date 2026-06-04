@@ -32,16 +32,29 @@ namespace Garnet.server
 
         /// <summary>
         /// Maximum allowed drift (in sequence-number units) between leading and trailing sublog
-        /// before the reader will trigger a replay-side synchronization barrier. -1 disables the
-        /// barrier so the reader never activates a round.
+        /// before a replay-side synchronization barrier round is triggered. -1 disables the
+        /// barrier so no round is ever activated.
         /// </summary>
         readonly long replayDriftThreshold = serverOptions.AofReplayDriftThreshold;
 
         /// <summary>
-        /// Whether the reader bounds replay drift at all: false when the barrier is disabled
+        /// Whether replay drift is bounded at all: false when the barrier is disabled
         /// (threshold -1) or there is a single virtual sublog (no cross-sublog drift to bound).
         /// </summary>
         readonly bool driftBoundingEnabled = serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1;
+
+        /// <summary>
+        /// Progress gate for replay-driven drift bounding, in sequence-number units
+        /// (AofReplayDriftCheckFreq x AofReplayDriftThreshold): each replay thread re-runs the
+        /// cross-sublog drift scan after locally progressing this much, so drift is bounded
+        /// proactively rather than only when a reader is about to wait (most reads never wait, so
+        /// drift could otherwise accumulate unchecked between waits and hurt read tail latency).
+        /// long.MaxValue when replay-driven firing is disabled, making the gate compare never true.
+        /// </summary>
+        readonly long replayDriftCheckInterval =
+            serverOptions.AofReplayDriftCheckFreq > 0 && serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1
+                ? Math.Max(1, (long)serverOptions.AofReplayDriftCheckFreq * serverOptions.AofReplayDriftThreshold)
+                : long.MaxValue;
 
         /// <summary>
         /// Cooperative barrier used to bound inter-virtual-sublog replay drift. The reader activates it
@@ -130,6 +143,16 @@ namespace Garnet.server
             // round is active.
             replayBarrier.CheckAndWait(vsrs[virtualSublogIdx].Max);
             vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
+            // Replay-driven drift bounding: once per replayDriftCheckInterval of this sublog's own
+            // progress, re-scan the cross-sublog drift and fire a round if it exceeds the threshold
+            // (never, when disabled: the interval is then long.MaxValue). Record sequence numbers are
+            // nondecreasing within a virtual sublog, so the gate adds one owner-local subtract +
+            // compare per record; the scan itself runs only at the gate.
+            if (sequenceNumber - vsrs[virtualSublogIdx].LastDriftCheckSequenceNumber >= replayDriftCheckInterval)
+            {
+                vsrs[virtualSublogIdx].LastDriftCheckSequenceNumber = sequenceNumber;
+                BoundReplayDrift();
+            }
         }
 
         /// <summary>
@@ -217,12 +240,15 @@ namespace Garnet.server
         /// Scan all virtual sublogs' current max sequence numbers; if the spread exceeds
         /// <see cref="replayDriftThreshold"/>, install a barrier round at the leader's value so that
         /// replayers pause once they reach it and the laggards have time to catch up.
-        /// Only invoked on the slow path (when the reader is about to actually wait).
+        /// Invoked from two rare paths that dedupe on the active round: a reader about to wait
+        /// (<see cref="RefreshAndMaybeWait"/>) and a replay thread crossing its progress gate
+        /// (<see cref="UpdateVirtualSublogKeySequenceNumber(int, long, long)"/>).
         /// </summary>
         void BoundReplayDrift()
         {
             if (!driftBoundingEnabled) return;
-            // A round already in progress is bounding the drift; skip the scan.
+            // A round already in progress is bounding the drift; a disabled barrier also reports an
+            // in-progress round (one that never completes), so the scan is skipped in both cases.
             if (replayBarrier.IsActive) return;
 
             var virtualSublogCount = serverOptions.AofVirtualSublogCount;
@@ -234,6 +260,12 @@ namespace Garnet.server
                 if (frontier > maxFrontier) maxFrontier = frontier;
             }
             if (maxFrontier - minFrontier <= replayDriftThreshold) return;
+            // A sublog that has published no progress at all has no record stream yet (e.g. its
+            // replay session is still being established during attach). Barrier arrivals happen only
+            // on the per-record replay path, so a round could not complete until that sublog both
+            // starts and reaches the target; firing now would only park every started replay thread.
+            // Skip until all sublogs have progress.
+            if (minFrontier == 0) return;
             replayBarrier.TryActivate(maxFrontier);
         }
 

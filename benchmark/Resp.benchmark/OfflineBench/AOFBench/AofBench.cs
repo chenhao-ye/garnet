@@ -31,6 +31,7 @@ namespace Resp.benchmark
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
                 AofReplayTaskCount = options.AofReplayTaskCount,
                 AofReplayDriftThreshold = options.AofReplayDriftThreshold,
+                AofReplayDriftCheckFreq = options.AofReplayDriftCheckFreq,
                 AofBarrierSpinUs = options.AofBarrierSpinUs,
                 ReplicationOffsetMaxLag = 0,
                 CheckpointDir = OperatingSystem.IsLinux() ? "/tmp" : null,
@@ -183,12 +184,20 @@ namespace Resp.benchmark
                     }
                 }
 
+                // No barrier round may fire during the untimed warmup pass: workers finish warmup at
+                // different times and stop arriving at the barrier, so a round fired across the warmup
+                // boundary would strand the workers still replaying. Re-enabled below once every worker
+                // is paused at `waiter` between warmup and the measured pass.
+                if (options.IsReplayEnabled)
+                    instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Disable();
+
                 foreach (var worker in workers)
                     worker.Start();
 
                 if (options.IsReplayEnabled)
                 {
                     warmupDone.Wait();
+                    instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Enable();
                     if (readers != null)
                         foreach (var r in readers)
                             r.Start();
@@ -408,8 +417,9 @@ namespace Resp.benchmark
 
             if (singlePass)
                 RaiseSublogFrontierToMax(threadId);
-            // This replay thread is done; release any active barrier round so it does not strand a peer
-            // blocked waiting for this thread to arrive.
+            // This replay thread is done and will no longer arrive at the barrier: disable it, which
+            // releases any active round and rejects new ones, so no peer is left stranded waiting for
+            // an arrival from this thread.
             instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Disable();
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
@@ -459,8 +469,9 @@ namespace Resp.benchmark
 
             if (singlePass)
                 RaiseSublogFrontierToMax(threadId);
-            // This replay thread is done; release any active barrier round so it does not strand a peer
-            // blocked waiting for this thread to arrive.
+            // This replay thread is done and will no longer arrive at the barrier: disable it, which
+            // releases any active round and rejects new ones, so no peer is left stranded waiting for
+            // an arrival from this thread.
             instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Disable();
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
@@ -510,8 +521,9 @@ namespace Resp.benchmark
 
             if (singlePass)
                 RaiseSublogFrontierToMax(threadId);
-            // This replay thread is done; release any active barrier round so it does not strand a peer
-            // blocked waiting for this thread to arrive.
+            // This replay thread is done and will no longer arrive at the barrier: disable it, which
+            // releases any active round and rejects new ones, so no peer is left stranded waiting for
+            // an arrival from this thread.
             instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.replayBarrier?.Disable();
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);

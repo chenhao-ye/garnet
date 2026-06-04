@@ -82,11 +82,22 @@ namespace Garnet.server
         public int AofReplayTaskCount = 1;
 
         /// <summary>
-        /// Cross-sublog replay drift, in sequence-number units, a replica reader tolerates before it
-        /// triggers the replay-align barrier. A larger value lets sublogs diverge further (less reader
-        /// blocking, looser bound); -1 disables the barrier.
+        /// Cross-sublog replay drift, in sequence-number units, tolerated on a replica before a
+        /// replay-align barrier round is triggered. A larger value lets sublogs diverge further
+        /// (less reader blocking, looser bound); -1 disables the barrier.
         /// </summary>
         public int AofReplayDriftThreshold = 20000;
+
+        /// <summary>
+        /// How often a replay thread re-checks the cross-sublog drift, as a multiple of
+        /// AofReplayDriftThreshold: after every (this value x threshold) sequence-number units of
+        /// local replay progress, the thread scans the drift and fires a replay-align round when it
+        /// exceeds the threshold. Bounds the drift proactively, instead of only when a reader is
+        /// about to wait (most reads never wait, so the drift could otherwise accumulate unchecked
+        /// and hurt read tail latency). 0 disables the proactive check, leaving readers about to
+        /// wait as the only round source.
+        /// </summary>
+        public int AofReplayDriftCheckFreq = 0;
 
         /// <summary>
         /// How long a replay thread spins at the replay-align barrier before falling back to a kernel wait:
