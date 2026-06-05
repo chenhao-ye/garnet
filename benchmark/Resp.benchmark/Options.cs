@@ -122,6 +122,12 @@ namespace Resp.benchmark
         [Option("aof-bench-type", Required = false, Default = AofBenchType.Replay, HelpText = "Run AOF bench at replica.")]
         public AofBenchType AofBenchType { get; set; }
 
+        [Option("aof-bench-role", Required = false, Default = AofBenchRole.Combined, HelpText = "Topology role of this AOF bench process: Combined (replica+client in one process), Replica (replay + server, paces a remote client over the control channel), Client (GarnetClientSession readers driven by a Replica), Primary (reserved).")]
+        public AofBenchRole AofBenchRole { get; set; }
+
+        [Option("aof-bench-control-port", Required = false, Default = 0, HelpText = "TCP port of the bench control channel between Replica and Client roles. 0 = --port + 10000.")]
+        public int AofBenchControlPort { get; set; }
+
         [Option("aof-gen-pages", Required = false, Default = 64, HelpText = "DB size")]
         public int AofGenPages { get; set; }
 

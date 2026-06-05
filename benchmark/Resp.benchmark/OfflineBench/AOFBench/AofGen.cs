@@ -71,10 +71,30 @@ namespace Resp.benchmark
         public byte[] GlobalKeys => globalKeys;
         public int KeyLen => keyLen;
 
+        /// <summary>
+        /// Effective key length for the given options: --keylength widened to fit dbsize digits.
+        /// Static so a Client-role process derives the identical value without an AofGen.
+        /// </summary>
+        public static int DeriveKeyLen(Options options)
+            => Math.Max(options.KeyLength, NumUtils.NumDigits(options.DbSize));
+
+        /// <summary>
+        /// Builds the global keyset: key i = hex MurmurHash3 of i, zero-padded to keyLen.
+        /// Deterministic from (dbsize, keyLen) alone, so a Client-role process regenerates the
+        /// exact keys the replica generated, with no AOF page generation.
+        /// </summary>
+        public static byte[] BuildGlobalKeys(int dbsize, int keyLen)
+        {
+            var keys = new byte[dbsize * keyLen];
+            for (int i = 0; i < dbsize; i++)
+                FormatHexKey(keys, i * keyLen, keyLen, i);
+            return keys;
+        }
+
         public AofGen(Options options)
         {
             this.options = options;
-            this.keyLen = Math.Max(options.KeyLength, NumUtils.NumDigits(options.DbSize));
+            this.keyLen = DeriveKeyLen(options);
             if (options.KeyLength > 0 && this.keyLen != options.KeyLength)
                 Console.WriteLine($"[Warning] --keylength {options.KeyLength} is too small for --dbsize {options.DbSize}; expanding to {this.keyLen}.");
             this.aofServerOptions = new GarnetServerOptions()
@@ -120,9 +140,7 @@ namespace Resp.benchmark
             var dbsize = options.DbSize;
             var sublogCount = options.AofPhysicalSublogCount;
 
-            globalKeys = new byte[dbsize * keyLen];
-            for (int i = 0; i < dbsize; i++)
-                FormatHexKey(globalKeys, i * keyLen, keyLen, i);
+            globalKeys = BuildGlobalKeys(dbsize, keyLen);
 
             var valueLen = options.ValueLength;
             sharedValue = GC.AllocateArray<byte>(valueLen, pinned: true);

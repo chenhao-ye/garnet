@@ -47,8 +47,11 @@ namespace Resp.benchmark
             var serverOptions = AofBench.GetServerOptions(options);
             primaryId = Generator.CreateHexId();
 
-            // Only start a network endpoint if 1) run Aof Replay, 2) with readers, AND 3) the readers are GarnetClientSession
-            if (options.IsReplayEnabled && options.AofReplayReader > 0 && options.Client == ClientType.GarnetClientSession)
+            // Start a network endpoint when local GarnetClientSession readers will connect, or when
+            // this process is the Replica role of a split-process run (the readers are remote).
+            if (options.IsReplayEnabled
+                && (options.AofBenchRole == AofBenchRole.Replica
+                    || (options.AofReplayReader > 0 && options.Client == ClientType.GarnetClientSession)))
             {
                 endpoint = new IPEndPoint(IPAddress.Parse(options.Address), options.Port);
                 serverOptions.EndPoints = [endpoint];

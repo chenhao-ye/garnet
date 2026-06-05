@@ -41,6 +41,18 @@ namespace Resp.benchmark
 
         readonly ManualResetEventSlim waiter = new();
         readonly Options options;
+        readonly AofBenchRole role;
+        // Keyset the reader threads draw from: the generator's in Combined/Replica mode,
+        // regenerated locally in Client role (key generation is deterministic from
+        // dbsize/keylength, so both processes hold identical keys).
+        readonly byte[] readerKeys;
+        readonly int readerKeyLen;
+        // Replay workers stop after one pass over the generated pages (vs cycling for RunTime)
+        // whenever readers consume the pass: local ones, or a remote Client-role process.
+        readonly bool singlePassMode;
+        // Control channel pacing a remote Client-role process; null outside the Replica role.
+        readonly BenchControlServer control;
+        int passIndex;
         readonly AofGen aofGen;
         readonly AofReplayStream[] aofReplayStream;
         readonly GarnetServerInstance instance;
@@ -65,13 +77,31 @@ namespace Resp.benchmark
         public AofBench(Options options)
         {
             this.options = options;
+            role = options.AofBenchRole;
+
+            if (role == AofBenchRole.Client)
+            {
+                // The Client role hosts only reader threads: no generator, no embedded server.
+                // It regenerates the keyset locally and is paced by the replica's control channel.
+                if (options.Client != ClientType.GarnetClientSession)
+                    throw new Exception("--aof-bench-role Client requires --client GarnetClientSession");
+                readerKeyLen = AofGen.DeriveKeyLen(options);
+                readerKeys = AofGen.BuildGlobalKeys(options.DbSize, readerKeyLen);
+                return;
+            }
 
             var replayEnabled = options.AofBenchType is AofBenchType.Replay or AofBenchType.ReplayNoResp;
             if (!options.EnableCluster && options.AofBenchType == AofBenchType.Replay)
                 throw new Exception("InProc/AofBench with AofBenchType.Replay requires --cluster!");
+            if (role == AofBenchRole.Replica && !options.IsReplayEnabled)
+                throw new Exception("--aof-bench-role Replica requires a replay AofBenchType");
 
             var serverOptions = GetServerOptions(options);
             aofGen = new AofGen(options);
+            readerKeys = aofGen.GlobalKeys;
+            readerKeyLen = aofGen.KeyLen;
+            singlePassMode = options.IsReplayEnabled
+                && (options.AofReplayReader > 0 || role == AofBenchRole.Replica);
 
             if (options.IsReplayEnabled)
             {
@@ -84,7 +114,14 @@ namespace Resp.benchmark
             {
                 epoch = new LightEpoch();
             }
+
+            // Listen early (before generation) so the Client role can connect while data is
+            // still being generated; it then blocks on the first BEGIN.
+            if (role == AofBenchRole.Replica)
+                control = new BenchControlServer(ControlPort);
         }
+
+        int ControlPort => options.AofBenchControlPort > 0 ? options.AofBenchControlPort : options.Port + 10000;
 
         public void GenerateData() => aofGen.GenerateData();
 
@@ -117,12 +154,17 @@ namespace Resp.benchmark
                 if (options.IsReplayEnabled)
                     aofTailAddress = aofGen.appendOnlyFile.Log.TailAddress;
 
-                if (useReaders)
+                // Remote Client-role readers need the consistency manager just like local ones.
+                if (useReaders || role == AofBenchRole.Replica)
                 {
                     instance.server.StoreWrapper.appendOnlyFile.CreateOrUpdateKeySequenceManager();
                     if (options.AofReaderSkip)
                         for (var i = 0; i < options.AofPhysicalSublogCount; i++)
                             RaiseSublogFrontierToMax(i);
+                }
+
+                if (useReaders)
+                {
                     readerHistograms = new LongHistogram[options.AofReplayReader];
                     for (var i = 0; i < options.AofReplayReader; i++)
                         readerHistograms[i] = new LongHistogram(HistogramLowerBound, HistogramUpperBound, HistogramSigFigs);
@@ -205,15 +247,17 @@ namespace Resp.benchmark
 
                 Stopwatch swatch = new();
                 swatch.Start();
+                control?.Send($"BEGIN {passIndex}");
                 waiter.Set();
 
-                if (useReaders)  // replay timestamp must be monotonic => run a single-pass over AOF pages
+                if (singlePassMode)  // replay timestamp must be monotonic => run a single-pass over AOF pages
                 {
                     // Single-pass: the first replay worker to exhaust pages sets `done`
                     foreach (var worker in workers)
                         worker.Join();
-                    foreach (var reader in readers)
-                        reader.Join();
+                    if (readers != null)
+                        foreach (var reader in readers)
+                            reader.Join();
                 }
                 else  // cyclic over AOF pages until RunTime
                 {
@@ -224,6 +268,8 @@ namespace Resp.benchmark
                 }
 
                 swatch.Stop();
+                control?.Send($"END {passIndex}");
+                passIndex++;
 
                 var seconds = swatch.ElapsedMilliseconds / 1000.0;
                 if (options.IsReplayEnabled)
@@ -247,25 +293,7 @@ namespace Resp.benchmark
                 }
 
                 if (useReaders)
-                {
-                    var readerThroughput = readerOperationsCompleted / seconds;
-                    Console.WriteLine($"[Reader operations]: {readerOperationsCompleted:N0}");
-                    Console.WriteLine($"[Reader throughput]: {readerThroughput:N2} ops/sec");
-                    var merged = new LongHistogram(HistogramLowerBound, HistogramUpperBound, HistogramSigFigs);
-                    foreach (var h in readerHistograms)
-                        merged.Add(h);
-                    if (merged.TotalCount > 0)
-                    {
-                        var s = OutputScalingFactor.TimeStampToMicroseconds;
-                        Console.WriteLine(
-                            $"[Reader latency us] " +
-                            $"p50={Math.Round(merged.GetValueAtPercentile(50) / s, 2)} " +
-                            $"p90={Math.Round(merged.GetValueAtPercentile(90) / s, 2)} " +
-                            $"p99={Math.Round(merged.GetValueAtPercentile(99) / s, 2)} " +
-                            $"p99.9={Math.Round(merged.GetValueAtPercentile(99.9) / s, 2)} " +
-                            $"max={Math.Round(merged.GetMaxValue() / s, 2)}");
-                    }
-                }
+                    PrintReaderStats(seconds, readerHistograms);
             }
             finally
             {
@@ -287,6 +315,122 @@ namespace Resp.benchmark
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
                 Console.WriteLine("------------------------------");
+            }
+        }
+
+        // Prints the per-pass reader stats block ([Reader operations/throughput/latency]) from
+        // the merged reader histograms; parse.py keys on these labels.
+        void PrintReaderStats(double seconds, LongHistogram[] readerHistograms)
+        {
+            var readerThroughput = readerOperationsCompleted / seconds;
+            Console.WriteLine($"[Reader operations]: {readerOperationsCompleted:N0}");
+            Console.WriteLine($"[Reader throughput]: {readerThroughput:N2} ops/sec");
+            var merged = new LongHistogram(HistogramLowerBound, HistogramUpperBound, HistogramSigFigs);
+            foreach (var h in readerHistograms)
+                merged.Add(h);
+            if (merged.TotalCount > 0)
+            {
+                var s = OutputScalingFactor.TimeStampToMicroseconds;
+                Console.WriteLine(
+                    $"[Reader latency us] " +
+                    $"p50={Math.Round(merged.GetValueAtPercentile(50) / s, 2)} " +
+                    $"p90={Math.Round(merged.GetValueAtPercentile(90) / s, 2)} " +
+                    $"p99={Math.Round(merged.GetValueAtPercentile(99) / s, 2)} " +
+                    $"p99.9={Math.Round(merged.GetValueAtPercentile(99.9) / s, 2)} " +
+                    $"max={Math.Round(merged.GetMaxValue() / s, 2)}");
+            }
+        }
+
+        /// <summary>
+        /// Replica-role driver: generates data, waits for the Client-role process on the control
+        /// channel, runs the configured number of passes (pacing the client with BEGIN/END),
+        /// sends DONE, then serves until killed -- the harness tears the process down after the
+        /// client exits.
+        /// </summary>
+        public void RunReplicaRole()
+        {
+            GenerateData();
+            Console.WriteLine($"Replica role: waiting for the client on control port {ControlPort}");
+            control.AcceptClient();
+            for (var i = 0; i < options.Repeat; i++)
+                Run(options.AofPhysicalSublogCount);
+            control.Send("DONE");
+            Console.WriteLine("Replica role: passes complete; serving until killed");
+            Thread.Sleep(Timeout.Infinite);
+        }
+
+        /// <summary>
+        /// Client-role driver: GarnetClientSession readers over locally regenerated keys, paced
+        /// by the replica's control channel. Spawns one reader-thread generation per BEGIN/END
+        /// pass and prints the same per-pass reader stats block as Combined mode; exits on DONE.
+        /// </summary>
+        public void RunClientRole()
+        {
+            using var controlClient = BenchControlClient.Connect(options.Address, ControlPort, timeoutSeconds: 60);
+            // Size the send buffer to hold a full intra-thread-parallel batch of GET commands.
+            var sendBufferSize = Math.Max(1 << 17, 64 * options.IntraThreadParallelism);
+            var endpoint = new IPEndPoint(IPAddress.Parse(options.Address), options.Port);
+            var clients = new GarnetClientSession[options.AofReplayReader];
+            for (var i = 0; i < options.AofReplayReader; i++)
+            {
+                var c = new GarnetClientSession(endpoint, new(sendBufferSize));
+                c.Connect();
+                // The server node is set to a replica role; allow reads on it.
+                c.Execute("READONLY");
+                c.CompletePending();
+                clients[i] = c;
+            }
+            Console.WriteLine($">>> Client role: {options.AofReplayReader} reader(s) connected to {endpoint}; awaiting passes >>>");
+
+            try
+            {
+                while (true)
+                {
+                    var line = controlClient.ReadLine();
+                    if (line == null || line == "DONE")
+                        break;
+                    if (!line.StartsWith("BEGIN "))
+                        throw new Exception($"Client role: unexpected control message '{line}'");
+                    var pass = line["BEGIN ".Length..];
+
+                    var hists = new LongHistogram[options.AofReplayReader];
+                    var readers = new Thread[options.AofReplayReader];
+                    for (var i = 0; i < options.AofReplayReader; i++)
+                    {
+                        var x = i;
+                        var hist = hists[i] = new LongHistogram(HistogramLowerBound, HistogramUpperBound, HistogramSigFigs);
+                        var client = clients[i];
+                        readers[i] = options.IntraThreadParallelism > 1
+                            ? new Thread(() => RunReaderGarnetClientSessionParallel(x, client, options.IntraThreadParallelism, hist))
+                            : new Thread(() => RunReaderGarnetClientSession(x, client, hist));
+                    }
+                    foreach (var r in readers)
+                        r.Start();
+                    var swatch = Stopwatch.StartNew();
+                    waiter.Set();
+
+                    var end = controlClient.ReadLine();
+                    if (end == null || !end.StartsWith("END "))
+                        throw new Exception($"Client role: expected END, got '{end ?? "<eof>"}'");
+                    done = true;
+                    foreach (var r in readers)
+                        r.Join();
+                    swatch.Stop();
+
+                    var seconds = swatch.ElapsedMilliseconds / 1000.0;
+                    Console.WriteLine($"[Total time]: {swatch.ElapsedMilliseconds:N2} ms for pass {pass}");
+                    PrintReaderStats(seconds, hists);
+                    Console.WriteLine("------------------------------");
+
+                    done = false;
+                    waiter.Reset();
+                    readerOperationsCompleted = 0;
+                }
+            }
+            finally
+            {
+                foreach (var c in clients)
+                    c?.Dispose();
             }
         }
 
@@ -383,7 +527,7 @@ namespace Resp.benchmark
             var pagesSend = 0L;
             var totalBytes = 0L;
             var recordsReplayedCount = 0L;
-            var singlePass = options.AofReplayReader > 0;
+            var singlePass = singlePassMode;
 
             // Initialize stream for replay
             aofReplayStream[threadId].InitializeReplayStream();
@@ -435,7 +579,7 @@ namespace Resp.benchmark
             var pagesSend = 0L;
             var totalBytes = 0L;
             var recordsReplayedCount = 0L;
-            var singlePass = options.AofReplayReader > 0;
+            var singlePass = singlePassMode;
 
             // Initialize stream for replay
             aofReplayStream[threadId].InitializeReplayStream();
@@ -487,7 +631,7 @@ namespace Resp.benchmark
             var pagesSend = 0L;
             var totalBytes = 0L;
             var recordsReplayedCount = 0L;
-            var singlePass = options.AofReplayReader > 0;
+            var singlePass = singlePassMode;
 
             // Initialize stream for replay
             aofReplayStream[threadId].InitializeReplayStream();
@@ -532,8 +676,8 @@ namespace Resp.benchmark
 
         unsafe void RunReader(int threadId, RespServerSession session, LongHistogram hist)
         {
-            var keys = aofGen.GlobalKeys;
-            var keyLen = aofGen.KeyLen;
+            var keys = readerKeys;
+            var keyLen = readerKeyLen;
             var keyCount = keys.Length / keyLen;
             var rng = new Random(0xCAFE + threadId);
             var opsCompleted = 0L;
@@ -573,8 +717,8 @@ namespace Resp.benchmark
         // round-trip latency. Aggregate throughput scales with the number of reader threads.
         void RunReaderGarnetClientSession(int threadId, GarnetClientSession client, LongHistogram hist)
         {
-            var keys = aofGen.GlobalKeys;
-            var keyLen = aofGen.KeyLen;
+            var keys = readerKeys;
+            var keyLen = readerKeyLen;
             var keyCount = keys.Length / keyLen;
             var rng = new Random(0xCAFE + threadId);
             var opsCompleted = 0L;
@@ -597,8 +741,8 @@ namespace Resp.benchmark
         // then waits for the batch (unless --burst). Records per-batch latency.
         void RunReaderGarnetClientSessionParallel(int threadId, GarnetClientSession client, int parallel, LongHistogram hist)
         {
-            var keys = aofGen.GlobalKeys;
-            var keyLen = aofGen.KeyLen;
+            var keys = readerKeys;
+            var keyLen = readerKeyLen;
             var keyCount = keys.Length / keyLen;
             var rng = new Random(0xCAFE + threadId);
             var opsCompleted = 0L;

@@ -268,7 +268,19 @@ namespace Resp.benchmark
             }
             else if (opts.AofBench)
             {
-                if (opts.IsReplayEnabled)
+                if (opts.AofBenchRole == AofBenchRole.Primary)
+                {
+                    throw new Exception("--aof-bench-role Primary is reserved for a future streaming-AOF bench and is not implemented");
+                }
+                else if (opts.AofBenchRole == AofBenchRole.Client)
+                {
+                    new AofBench(opts).RunClientRole();
+                }
+                else if (opts.AofBenchRole == AofBenchRole.Replica)
+                {
+                    new AofBench(opts).RunReplicaRole();
+                }
+                else if (opts.IsReplayEnabled)
                 {
                     var bench = new AofBench(opts);
                     bench.GenerateData();
