@@ -61,7 +61,7 @@ color_map = {
     "noprefix": "#9467bd",
     "noprefix_m64": "#9467bd",
     "noprefix_physical": "#9467bd",
-    "no_aof": "#abd9e9",
+    "no_aof": _sample_cmap(MULTILOG_CMAP, 0.00),
     "aof_single": "#2c7bb6",
     "aof_multilog": "red",
     "multilog_m2": _sample_cmap(MULTILOG_CMAP, 0.90),
@@ -99,7 +99,7 @@ linestyle_map = {
 }
 
 marker_map = {
-    "single_log": None,
+    "single_log": ".",
     "multilog_virtual": "v",
     "multilog_physical": "o",
     "multilog_hybrid": "v",
@@ -107,7 +107,7 @@ marker_map = {
     "noprefix": ".",
     "noprefix_m64": ".",
     "noprefix_physical": ".",
-    "no_aof": "d",
+    "no_aof": "D",
     "aof_single": ".",
     "aof_multilog": "o",
     "multilog_m2": "^",
@@ -127,9 +127,9 @@ labels_map = {
     "noprefix": "NoPrefix",
     "noprefix_m64": "NoPrefix(64)",
     "noprefix_physical": "NoPrefix(x)",
-    "no_aof": "Garnet w/o Log",
-    "aof_single": "Garnet w/ Log",
-    "aof_multilog": "Garnet w/ MultiLog(64)",
+    "no_aof": "Garnet without log",
+    "aof_single": "Garnet with log",
+    "aof_multilog": "Garnet with MultiLog(64)",
 }
 labels_map.update(
     {f"multilog_m{m}": f"MultiLog({m})" for m in APPEND_M_VALUES if m != 1}

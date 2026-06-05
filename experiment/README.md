@@ -291,6 +291,7 @@ legend_separate: true             # write the legend to its own file
 | `set` | `[no_aof, aof_single]` | Online SET throughput vs. threads; one curve per dependency. |
 | `append` | `[<single experiment>]` | Append throughput vs. threads; one curve per `aof_physical_sublog_count` value (the `m` family). |
 | `replay` | `[<physical sweep>, <virtual sweep>]` | Replay throughput vs. sublog count; physical and virtual curves plus a Single-Log reference line taken from the `m=1` point of the physical sweep. |
+| `replay_reader` | `[<reader sweep>]` | Four figures (`_tput`, `_p50`, `_p99`, `_p999`): reader throughput / latency percentiles vs. replay throughput; one datapoint per `aof_physical_sublog_count`, pinned by the config's `filter` map of dotted param keys (e.g. `client.aof_replay_reader: 1`, `client.itp: 128`; non-swept params match against the run's resolved params). Figure-suffixed keys (e.g. `yticks_p99`, `ymax_tput`) override the base axis key for that figure only. |
 
 ### Axis styling keys
 

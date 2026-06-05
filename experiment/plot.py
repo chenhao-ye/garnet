@@ -14,6 +14,10 @@ Each plot config carries a `template` field that selects a renderer:
                      dependencies: [<physical sweep>, <virtual sweep>]
   - replay_spectrum: bar plot of replay throughput across (k, m) combos
                      dependencies: [<sweep_combo experiment>]
+  - replay_reader:   four figures of reader tput / p50 / p99 / p99.9 latency
+                     vs. replay throughput, one datapoint per sublog count
+                     pinned by the config's `filter` map
+                     dependencies: [<reader sweep>]
   - append:          append-scaling figure (sec:6.2)
                      dependencies: [<single experiment>]
   - set:             online SET throughput figure (no AOF vs single-log)
@@ -271,6 +275,11 @@ def render_replay_spectrum(plot_cfg: dict, deps: list[str], out_path: Path) -> N
     )
     ax.set_xlim(-0.6, n - 0.4)
 
+    # The rotated x tick labels shorten the axes box, so the y-label centered
+    # on it pokes past the figure's top edge and gets cropped; anchor it a
+    # little lower along the axis.
+    ax.yaxis.label.set_y(0.42)
+
     ncol, legend_width = resolve_legend_geom(plot_cfg, 2)
     legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
     if plot_cfg.get("legend_separate"):
@@ -286,6 +295,123 @@ def render_replay_spectrum(plot_cfg: dict, deps: list[str], out_path: Path) -> N
         )
 
     save_fig(fig, out_path)
+
+
+def render_replay_reader(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
+    # dependencies[0] = reader sweep (aof_physical_sublog_count x
+    # aof_replay_reader). Four figures share X = replay throughput; one
+    # datapoint per sublog count, pinned by the plot config's `filter` map of
+    # dotted param keys (e.g. client.aof_replay_reader: 1, client.itp: 128).
+    if len(deps) != 1:
+        raise ValueError(
+            f"replay_reader template expects 1 dependency [reader sweep]; got {deps}"
+        )
+    result = load_result(deps[0])
+    k_values = sorted(result["sweep_params"]["server.aof_physical_sublog_count"])
+    cfg_filter = dict(plot_cfg.get("filter") or {})
+
+    # (figure file suffix, y metric in result.yaml, default y-axis label,
+    # y unit scale). parse.py records reader latencies in us; scale them to
+    # ms for the figures.
+    metric_figures = [
+        ("tput", "reader_throughput", "Reader\nthroughput (Mop/s)", 1.0),
+        ("p50", "reader_lat_p50", "Reader\np50 latency (ms)", 1e-3),
+        ("p99", "reader_lat_p99", "Reader\np99 latency (ms)", 1e-3),
+        ("p999", "reader_lat_p99_9", "Reader\np99.9 latency (ms)", 1e-3),
+    ]
+
+    scale = float(plot_cfg.get("scale", 1.0))
+    ncol, legend_width = resolve_legend_geom(plot_cfg, 3)
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
+
+    for fig_idx, (suffix, y_metric, default_ylabel, y_scale) in enumerate(
+        metric_figures
+    ):
+        # Per-figure axis overrides use figure-suffixed keys, in the style of
+        # the other plot config keys: e.g. `yticks_p99` overrides `yticks`
+        # for the p99 figure only; works for any axis-styling key.
+        fig_cfg = dict(plot_cfg)
+        suffix_tag = f"_{suffix}"
+        for cfg_key, value in plot_cfg.items():
+            if cfg_key.endswith(suffix_tag):
+                fig_cfg[cfg_key[: -len(suffix_tag)]] = value
+        fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
+
+        all_x: list[float] = []
+        all_y: list[float] = []
+        for k in k_values:
+            key = "single_log" if k == 1 else f"multilog_m{k}"
+            filt = {**cfg_filter, "server.aof_physical_sublog_count": k}
+            # The config filter pins each series to one run per sublog count;
+            # the two extract_series calls pair as (replay tput, reader metric).
+            _, xs_replay, _ = extract_series(
+                result,
+                x_param="client.aof_replay_reader",
+                y_metric="throughput",
+                y_field="median",
+                filter_params=filt,
+            )
+            _, ys, _ = extract_series(
+                result,
+                x_param="client.aof_replay_reader",
+                y_metric=y_metric,
+                y_field="median",
+                filter_params=filt,
+            )
+            ys = [y * y_scale for y in ys]
+            if not xs_replay or len(xs_replay) != len(ys):
+                print(
+                    f"WARN: no paired data for aof_physical_sublog_count={k} "
+                    f"under filter {cfg_filter}",
+                    file=sys.stderr,
+                )
+                continue
+            all_x.extend(xs_replay)
+            all_y.extend(ys)
+            ax.plot(
+                xs_replay,
+                ys,
+                color=color_map[key],
+                linestyle=linestyle_map[key],
+                marker=marker_map[key],
+                markersize=MARKER_SIZE,
+                linewidth=LINEWIDTH,
+                label=labels_map[key],
+                zorder=zorder_map.get(key, 2),
+            )
+
+        y_log = fig_cfg.get("yscale") == "log"
+        default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+        default_xmax = max(all_x) * 1.05 if all_x else None
+        apply_axis_cfg(
+            ax,
+            fig_cfg,
+            default_xlabel="Replay throughput (Mop/s)",
+            default_ylabel=default_ylabel,
+            default_xmax=default_xmax,
+            default_ymax=default_ymax,
+        )
+
+        # The long x-label would clip at the figure's right edge; anchor it
+        # slightly left of the axes center.
+        ax.xaxis.label.set_x(0.48)
+
+        if plot_cfg.get("legend_separate"):
+            # All four figures carry the same curves; save the shared legend
+            # once as <name>_legend.pdf.
+            if fig_idx == 0:
+                save_legend(ax, out_path, width=legend_width, **legend_kwargs)
+        else:
+            handles, labels = row_major_handles(ax, ncol)
+            ax.legend(
+                handles,
+                labels,
+                loc="upper left",
+                bbox_to_anchor=(0.0, 1.0),
+                **legend_kwargs,
+            )
+
+        save_fig(fig, out_path.with_name(f"{out_path.stem}_{suffix}{out_path.suffix}"))
 
 
 def render_append(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
@@ -458,6 +584,7 @@ def render_set(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
 TEMPLATES = {
     "replay": render_replay,
     "replay_spectrum": render_replay_spectrum,
+    "replay_reader": render_replay_reader,
     "append": render_append,
     "set": render_set,
 }

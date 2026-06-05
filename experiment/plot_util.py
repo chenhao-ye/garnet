@@ -146,6 +146,17 @@ def _run_sweep_params(run_entry: dict) -> dict:
     return sweep
 
 
+def _run_param(run_entry: dict, key: str):
+    """Resolve a dotted `scope.param` key (e.g. "client.itp") for a run:
+    sweep_params first, then the run's resolved client/server params, so
+    filters can also pin params that were not swept."""
+    sweep = _run_sweep_params(run_entry)
+    if key in sweep:
+        return sweep[key]
+    scope, _, param = key.partition(".")
+    return run_entry.get("config", {}).get(f"{scope}_params", {}).get(param)
+
+
 def extract_series(
     result: dict,
     x_param: str,
@@ -160,7 +171,7 @@ def extract_series(
         sweep = _run_sweep_params(entry)
         if x_param not in sweep:
             continue
-        if not all(sweep.get(k) == v for k, v in filter_params.items()):
+        if not all(_run_param(entry, k) == v for k, v in filter_params.items()):
             continue
         x = float(sweep[x_param])
         stats = entry.get("stats", {}).get(y_metric, {})
@@ -329,7 +340,7 @@ def save_legend(
         labels,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
-        **legend_kwargs,
+        **dict(legend_kwargs, borderpad=0),
     )
     fig_leg.canvas.draw()
     legend_bbox = legend.get_window_extent().transformed(
@@ -337,8 +348,9 @@ def save_legend(
     )
     # Width is fixed at `width` (centered legend; whitespace padding on
     # both sides when the legend is narrower). Vertical crop tightens to
-    # the rendered legend extent with a small pad for anti-aliasing.
-    pad_y = 0.02
+    # the rendered legend extent with a hairline pad for anti-aliasing;
+    # the text's own line-box slack keeps ascenders/descenders intact.
+    pad_y = 0.005
     bbox = Bbox.from_extents(0, legend_bbox.y0 - pad_y, width, legend_bbox.y1 + pad_y)
     legend_path = fig_path.with_name(f"{fig_path.stem}_legend{fig_path.suffix}")
     legend_path.parent.mkdir(parents=True, exist_ok=True)
