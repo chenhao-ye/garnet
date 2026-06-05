@@ -38,7 +38,7 @@ namespace Garnet.server
         sealed class MutableStates
         {
             // private state of the replay thread
-            [FieldOffset(64)] public long lastDriftCheckSequenceNumber;
+            [FieldOffset(64)] public long nextDriftCheckSequenceNumber;
 
             // shared state between the replay and reader threads
             [FieldOffset(128)] public long sketchMax;
@@ -52,19 +52,21 @@ namespace Garnet.server
         public readonly long Max => mutableStates.sketchMax;
 
         /// <summary>
-        /// Sequence number of the record at which the owning replay thread last ran the
-        /// replay-driven cross-sublog drift scan; 0 until the first gate fires. Owner-private:
-        /// only this sublog's replay thread accesses it (see <see cref="MutableStates"/>).
+        /// Sequence number at or beyond which the owning replay thread runs its next
+        /// replay-driven cross-sublog drift scan; long.MaxValue when the replay-driven check is
+        /// disabled. Seeded at construction and maintained by ReadConsistencyManager's rotating
+        /// drift-check schedule. Owner-private: only this sublog's replay thread accesses it
+        /// (see <see cref="MutableStates"/>).
         /// </summary>
-        public readonly long LastDriftCheckSequenceNumber
+        public readonly long NextDriftCheckSequenceNumber
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => mutableStates.lastDriftCheckSequenceNumber;
+            get => mutableStates.nextDriftCheckSequenceNumber;
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            set => mutableStates.lastDriftCheckSequenceNumber = value;
+            set => mutableStates.nextDriftCheckSequenceNumber = value;
         }
 
-        public VirtualSublogReplayState(int sketchShift)
+        public VirtualSublogReplayState(int sketchShift, GarnetServerOptions serverOptions, int virtualSublogIdx)
         {
             var size = SketchSlotSize;
             if ((size & (size - 1)) != 0)
@@ -72,6 +74,16 @@ namespace Garnet.server
             Array.Clear(sketch);
             mutableStates.sketchMax = 0;
             mutableStates.minWaiterTarget = long.MaxValue;
+            // drift-check responsibility is rotated among sublogs; each sublog is init with a different drift check time
+            if (serverOptions.AofReplayDriftCheckFreq > 0 && serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1)
+            {
+                var windowLength = Math.Max(1, (long)serverOptions.AofReplayDriftCheckFreq * serverOptions.AofReplayDriftThreshold);
+                mutableStates.nextDriftCheckSequenceNumber = virtualSublogIdx * windowLength;
+            }
+            else // drift-check disabled
+            {
+                mutableStates.nextDriftCheckSequenceNumber = long.MaxValue;
+            }
             this.sketchShift = sketchShift;
         }
 
