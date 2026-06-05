@@ -1,0 +1,72 @@
+# Experiment: aof_reader_gcs_itp
+# Follow-up to aof_reader_gcs, which fixed itp=128 and swept m x R: reader
+# throughput saturated at ~9-10.6 Mops/s by R=16-32 at every m. This experiment
+# fixes m=8 (the reader path was nearly m-insensitive in aof_reader_gcs) and
+# sweeps pipeline depth (--itp) x reader-thread count to locate the source of
+# that ceiling: reader threads, pipeline depth, or the replica-side session
+# threads serving the GETs. itp=1 additionally anchors the true unpipelined
+# per-op RTT, which aof_reader_gcs never measured.
+#
+# Same split-process setup: a Replica-role bench in the server slot (AOF
+# generation + embedded Garnet + replay workers, node 0 CPU and membind) and a
+# Client-role bench in the client slot (GarnetClientSession readers, node 1 CPU
+# and membind), paced over the bench control channel (BEGIN/END/DONE on
+# --port + 10000). The client regenerates the keyset locally, so dbsize/keylength
+# must match across the two scopes (check.py enforces this). Replica stdout
+# (replay-only) lands in _server.log; client stdout (reader-only) in
+# benchmark/output.txt; parse.py merges them per pass.
+#
+# Latency semantics change across the itp axis: itp=1 records per-op RTT
+# (one GET in flight, one CompletePending per GET); itp>1 records per-batch
+# latency (one CompletePending per itp GETs), so effective per-op latency is
+# batch / itp. Do not compare latency columns across itp values directly.
+# The itp=128 column reproduces the aof_reader_gcs m=8 column as a sanity
+# cross-check.
+# Barrier spin is pinned to forever (-1, never sleep), matching aof_reader_gcs.
+
+name: aof_reader_gcs_itp
+description: "Split-process GarnetClientSession readers at m=8: pipeline depth (itp 1-512) x reader-thread count (1-32)"
+benchmark: aof
+no_server: false
+server_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
+repeat: 7
+
+affinity:
+  server:
+    numa_node: 0
+  client:
+    numa_node: 1
+
+check:
+  num_cores: 32
+
+base:
+  server_params:
+    aof_bench: true
+    aof_bench_role: Replica
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    aof_gen_pages: 256
+    aof_physical_sublog_count: 8
+    aof_barrier_spin_us: -1
+    port: 7379
+  client_params:
+    aof_bench: true
+    aof_bench_role: Client
+    client: GarnetClientSession
+    port: 7379
+    keylength: 8
+    dbsize: 10000000
+
+sweep:
+  server_params:
+    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32]
+  client_params:
+    aof_replay_reader: [1, 2, 4, 8, 16, 32]
+    itp: [1, 8, 64, 128, 256, 512, 1024, 4096, 8192, 16384]
