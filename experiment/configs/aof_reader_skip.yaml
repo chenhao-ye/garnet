@@ -1,6 +1,11 @@
 # Experiment: aof_reader_skip
 # Same setup as aof_reader, with --aof-reader-skip enabled so the reader bypasses
-# the consistency wait path. Isolates the consistent-read fast-path cost.
+# the consistency wait path. Isolates the consistent-read fast-path cost. With
+# every sublog frontier pre-set to max, cross-sublog drift reads as zero, so no
+# barrier rounds fire from either trigger -- this stays the no-barrier control.
+# In-proc readers require the default Combined role (single process). Barrier
+# spin pinned to forever (-1) to keep the knob set identical to aof_reader,
+# whose results this control is compared against.
 
 name: aof_reader_skip
 description: "Reader with consistency wait bypassed (--aof-reader-skip); sweep AOF physical sublog count"
@@ -27,6 +32,7 @@ base:
     aof_gen_pages: 256
     aof_replay_reader: 1
     aof_reader_skip: true
+    aof_barrier_spin_us: -1
 
 sweep:
   client_params:
