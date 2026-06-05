@@ -555,6 +555,93 @@ def _cores_in_numa_nodes(node_spec: Any) -> int | None:
     return total
 
 
+def validate_split_roles(
+    issues: list[Issue],
+    *,
+    spec: Any,
+    sweep_server_params: dict[str, Any],
+    sweep_client_params: dict[str, Any],
+) -> None:
+    """Cross-checks for split-process AOF runs (Replica-role bench in the server slot,
+    Client-role bench in the client slot). There is no runtime parameter handshake -- this
+    static consistency check is the sole guard."""
+
+    def scope_values(base: dict[str, Any], sweep_map: dict[str, Any], key: str) -> set[str]:
+        if key in sweep_map:
+            return {str(v) for v in sweep_map[key]}
+        if key in base:
+            return {str(base[key])}
+        return set()
+
+    s_roles = {
+        v.lower()
+        for v in scope_values(spec.base_server_params, sweep_server_params, "aof_bench_role")
+    }
+    c_roles = {
+        v.lower()
+        for v in scope_values(spec.base_client_params, sweep_client_params, "aof_bench_role")
+    }
+
+    if "primary" in (s_roles | c_roles):
+        add_issue(
+            issues,
+            "ERROR",
+            "aof_bench_role",
+            "'Primary' is reserved for a future streaming-AOF bench and is not implemented",
+        )
+
+    if "client" not in c_roles and "replica" not in s_roles:
+        return  # not a split run
+
+    if "client" in c_roles and "replica" not in s_roles:
+        add_issue(
+            issues,
+            "ERROR",
+            "aof_bench_role",
+            "client_params run the Client role but server_params do not run the Replica role",
+        )
+    if "replica" in s_roles and "client" not in c_roles:
+        add_issue(
+            issues,
+            "ERROR",
+            "aof_bench_role",
+            "server_params run the Replica role but client_params do not run the Client role; "
+            "the replica would wait on the control channel forever",
+        )
+    if "replica" in s_roles and spec.no_server:
+        add_issue(
+            issues,
+            "ERROR",
+            "aof_bench_role",
+            "a Replica-role server requires no_server: false (the harness must launch it)",
+        )
+
+    if "client" in c_roles:
+        client_types = scope_values(spec.base_client_params, sweep_client_params, "client")
+        if client_types and client_types != {"GarnetClientSession"}:
+            add_issue(
+                issues,
+                "ERROR",
+                "aof_bench_role",
+                "the Client role requires client: GarnetClientSession",
+            )
+
+    # The Client role regenerates the keyset locally; both processes must agree on the
+    # parameters that determine it.
+    for key in ("dbsize", "keylength"):
+        s_vals = scope_values(spec.base_server_params, sweep_server_params, key)
+        c_vals = scope_values(spec.base_client_params, sweep_client_params, key)
+        if s_vals != c_vals:
+            add_issue(
+                issues,
+                "ERROR",
+                "aof_bench_role",
+                f"'{key}' differs between server_params ({sorted(s_vals) or 'unset'}) and "
+                f"client_params ({sorted(c_vals) or 'unset'}); the Client role would "
+                "regenerate a different keyset",
+            )
+
+
 def _available_cores(client: Any) -> tuple[int | None, str]:
     """Logical CPUs the experiment may use, with a human description. Uses the client
     affinity binding when set (the role that runs the workload), else the whole machine."""
@@ -632,12 +719,19 @@ def _check_one(config: str, supported_client_params: set[str]) -> bool:
         supported=supported_client_params,
         kind="client",
     )
+    # A bench in the server slot (split-process Replica role) takes Resp.benchmark flags, not
+    # GarnetServer ones; validate its params against the bench option set.
+    bench_as_server = spec.server_project.endswith("Resp.benchmark.csproj")
+    server_supported = (
+        supported_client_params if bench_as_server else SUPPORTED_SERVER_OPTION_NAMES
+    )
+    server_kind = "client" if bench_as_server else "server"
     validate_param_keys(
         issues,
         spec.base_server_params,
         scope="base.server_params",
-        supported=SUPPORTED_SERVER_OPTION_NAMES,
-        kind="server",
+        supported=server_supported,
+        kind=server_kind,
     )
 
     sweep = spec.config.get("sweep", {}) or {}
@@ -645,11 +739,9 @@ def _check_one(config: str, supported_client_params: set[str]) -> bool:
     for scope, param_map in sweep.items():
         param_map = param_map or {}
         supported = (
-            supported_client_params
-            if scope == "client_params"
-            else SUPPORTED_SERVER_OPTION_NAMES
+            supported_client_params if scope == "client_params" else server_supported
         )
-        kind = "client" if scope == "client_params" else "server"
+        kind = "client" if scope == "client_params" else server_kind
         validate_param_keys(
             issues,
             param_map,
@@ -685,6 +777,13 @@ def _check_one(config: str, supported_client_params: set[str]) -> bool:
     )
 
     validate_check_section(issues, check_cfg=spec.check, affinity=spec.affinity)
+
+    validate_split_roles(
+        issues,
+        spec=spec,
+        sweep_server_params=dict(sweep.get("server_params", {}) or {}),
+        sweep_client_params=sweep_client_params,
+    )
 
     print_issues(issues, spec.config_path)
     return any(issue.level == "ERROR" for issue in issues)

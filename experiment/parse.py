@@ -200,7 +200,10 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
             value = match.group("value")
 
             if name == "Total time":
-                if current and current.get("throughput") is not None:
+                if current and (
+                    current.get("throughput") is not None
+                    or current.get("reader_throughput") is not None
+                ):
                     samples.append(current)
                 current = {}
                 current["time_ms"] = _parse_number(value)
@@ -229,7 +232,10 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
                         columns.append(key)
 
     if current:
-        if current.get("throughput") is not None:
+        if (
+            current.get("throughput") is not None
+            or current.get("reader_throughput") is not None
+        ):
             samples.append(current)
     return samples, columns
 
@@ -507,6 +513,33 @@ def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
         warmup_rows=warmup,
         expected_op=config.get("client_params", {}).get("op"),
     )
+
+    # Split-process AOF run: the Replica role's replay metrics land in _server.log (one
+    # [Total time] block per pass) while output.txt carries the Client role's reader metrics.
+    # Merge them pairwise by pass; the replica's time_ms/bytes describe the pass window, so
+    # the client's are dropped.
+    server_log = run_dir / "_server.log"
+    if (
+        benchmark == "aof"
+        and server_log.exists()
+        and "[Total time]" in server_log.read_text(errors="ignore")
+    ):
+        server_samples, server_columns = _parse_aof_output(server_log)
+        if len(server_samples) != len(samples):
+            raise ValueError(
+                f"{run_dir.name}: replica passes ({len(server_samples)}) != "
+                f"client passes ({len(samples)}) -- split-run outputs out of sync"
+            )
+        merged = []
+        for srv, cli in zip(server_samples, samples):
+            row = dict(srv)
+            row.update({k: v for k, v in cli.items() if k not in ("time_ms", "bytes")})
+            merged.append(row)
+        samples = merged
+        metric_columns = server_columns + [
+            c for c in metric_columns if c not in server_columns and c not in ("time_ms", "bytes")
+        ]
+
     repeat = int(config.get("repeat", 1) or 1)
     samples = _aggregate_repetitions(samples, metric_columns, repeat)
     stats = _summarize_samples(samples, metric_columns)

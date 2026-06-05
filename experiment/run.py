@@ -109,6 +109,12 @@ def numactl_prefix(affinity: AffinitySpec | None) -> list[str]:
     return args
 
 
+def is_benchmark_project(project: str) -> bool:
+    """True when the project is Resp.benchmark, e.g. a bench process in the server slot
+    (the Replica role of a split-process AOF run)."""
+    return project.endswith("Resp.benchmark.csproj")
+
+
 def build_command(
     project: str,
     params: dict,
@@ -128,10 +134,10 @@ def build_command(
         str(project_path),
         "--",
     ]
-    if is_server:
+    if is_server and not is_benchmark_project(project):
         cmd += params_to_args(params, bool_params=SERVER_BOOL_PARAMS, list_params=set())
     else:
-        # check_client_params(params)
+        # A bench in the server slot takes Resp.benchmark flags, not GarnetServer ones.
         cmd += params_to_args(
             params, bool_params=CLIENT_BOOL_PARAMS, list_params=CLIENT_LIST_PARAMS
         )
@@ -321,6 +327,13 @@ def execute_run(
     client_params = dict(client_params)
     if repeat > 1:
         client_params["repeat"] = repeat
+
+    # In a split-process AOF run the Replica role (the bench in the server slot) drives the
+    # passes, so it carries the repeat count; the client learns the count implicitly from the
+    # control channel's DONE message.
+    server_params = dict(server_params)
+    if repeat > 1 and is_benchmark_project(server_project):
+        server_params["repeat"] = repeat
 
     server_cmd = build_command(
         server_project, server_params, is_server=True, affinity=affinity.server
