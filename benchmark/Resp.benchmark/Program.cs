@@ -184,7 +184,7 @@ namespace Resp.benchmark
 
             loggerFactory = CreateLoggerFactory(opts);
 
-            if (!(opts.Client == ClientType.InProc || opts.AofBench))
+            if (!(opts.Client == ClientType.InProc || opts.AofBench || opts.ReplicationBench))
                 WaitForServer(opts);
 
             if (opts.SaveFreqSecs > 0)
@@ -296,6 +296,10 @@ namespace Resp.benchmark
                         foreach (var threadCount in opts.NumThreads)
                             bench.Run(threadCount);
                 }
+            }
+            else if (opts.ReplicationBench)
+            {
+                new ReplicationBench(opts).Run();
             }
             else
             {

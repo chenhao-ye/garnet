@@ -141,6 +141,30 @@ namespace Resp.benchmark
         public int PseudoTimestampPace { get; set; }
 
         /*
+         * ReplicationBench options
+         */
+        [Option("replication-bench", Required = false, Default = false, HelpText = "Run the replication bench client: writer threads issuing SETs to the primary plus reader threads issuing GETs to the replica. The primary/replica servers and their cluster setup are managed externally (e.g. by the experiment harness).")]
+        public bool ReplicationBench { get; set; }
+
+        [Option("primary-host", Required = false, Default = "127.0.0.1", HelpText = "Host of the primary node the writer threads target.")]
+        public string PrimaryHost { get; set; }
+
+        [Option("primary-port", Required = false, Default = 0, HelpText = "Port of the primary node the writer threads target.")]
+        public int PrimaryPort { get; set; }
+
+        [Option("replica-host", Required = false, Default = "127.0.0.1", HelpText = "Host of the replica node the reader threads target.")]
+        public string ReplicaHost { get; set; }
+
+        [Option("replica-port", Required = false, Default = 0, HelpText = "Port of the replica node the reader threads target.")]
+        public int ReplicaPort { get; set; }
+
+        [Option("replication-writers", Required = false, Default = 1, HelpText = "ReplicationBench: writer threads issuing SETs to the primary.")]
+        public int ReplicationWriters { get; set; }
+
+        [Option("replication-readers", Required = false, Default = 1, HelpText = "ReplicationBench: reader threads issuing GETs to the replica.")]
+        public int ReplicationReaders { get; set; }
+
+        /*
          * InProc/AofBench server options
          */
         [Option("aof", Required = false, Default = false, HelpText = "Enable AOF")]
