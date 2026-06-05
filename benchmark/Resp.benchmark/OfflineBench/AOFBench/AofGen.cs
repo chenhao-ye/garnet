@@ -61,6 +61,9 @@ namespace Resp.benchmark
 
         readonly int keyLen;
 
+        public byte[] GlobalKeys => globalKeys;
+        public int KeyLen => keyLen;
+
         public AofGen(Options options)
         {
             this.options = options;
@@ -104,20 +107,32 @@ namespace Resp.benchmark
             return new(aofSyncSendBufferSize, aofSyncInitialReceiveBufferSize);
         }
 
-        // Phase A: build the fixed-size global hex keyset and bucket it by physical sublog.
-        // Throws if the hash leaves any sublog bucket empty, instead of letting a worker spin in
-        // a rejection-sampling loop forever (the failure mode we hit at k>=16 with structured numeric keys).
+        // Phase A: build the global hex keyset, plus (Replay only) per-sublog buckets.
         unsafe void BuildSublogKeysets()
         {
             var dbsize = options.DbSize;
             var sublogCount = options.AofPhysicalSublogCount;
 
             globalKeys = new byte[dbsize * keyLen];
+            for (int i = 0; i < dbsize; i++)
+                FormatHexKey(globalKeys, i * keyLen, keyLen, i);
+
+            var valueLen = options.ValueLength;
+            sharedValue = GC.AllocateArray<byte>(valueLen, pinned: true);
+            Array.Fill(sharedValue, (byte)'V');
+
+            if (!options.IsReplayEnabled)
+            {
+                Console.WriteLine($"Pre-built global keyset (dbsize={dbsize}, keyLen={keyLen}).");
+                return;
+            }
+
+            // Replay binds generator/worker thread t to sublog t. An empty bucket would spin
+            // the rejection-sampling loop in GeneratePages forever, hence the explicit throw.
             var sublogAssign = new int[dbsize];
             bucketCounts = new int[sublogCount];
             for (int i = 0; i < dbsize; i++)
             {
-                FormatHexKey(globalKeys, i * keyLen, keyLen, i);
                 var keySpan = globalKeys.AsSpan(i * keyLen, keyLen);
                 int sub = garnetLog.GetPhysicalSublogIdx(keySpan);
                 sublogAssign[i] = sub;
@@ -128,13 +143,6 @@ namespace Resp.benchmark
                     throw new Exception(
                         $"Hash distribution leaves sublog {s} of {sublogCount} with zero of the {dbsize} generated keys. " +
                         $"Increase --dbsize to populate every bucket.");
-
-            // One shared, fixed-content value buffer for every key and every thread.
-            // Read-only sharing — no false-sharing risk, and benchmark metrics only care
-            // about the byte count, not the bytes themselves.
-            var valueLen = options.ValueLength;
-            sharedValue = GC.AllocateArray<byte>(valueLen, pinned: true);
-            Array.Fill(sharedValue, (byte)'V');
 
             perSublogKeysets = new byte[sublogCount][];
             for (int s = 0; s < sublogCount; s++)
@@ -158,90 +166,60 @@ namespace Resp.benchmark
         }
 
         // Phase B: (re)build kvPairBuffers for the current Run's threadCount.
-        // EnqueueSharded / Replay: round-robin partition — thread t owns sublogs {s : s % threadCount == t}.
-        //   * 1-sublog threads share the perSublogKeysets entry by reference (no copy).
-        //   * Multi-sublog threads get a concatenated pinned buffer.
-        // EnqueueRandom: every thread gets a private pinned copy of all dbsize keys (unchanged).
+        // Replay: identity mapping thread t -> sublog t (caller passes threadCount == AofPhysicalSublogCount).
+        // EnqueueSharded: thread t owns the keys whose GarnetLog.HASH(key) % threadCount == t;
+        //   sublog routing inside Enqueue is independent and happens via the same hash mod sublogCount.
+        // EnqueueRandom: every thread gets a private copy of all dbsize keys.
         public void BuildKVPairBuffersForRun(int threadCount)
         {
             var sublogCount = options.AofPhysicalSublogCount;
             kvPairBuffers = new KVPairBuffer[threadCount];
 
-            bool sharded = options.IsReplayEnabled || options.AofBenchType == AofBenchType.EnqueueSharded;
-
-            if (sharded)
+            if (options.IsReplayEnabled)
             {
-                // Round-robin:
-                //   T >= S: thread t owns exactly sublog (t % S); multiple threads share a sublog.
-                //   T <  S: thread t owns sublogs {s : s % T == t}; multiple sublogs per thread.
-                var ownedSublogs = new int[threadCount][];
-                if (threadCount >= sublogCount)
-                {
-                    for (int t = 0; t < threadCount; t++)
-                        ownedSublogs[t] = [t % sublogCount];
-                }
-                else
-                {
-                    var ownedCount = new int[threadCount];
-                    for (int s = 0; s < sublogCount; s++)
-                        ownedCount[s % threadCount]++;
-                    for (int t = 0; t < threadCount; t++)
-                        ownedSublogs[t] = new int[ownedCount[t]];
-                    var fillOffset = new int[threadCount];
-                    for (int s = 0; s < sublogCount; s++)
-                    {
-                        int t = s % threadCount;
-                        ownedSublogs[t][fillOffset[t]++] = s;
-                    }
-                }
-
-                var perThreadCounts = new int[threadCount];
+                if (threadCount != sublogCount)
+                    throw new Exception($"Replay requires threadCount ({threadCount}) == AofPhysicalSublogCount ({sublogCount}).");
                 for (int t = 0; t < threadCount; t++)
                 {
-                    var owned = ownedSublogs[t];
-                    int count = 0;
-                    foreach (var s in owned) count += bucketCounts[s];
-
-                    byte[] keys;
-                    if (owned.Length == 1)
-                    {
-                        keys = perSublogKeysets[owned[0]];
-                    }
-                    else
-                    {
-                        keys = GC.AllocateArray<byte>(count * keyLen, pinned: true);
-                        int dstOffset = 0;
-                        foreach (var s in owned)
-                        {
-                            int byteLen = bucketCounts[s] * keyLen;
-                            Buffer.BlockCopy(perSublogKeysets[s], 0, keys, dstOffset, byteLen);
-                            dstOffset += byteLen;
-                        }
-                    }
                     kvPairBuffers[t] = new KVPairBuffer
                     {
-                        Keys = keys,
+                        Keys = perSublogKeysets[t],
                         Value = sharedValue,
                         KeyLen = keyLen,
-                        Count = count,
+                        Count = bucketCounts[t],
                     };
-                    perThreadCounts[t] = count;
                 }
-
-                var partition = new StringBuilder();
+            }
+            else if (options.AofBenchType == AofBenchType.EnqueueSharded)
+            {
+                var dbsize = options.DbSize;
+                var threadAssign = new int[dbsize];
+                var perThreadCounts = new int[threadCount];
+                for (int i = 0; i < dbsize; i++)
+                {
+                    var hash = GarnetLog.HASH(globalKeys.AsSpan(i * keyLen, keyLen));
+                    int t = (int)((ulong)hash % (ulong)threadCount);
+                    threadAssign[i] = t;
+                    perThreadCounts[t]++;
+                }
                 for (int t = 0; t < threadCount; t++)
                 {
-                    if (t > 0) partition.Append("; ");
-                    partition.Append($"t{t}->{{");
-                    for (int i = 0; i < ownedSublogs[t].Length; i++)
+                    kvPairBuffers[t] = new KVPairBuffer
                     {
-                        if (i > 0) partition.Append(',');
-                        partition.Append('s').Append(ownedSublogs[t][i]);
-                    }
-                    partition.Append('}');
+                        Keys = GC.AllocateArray<byte>(perThreadCounts[t] * keyLen, pinned: true),
+                        Value = sharedValue,
+                        KeyLen = keyLen,
+                        Count = perThreadCounts[t],
+                    };
                 }
-                Console.WriteLine($"threads={threadCount} sublogs={sublogCount} (round-robin): {partition}");
-                Console.WriteLine($"  per-thread key counts=[{string.Join(", ", perThreadCounts)}]");
+                var offsets = new int[threadCount];
+                for (int i = 0; i < dbsize; i++)
+                {
+                    int t = threadAssign[i];
+                    Buffer.BlockCopy(globalKeys, i * keyLen, kvPairBuffers[t].Keys, offsets[t] * keyLen, keyLen);
+                    offsets[t]++;
+                }
+                Console.WriteLine($"threads={threadCount} sublogs={sublogCount} (hash%T): per-thread key counts=[{string.Join(", ", perThreadCounts)}]");
             }
             else
             {
@@ -262,9 +240,7 @@ namespace Resp.benchmark
         }
 
         // Hex-encode keyLen characters derived from MurmurHash3(i). High-entropy bytes
-        // ensure Utility.HashBytes(key) % k is near-uniform for k up to 64 — unlike the
-        // previous "i.ToString().PadLeft(keyLen, 'X')" which clustered low bits and left
-        // 6/12/24 of the 16/32/64 buckets empty.
+        // ensure Utility.HashBytes(key) % k is near-uniform for k up to 64.
         // If keyLen > 16 (very unusual), the tail is padded with '0'.
         static unsafe void FormatHexKey(byte[] dest, int offset, int keyLen, int i)
         {
@@ -281,12 +257,7 @@ namespace Resp.benchmark
 
         public void GenerateData()
         {
-            if (!options.IsReplayEnabled)
-            {
-                // Per-thread buffers are (re)built at the start of each Run() now, so nothing to do here.
-                Console.WriteLine($"Pre-built per-sublog keysets from {options.DbSize} hex keys (keyLen={keyLen}, sublogs={options.AofPhysicalSublogCount}).");
-                return;
-            }
+            if (!options.IsReplayEnabled) return;
 
             Console.WriteLine($"Generating AoFBench Data!");
             var threads = options.AofPhysicalSublogCount;

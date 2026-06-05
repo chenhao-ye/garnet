@@ -108,7 +108,8 @@ namespace Tsavorite.core
 
             var hash = GetKeyHash(key);
             Session.functions.BeforeConsistentReadCallback(hash);
-            var status = BasicContext.Read(key, ref input, ref output, userContext);
+            var readOptions = new ReadOptions { KeyHash = hash };
+            var status = BasicContext.Read(key, ref input, ref output, ref readOptions, userContext);
             Session.functions.AfterConsistentReadKeyCallback();
             return status;
         }

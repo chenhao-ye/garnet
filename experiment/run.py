@@ -58,6 +58,7 @@ CLIENT_BOOL_PARAMS = {
     "aof_null_device",
     "client_hist",
     "aof_bench",
+    "aof_reader_skip",
 }
 SERVER_BOOL_PARAMS = {"aof", "aof_null_device", "cluster", "tls"}
 

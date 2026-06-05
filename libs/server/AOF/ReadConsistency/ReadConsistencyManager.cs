@@ -23,7 +23,12 @@ namespace Garnet.server
         public long CurrentVersion { get; private set; } = currentVersion;
         readonly GarnetServerOptions serverOptions = serverOptions;
 
-        readonly VirtualSublogReplayState[] vsrs = [.. Enumerable.Range(0, serverOptions.AofVirtualSublogCount).Select(_ => new VirtualSublogReplayState())];
+        /// <summary>
+        /// Maximum total time in milliseconds the consistent read wait may block before throwing.
+        /// </summary>
+        readonly int replicaSyncTimeoutMs = (int)serverOptions.ReplicaSyncTimeout.TotalMilliseconds;
+
+        readonly VirtualSublogReplayState[] vsrs = [.. Enumerable.Range(0, serverOptions.AofVirtualSublogCount).Select(_ => new VirtualSublogReplayState(appendOnlyFile.Log.physicalSublogShift + appendOnlyFile.Log.replayTaskShift))];
 
         /// <summary>
         /// Get sequence number for provided key.
@@ -60,6 +65,7 @@ namespace Garnet.server
         /// </summary>
         /// <param name="keyHash"></param>
         /// <returns></returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         long GetSublogFrontierSequenceNumber(long keyHash)
             => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].GetFrontierSequenceNumber(keyHash);
 
@@ -68,6 +74,7 @@ namespace Garnet.server
         /// </summary>
         /// <param name="keyHash"></param>
         /// <returns></returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         long GetKeySequenceNumber(long keyHash)
             => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].GetKeySequenceNumber(keyHash);
 
@@ -130,7 +137,7 @@ namespace Garnet.server
         /// </summary>
         /// <param name="hash"></param>
         /// <param name="replicaReadSessionContext"></param>
-        /// <param name="ct"></param>
+        /// <param name="ct">Cancellation token that aborts the wait when the session ends.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void VerifyKeyFreshness(long hash, ref ReplicaReadSessionContext replicaReadSessionContext, CancellationToken ct)
         {
@@ -141,12 +148,13 @@ namespace Garnet.server
             if (replicaReadSessionContext.lastVirtualSublogIdx != -1 && replicaReadSessionContext.lastVirtualSublogIdx != virtualSublogIdx)
             {
                 // Optimistic check without lock
-                while (replicaReadSessionContext.maximumSessionSequenceNumber >= GetSublogFrontierSequenceNumber(hash))
+                if (replicaReadSessionContext.maximumSessionSequenceNumber >= GetSublogFrontierSequenceNumber(hash))
                 {
                     vsrs[virtualSublogIdx].WaitForSequenceNumber(
                         hash,
                         replicaReadSessionContext.maximumSessionSequenceNumber,
-                        ct);
+                        ct,
+                        replicaSyncTimeoutMs);
                 }
             }
 
@@ -164,7 +172,8 @@ namespace Garnet.server
         /// </summary>
         /// <param name="hash"></param>
         /// <param name="replicaReadSessionContext"></param>
-        /// <param name="ct"></param>
+        /// <param name="ct">Cancellation token that aborts the wait when the session ends.</param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void BeforeConsistentReadKey(long hash, ref ReplicaReadSessionContext replicaReadSessionContext, CancellationToken ct)
         {
             // Check version
@@ -182,6 +191,7 @@ namespace Garnet.server
         ///     we cannot be certain at prepare phase what is the actual sequence number.
         /// </summary>
         /// <param name="replicaReadSessionContext"></param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void AfterConsistentReadKey(ref ReplicaReadSessionContext replicaReadSessionContext)
         {
             replicaReadSessionContext.maximumSessionSequenceNumber = Math.Max(
@@ -193,7 +203,7 @@ namespace Garnet.server
         /// </summary>
         /// <param name="key"></param>
         /// <param name="batchReadContext"></param>
-        /// <param name="ct"></param>
+        /// <param name="ct">Cancellation token that aborts the wait when the session ends.</param>
         /// <param name="hash"></param>
         public void BeforeConsistentReadKeyBatch(ReadOnlySpan<byte> key, ref ReplicaReadSessionContext batchReadContext, CancellationToken ct, out long hash)
         {

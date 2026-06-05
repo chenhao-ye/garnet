@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Text;
 using Garnet.server;
+using HdrHistogram;
 using Tsavorite.core;
 
 namespace Resp.benchmark
@@ -38,6 +39,7 @@ namespace Resp.benchmark
         readonly Options options;
         readonly AofGen aofGen;
         readonly AofReplayStream[] aofReplayStream;
+        readonly GarnetServerInstance instance;
         StringBuilder stats = new();
         long total_bytes_processed = 0;
         long total_pages_processed = 0;
@@ -48,6 +50,11 @@ namespace Resp.benchmark
 
         AofAddress aofTailAddress;
         readonly LightEpoch epoch;
+
+        long readerOperationsCompleted;
+        static readonly long HistogramLowerBound = 1;
+        static readonly long HistogramUpperBound = TimeStamp.Seconds(100);
+        const int HistogramSigFigs = 2;
 
         public AofBench(Options options)
         {
@@ -63,7 +70,7 @@ namespace Resp.benchmark
             if (options.IsReplayEnabled)
             {
                 options.EnableCluster = true;
-                var instance = new GarnetServerInstance(options);
+                instance = new GarnetServerInstance(options);
                 aofReplayStream = [.. Enumerable.Range(0, options.AofPhysicalSublogCount).Select(
                     x => new AofReplayStream(instance, threadId: x, startAddress: 64, options))];
             }
@@ -80,6 +87,10 @@ namespace Resp.benchmark
             aofGen.BuildKVPairBuffersForRun(threads);
             var workers = new Thread[threads];
 
+            var useReaders = options.IsReplayEnabled && options.AofReplayReader > 0;
+            RespServerSession[] readerSessions = null;
+            LongHistogram[] readerHistograms = null;
+
             Console.WriteLine($"Epoch instance count:{LightEpoch.ActiveInstanceCount()}");
 
             try
@@ -95,6 +106,18 @@ namespace Resp.benchmark
                 if (options.IsReplayEnabled)
                     aofTailAddress = aofGen.appendOnlyFile.Log.TailAddress;
 
+                if (useReaders)
+                {
+                    instance.server.StoreWrapper.appendOnlyFile.CreateOrUpdateKeySequenceManager();
+                    if (options.AofReaderSkip)
+                        for (var i = 0; i < options.AofPhysicalSublogCount; i++)
+                            RaiseSublogFrontierToMax(i);
+                    readerSessions = instance.server.GetRespSessions(options.AofReplayReader);
+                    readerHistograms = new LongHistogram[options.AofReplayReader];
+                    for (var i = 0; i < options.AofReplayReader; i++)
+                        readerHistograms[i] = new LongHistogram(HistogramLowerBound, HistogramUpperBound, HistogramSigFigs);
+                }
+
                 // Run the experiment.
                 for (var idx = 0; idx < threads; ++idx)
                 {
@@ -109,21 +132,47 @@ namespace Resp.benchmark
                     };
                 }
 
+                Thread[] readers = null;
+                if (useReaders)
+                {
+                    readers = new Thread[options.AofReplayReader];
+                    for (var idx = 0; idx < options.AofReplayReader; idx++)
+                    {
+                        var x = idx;
+                        var session = readerSessions[idx];
+                        var hist = readerHistograms[idx];
+                        readers[idx] = new Thread(() => RunReader(x, session, hist));
+                    }
+                }
+
                 // Start threads.
                 foreach (var worker in workers)
                     worker.Start();
+                if (readers != null)
+                {   
+                    foreach (var r in readers)
+                        r.Start();
+                }
 
                 waiter.Set();
 
                 Stopwatch swatch = new();
                 swatch.Start();
-                // Let workers operate for a specific RunTime
-                Thread.Sleep(TimeSpan.FromSeconds(options.RunTime));
-                done = true;
-
-                // Wait for AOF load to complete
-                foreach (var worker in workers)
-                    worker.Join();
+                if (useReaders)  // replay timestamp must be monotonic => run a single-pass over AOF pages
+                {
+                    // Single-pass: the first replay worker to exhaust pages sets `done`
+                    foreach (var worker in workers)
+                        worker.Join();
+                    foreach (var reader in readers)
+                        reader.Join();
+                }
+                else  // cyclic over AOF pages until RunTime
+                {
+                    Thread.Sleep(TimeSpan.FromSeconds(options.RunTime));
+                    done = true;
+                    foreach (var worker in workers)
+                        worker.Join();
+                }
 
                 swatch.Stop();
 
@@ -147,6 +196,27 @@ namespace Resp.benchmark
                     Console.WriteLine($"[Total records enqueued]: {total_records_enqueued:N0}");
                     Console.WriteLine($"[Throughput]: {recordsEnqueuedPerSecond:N2} records/sec");
                 }
+
+                if (useReaders)
+                {
+                    var readerThroughput = readerOperationsCompleted / seconds;
+                    Console.WriteLine($"[Reader operations]: {readerOperationsCompleted:N0}");
+                    Console.WriteLine($"[Reader throughput]: {readerThroughput:N2} ops/sec");
+                    var merged = new LongHistogram(HistogramLowerBound, HistogramUpperBound, HistogramSigFigs);
+                    foreach (var h in readerHistograms)
+                        merged.Add(h);
+                    if (merged.TotalCount > 0)
+                    {
+                        var s = OutputScalingFactor.TimeStampToMicroseconds;
+                        Console.WriteLine(
+                            $"[Reader latency us] " +
+                            $"p50={Math.Round(merged.GetValueAtPercentile(50) / s, 2)} " +
+                            $"p90={Math.Round(merged.GetValueAtPercentile(90) / s, 2)} " +
+                            $"p99={Math.Round(merged.GetValueAtPercentile(99) / s, 2)} " +
+                            $"p99.9={Math.Round(merged.GetValueAtPercentile(99.9) / s, 2)} " +
+                            $"max={Math.Round(merged.GetMaxValue() / s, 2)}");
+                    }
+                }
             }
             finally
             {
@@ -154,7 +224,13 @@ namespace Resp.benchmark
                 total_records_replayed = 0;
                 total_records_enqueued = 0;
                 total_bytes_processed = 0;
+                readerOperationsCompleted = 0;
+                if (readerSessions != null)
+                    foreach (var s in readerSessions)
+                        s?.Dispose();
                 waiter.Reset();
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
                 Console.WriteLine("------------------------------");
             }
         }
@@ -181,9 +257,7 @@ namespace Resp.benchmark
                 {
                     int i = rng.Next(count);
                     var key = SpanByte.FromPinnedPointer(keysPtr + i * keyLen, keyLen);
-                    // Emulate Tsavorite upsert: the hash is computed once on the write path,
-                    // regardless of AofPhysicalSublogCount. The k=1 branch ignores it.
-                    var keyHash = SpanByteComparer.StaticGetHashCode64(key);
+                    var keyHash = GarnetLog.HASH(key);
                     StringInput input = default;
                     aofGen.appendOnlyFile.Log.Enqueue(
                         AofEntryType.StoreUpsert,
@@ -204,6 +278,13 @@ namespace Resp.benchmark
             _ = Interlocked.Add(ref total_bytes_processed, bytesEnqueued);
         }
 
+        // Set the physical sublog's frontier to long.MaxValue.
+        // Any reader currently parked inside BeforeConsistentReadKey on this sublog returns immediately.
+        // Subsequent reads on this sublog skip the wait path.
+        void RaiseSublogFrontierToMax(int physicalSublogIdx)
+            => instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager
+                ?.UpdatePhysicalSublogMaxSequenceNumber(physicalSublogIdx, long.MaxValue);
+
         unsafe void RunAofReplayBench(int threadId)
         {
             var buffers = aofGen.GetPageBuffers(threadId);
@@ -213,6 +294,7 @@ namespace Resp.benchmark
             var pagesSend = 0L;
             var totalBytes = 0L;
             var recordsReplayedCount = 0L;
+            var singlePass = options.AofReplayReader > 0;
 
             waiter.Wait();
 
@@ -221,6 +303,11 @@ namespace Resp.benchmark
 
             while (!done)
             {
+                if (singlePass && offset >= buffers.Length)
+                {
+                    done = true;
+                    break;
+                }
                 var pos = offset++ % buffers.Length;
                 var currPage = buffers[pos];
                 fixed (byte* payloadPtr = currPage.payload)
@@ -237,7 +324,8 @@ namespace Resp.benchmark
                 }
             }
 
-            //Console.WriteLine($"[{threadId}] - Pages send: {pagesSend:N0}, Total AOF bytes send: {totalBytes:N0}, Total records replayed:{recordsReplayedCount:N0}");
+            if (singlePass)
+                RaiseSublogFrontierToMax(threadId);
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -252,6 +340,7 @@ namespace Resp.benchmark
             var pagesSend = 0L;
             var totalBytes = 0L;
             var recordsReplayedCount = 0L;
+            var singlePass = options.AofReplayReader > 0;
 
             waiter.Wait();
 
@@ -260,6 +349,11 @@ namespace Resp.benchmark
 
             while (!done)
             {
+                if (singlePass && offset >= buffers.Length)
+                {
+                    done = true;
+                    break;
+                }
                 var pos = offset++ % buffers.Length;
                 var currPage = buffers[pos];
                 fixed (byte* payloadPtr = currPage.payload)
@@ -276,7 +370,8 @@ namespace Resp.benchmark
                 }
             }
 
-            //Console.WriteLine($"[{threadId}] - Pages send: {pagesSend:N0}, Total AOF bytes send: {totalBytes:N0}, Total records replayed:{recordsReplayedCount:N0}");
+            if (singlePass)
+                RaiseSublogFrontierToMax(threadId);
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
@@ -291,6 +386,7 @@ namespace Resp.benchmark
             var pagesSend = 0L;
             var totalBytes = 0L;
             var recordsReplayedCount = 0L;
+            var singlePass = options.AofReplayReader > 0;
 
             waiter.Wait();
 
@@ -299,6 +395,11 @@ namespace Resp.benchmark
 
             while (!done)
             {
+                if (singlePass && offset >= buffers.Length)
+                {
+                    done = true;
+                    break;
+                }
                 var pos = offset++ % buffers.Length;
                 var currPage = buffers[pos];
                 fixed (byte* payloadPtr = currPage.payload)
@@ -315,10 +416,50 @@ namespace Resp.benchmark
                 }
             }
 
-            //Console.WriteLine($"[{threadId}] - Pages send: {pagesSend:N0}, Total AOF bytes send: {totalBytes:N0}, Total records replayed:{recordsReplayedCount:N0}");
+            if (singlePass)
+                RaiseSublogFrontierToMax(threadId);
             _ = Interlocked.Add(ref total_pages_processed, pagesSend);
             _ = Interlocked.Add(ref total_bytes_processed, totalBytes);
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
+        }
+
+        unsafe void RunReader(int threadId, RespServerSession session, LongHistogram hist)
+        {
+            var keys = aofGen.GlobalKeys;
+            var keyLen = aofGen.KeyLen;
+            var keyCount = keys.Length / keyLen;
+            var rng = new Random(0xCAFE + threadId);
+            var opsCompleted = 0L;
+
+            // Pre-format GET command frame:
+            //   "*2\r\n$3\r\nGET\r\n$<keyLen>\r\n<key bytes>\r\n"
+            var prefix = $"*2\r\n$3\r\nGET\r\n${keyLen}\r\n";
+            var prefixBytes = Encoding.ASCII.GetBytes(prefix);
+            var totalLen = prefixBytes.Length + keyLen + 2;
+            var buf = GC.AllocateArray<byte>(totalLen, pinned: true);
+            Buffer.BlockCopy(prefixBytes, 0, buf, 0, prefixBytes.Length);
+            buf[totalLen - 2] = (byte)'\r';
+            buf[totalLen - 1] = (byte)'\n';
+
+            waiter.Wait();
+
+            fixed (byte* bufPtr = buf)
+            fixed (byte* keysPtr = keys)
+            {
+                var keyDst = bufPtr + prefixBytes.Length;
+                var prev = Stopwatch.GetTimestamp();
+                while (!done)
+                {
+                    var idx = rng.Next(keyCount);
+                    Buffer.MemoryCopy(keysPtr + idx * keyLen, keyDst, keyLen, keyLen);
+                    session.TryConsumeMessages(bufPtr, totalLen);
+                    var now = Stopwatch.GetTimestamp();
+                    hist.RecordValue(now - prev);
+                    prev = now;
+                    opsCompleted++;
+                }
+            }
+            _ = Interlocked.Add(ref readerOperationsCompleted, opsCompleted);
         }
     }
 }

@@ -110,6 +110,11 @@ namespace Garnet.server
         // Consistent database read session
         private GarnetDatabaseSession consistentReadDBSession;
 
+        // Tracks whether this.* fields currently point at consistentReadDBSession. Gates the
+        // SwitchActiveDatabaseSession calls in TryConsumeMessages so the switch fires only on
+        // a role transition rather than on every network buffer arrival.
+        private bool inConsistentReadMode;
+
         /// <summary>
         /// The user currently authenticated in this session
         /// </summary>
@@ -466,31 +471,28 @@ namespace Garnet.server
                 recvBufferPtr = reqBuffer;
                 networkSender.EnterAndGetResponseObject(out dcurr, out dend);
 
-                if (storeWrapper.EnforceConsistentRead())
+                // Gate SwitchActiveDatabaseSession on role transitions. In steady state both arms
+                // skip the switch entirely. The role can only change between TryConsumeMessages
+                // calls (epoch protection holds it stable within one call), so observing it once
+                // here is sufficient.
+                var consistent = storeWrapper.EnforceConsistentRead();
+                if (consistent != inConsistentReadMode)
                 {
-                    try
-                    {
-                        // We actively switch session because we aim to avoid performing any additional checks or switches on the normal processing path
-                        // This requires us to cache txnSkip result since the txnManager instance will change when the following finally executes
-                        // Switching is required because we cannot guarantee the role of the node outside the epoch protection
-                        txnSkip = false;
-                        Debug.Assert(consistentReadDBSession != null);
-                        SwitchActiveDatabaseSession(consistentReadDBSession);
-                        ProcessMessages(ref consistentReadGarnetApi, ref txnConsistentReadApi);
-                        txnSkip = txnManager.IsSkippingOperations();
-                    }
-                    finally
-                    {
-                        // Switch back to normal session in the event a failover results in this node to become a primary
-                        SwitchActiveDatabaseSession(databaseSessions.Map[0]);
-                    }
+                    SwitchActiveDatabaseSession(consistent ? consistentReadDBSession : databaseSessions.Map[0]);
+                    inConsistentReadMode = consistent;
+                }
+
+                txnSkip = false;
+                if (consistent)
+                {
+                    Debug.Assert(consistentReadDBSession != null);
+                    ProcessMessages(ref consistentReadGarnetApi, ref txnConsistentReadApi);
                 }
                 else
                 {
-                    txnSkip = false;
                     ProcessMessages(ref basicGarnetApi, ref transactionalGarnetApi);
-                    txnSkip = txnManager.IsSkippingOperations();
                 }
+                txnSkip = txnManager.IsSkippingOperations();
                 recvBufferPtr = null;
             }
             catch (RespParsingException ex)
@@ -1583,7 +1585,7 @@ namespace Garnet.server
             var dbRes = storeWrapper.TryGetOrAddDatabase(dbId, out var database, out _);
             Debug.Assert(dbRes, "Should always find database if we're switching to it");
 
-            readSessionState = new ReadSessionState(storeWrapper.appendOnlyFile, storeWrapper.serverOptions);
+            readSessionState = new ReadSessionState(storeWrapper.appendOnlyFile);
 
             // NOTE: We need to create storage session to tie it to the consistent read API
             var dbStorageSession = new StorageSession(
