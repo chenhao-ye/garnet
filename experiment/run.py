@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 import yaml
+from check import main as check_main
 from config import (
     REPO_ROOT,
     Affinity,
@@ -108,6 +109,12 @@ def numactl_prefix(affinity: AffinitySpec | None) -> list[str]:
     return args
 
 
+def is_benchmark_project(project: str) -> bool:
+    """True when the project is Resp.benchmark, e.g. a bench process in the server slot
+    (the Replica role of a split-process AOF run)."""
+    return project.endswith("Resp.benchmark.csproj")
+
+
 def build_command(
     project: str,
     params: dict,
@@ -127,10 +134,10 @@ def build_command(
         str(project_path),
         "--",
     ]
-    if is_server:
+    if is_server and not is_benchmark_project(project):
         cmd += params_to_args(params, bool_params=SERVER_BOOL_PARAMS, list_params=set())
     else:
-        # check_client_params(params)
+        # A bench in the server slot takes Resp.benchmark flags, not GarnetServer ones.
         cmd += params_to_args(
             params, bool_params=CLIENT_BOOL_PARAMS, list_params=CLIENT_LIST_PARAMS
         )
@@ -172,6 +179,38 @@ def dump_config(path: Path, payload: dict) -> None:
     with open(path, "w") as f:
         # set width to avoid break a simple string into multiple lines
         yaml.dump(payload, f, sort_keys=False, width=10_000)
+
+
+def capture_git_info() -> dict:
+    """Git state of the repository (REPO_ROOT) -- the source that builds the binary.
+
+    Returns {git_commit, git_branch, git_dirty}; any field is None if git is unavailable
+    or REPO_ROOT is not a repo, so provenance capture never breaks a run. git_dirty is
+    True when tracked files differ from HEAD; untracked files are intentionally ignored
+    (here they are experiment configs/docs/result/, which do not build into the binary).
+    """
+
+    def git(*args: str) -> str | None:
+        try:
+            out = subprocess.run(
+                ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True
+            )
+            return out.stdout.strip() if out.returncode == 0 else None
+        except OSError:
+            return None
+
+    commit = git("rev-parse", "HEAD")
+    branch = git("rev-parse", "--abbrev-ref", "HEAD")
+    dirty: bool | None = None
+    if commit is not None:
+        try:
+            rc = subprocess.run(
+                ["git", "diff", "--quiet", "HEAD"], cwd=REPO_ROOT, capture_output=True
+            ).returncode
+            dirty = rc != 0
+        except OSError:
+            dirty = None
+    return {"git_commit": commit, "git_branch": branch, "git_dirty": dirty}
 
 
 def launch_server(
@@ -289,6 +328,13 @@ def execute_run(
     if repeat > 1:
         client_params["repeat"] = repeat
 
+    # In a split-process AOF run the Replica role (the bench in the server slot) drives the
+    # passes, so it carries the repeat count; the client learns the count implicitly from the
+    # control channel's DONE message.
+    server_params = dict(server_params)
+    if repeat > 1 and is_benchmark_project(server_project):
+        server_params["repeat"] = repeat
+
     server_cmd = build_command(
         server_project, server_params, is_server=True, affinity=affinity.server
     )
@@ -338,15 +384,16 @@ def execute_run(
 
 def _run_one(config: str) -> None:
     spec = load_experiment_spec(config_path_for(config), default_name=Path(config).stem)
+    # Validate the config (and machine/affinity core requirements) before any work
+    if check_main([config]) != 0:
+        raise SystemExit(f"check reported errors for '{config}'; aborting run")
     if not spec.prepare_params:
         logger.warning("empty prepare.client_params")
     if not spec.base_server_params:
         logger.warning("empty base.server_params")
 
     if spec.affinity.any_set() and shutil.which("numactl") is None:
-        raise RuntimeError(
-            "affinity configured in YAML but 'numactl' is not on PATH"
-        )
+        raise RuntimeError("affinity configured in YAML but 'numactl' is not on PATH")
 
     exp_dir = result_dir(spec.name)
 
@@ -356,6 +403,7 @@ def _run_one(config: str) -> None:
     logger.debug("Cleaning result directory...")
     cleanup_result_dir(exp_dir)
     dump_config(exp_dir / "config.yaml", spec.config)
+    dump_config(exp_dir / "meta.yaml", capture_git_info())
 
     logger.info(f"Expanded {len(spec.combos)} runs")
 

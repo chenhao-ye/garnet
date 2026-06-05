@@ -213,6 +213,18 @@ namespace Garnet
         [Option("aof-replay-task-count", Required = false, HelpText = "Number of replay tasks per physical sublog at the replica.")]
         public int AofReplayTaskCount { get; set; }
 
+        [IntRangeValidation(-1, int.MaxValue, isRequired: false)]
+        [Option("aof-replay-drift-threshold", Required = false, HelpText = "Cross-sublog replay drift, in sequence-number units, tolerated on a replica before a replay-align barrier round is triggered. -1 disables the barrier.")]
+        public int AofReplayDriftThreshold { get; set; }
+
+        [IntRangeValidation(0, int.MaxValue, isRequired: false)]
+        [Option("aof-replay-drift-check-freq", Required = false, HelpText = "How often a replay thread re-checks the cross-sublog drift, as a multiple of aof-replay-drift-threshold: after every (this value x threshold) sequence-number units of local replay progress it scans the drift and fires a replay-align round when it exceeds the threshold. 0 = readers about to wait are the only round source.")]
+        public int AofReplayDriftCheckFreq { get; set; }
+
+        [IntRangeValidation(-1, int.MaxValue, isRequired: false)]
+        [Option("aof-barrier-spin-us", Required = false, HelpText = "How long a replay thread spins at the replay-align barrier before sleeping: -1 = spin forever (never sleep), 0 = never spin (pure sleep), >0 = spin up to that many microseconds then sleep for the remainder.")]
+        public int AofBarrierSpinUs { get; set; }
+
         [IntRangeValidation(64, 1 << 20, isRequired: false)]
         [Option("aof-replay-ring-size", Required = false, HelpText = "Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.")]
         public int AofReplayRingSize { get; set; }
@@ -864,6 +876,9 @@ namespace Garnet
                 AofPageSize = AofPageSize,
                 AofPhysicalSublogCount = AofPhysicalSublogCount,
                 AofReplayTaskCount = AofReplayTaskCount,
+                AofReplayDriftThreshold = AofReplayDriftThreshold,
+                AofReplayDriftCheckFreq = AofReplayDriftCheckFreq,
+                AofBarrierSpinUs = AofBarrierSpinUs,
                 AofReplayRingSize = AofReplayRingSize,
                 AofReplayRingBatch = AofReplayRingBatch,
                 AofTailWitnessFreq = AofTailWitnessFreq,

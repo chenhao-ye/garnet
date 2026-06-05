@@ -122,6 +122,12 @@ namespace Resp.benchmark
         [Option("aof-bench-type", Required = false, Default = AofBenchType.Replay, HelpText = "Run AOF bench at replica.")]
         public AofBenchType AofBenchType { get; set; }
 
+        [Option("aof-bench-role", Required = false, Default = AofBenchRole.Combined, HelpText = "Topology role of this AOF bench process: Combined (replica+client in one process), Replica (replay + server, paces a remote client over the control channel), Client (GarnetClientSession readers driven by a Replica), Primary (reserved).")]
+        public AofBenchRole AofBenchRole { get; set; }
+
+        [Option("aof-bench-control-port", Required = false, Default = 0, HelpText = "TCP port of the bench control channel between Replica and Client roles. 0 = --port + 10000.")]
+        public int AofBenchControlPort { get; set; }
+
         [Option("aof-gen-pages", Required = false, Default = 64, HelpText = "DB size")]
         public int AofGenPages { get; set; }
 
@@ -130,6 +136,9 @@ namespace Resp.benchmark
 
         [Option("aof-reader-skip", Required = false, Default = false, HelpText = "Pre-set every physical sublog's max sequence number to long.MaxValue at run start. Readers' consistency check is always pass, isolating the consistent-read fast-path cost from the wait path.")]
         public bool AofReaderSkip { get; set; }
+
+        [Option("pseudo-timestamp-pace", Required = false, Default = 2000, HelpText = "Ticks the generated pseudo timestamp advances per AOF record. Emulates a wall-clock sequence generator (at ~2 GHz, 2000 is ~1us per record).")]
+        public int PseudoTimestampPace { get; set; }
 
         /*
          * InProc/AofBench server options
@@ -154,6 +163,15 @@ namespace Resp.benchmark
 
         [Option("aof-replay-task-count", Required = false, Default = 1, HelpText = "Number of replay tasks per physical sublog at the replica.")]
         public int AofReplayTaskCount { get; set; }
+
+        [Option("aof-replay-drift-threshold", Required = false, Default = 20000, HelpText = "Cross-sublog replay drift, in sequence-number units, tolerated on a replica before a replay-align barrier round is triggered. -1 disables the barrier.")]
+        public int AofReplayDriftThreshold { get; set; }
+
+        [Option("aof-replay-drift-check-freq", Required = false, Default = 50, HelpText = "How often a replay thread re-checks the cross-sublog drift, as a multiple of --aof-replay-drift-threshold: after every (this value x threshold) sequence-number units of local replay progress it scans the drift and fires a replay-align round when it exceeds the threshold. 0 = readers about to wait are the only round source.")]
+        public int AofReplayDriftCheckFreq { get; set; }
+
+        [Option("aof-barrier-spin-us", Required = false, Default = 0, HelpText = "How long a replay thread spins at the replay-align barrier before sleeping: <0 = spin forever (never sleep), 0 = never spin (pure sleep), >0 = spin up to N microseconds then sleep for the remainder.")]
+        public int AofBarrierSpinUs { get; set; }
 
         [Option("aof-memory-size", Required = false, Default = "64m", HelpText = "Total AOF memory buffer used in bytes (rounds down to power of 2) - spills to disk after this limit.")]
         public string AofMemorySize { get; set; }

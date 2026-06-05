@@ -31,6 +31,39 @@ namespace Garnet.server
         readonly VirtualSublogReplayState[] vsrs = [.. Enumerable.Range(0, serverOptions.AofVirtualSublogCount).Select(_ => new VirtualSublogReplayState(appendOnlyFile.Log.physicalSublogShift + appendOnlyFile.Log.replayTaskShift))];
 
         /// <summary>
+        /// Maximum allowed drift (in sequence-number units) between leading and trailing sublog
+        /// before a replay-side synchronization barrier round is triggered. -1 disables the
+        /// barrier so no round is ever activated.
+        /// </summary>
+        readonly long replayDriftThreshold = serverOptions.AofReplayDriftThreshold;
+
+        /// <summary>
+        /// Whether replay drift is bounded at all: false when the barrier is disabled
+        /// (threshold -1) or there is a single virtual sublog (no cross-sublog drift to bound).
+        /// </summary>
+        readonly bool driftBoundingEnabled = serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1;
+
+        /// <summary>
+        /// Progress gate for replay-driven drift bounding, in sequence-number units
+        /// (AofReplayDriftCheckFreq x AofReplayDriftThreshold): each replay thread re-runs the
+        /// cross-sublog drift scan after locally progressing this much, so drift is bounded
+        /// proactively rather than only when a reader is about to wait (most reads never wait, so
+        /// drift could otherwise accumulate unchecked between waits and hurt read tail latency).
+        /// long.MaxValue when replay-driven firing is disabled, making the gate compare never true.
+        /// </summary>
+        readonly long replayDriftCheckInterval =
+            serverOptions.AofReplayDriftCheckFreq > 0 && serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1
+                ? Math.Max(1, (long)serverOptions.AofReplayDriftCheckFreq * serverOptions.AofReplayDriftThreshold)
+                : long.MaxValue;
+
+        /// <summary>
+        /// Cooperative barrier used to bound inter-virtual-sublog replay drift. The reader activates it
+        /// on demand when it observes a large drift while about to wait; replay threads align on it via
+        /// per-record CheckAndWait calls. One participant per virtual sublog (one replay thread each).
+        /// </summary>
+        public readonly ReplayAlignBarrier replayBarrier = new(serverOptions.AofVirtualSublogCount, serverOptions.AofBarrierSpinUs);
+
+        /// <summary>
         /// Get sequence number for provided key.
         /// </summary>
         /// <param name="key"></param>
@@ -104,7 +137,23 @@ namespace Garnet.server
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void UpdateVirtualSublogKeySequenceNumber(int virtualSublogIdx, long keyHash, long sequenceNumber)
-            => vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
+        {
+            // Pause this replay thread when it has run ahead of an active round's target, bounding
+            // drift from the lagging sublogs. Fast path is a single Volatile.Read + compare when no
+            // round is active.
+            replayBarrier.CheckAndWait(vsrs[virtualSublogIdx].Max);
+            vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
+            // Replay-driven drift bounding: once per replayDriftCheckInterval of this sublog's own
+            // progress, re-scan the cross-sublog drift and fire a round if it exceeds the threshold
+            // (never, when disabled: the interval is then long.MaxValue). Record sequence numbers are
+            // nondecreasing within a virtual sublog, so the gate adds one owner-local subtract +
+            // compare per record; the scan itself runs only at the gate.
+            if (sequenceNumber - vsrs[virtualSublogIdx].LastDriftCheckSequenceNumber >= replayDriftCheckInterval)
+            {
+                vsrs[virtualSublogIdx].LastDriftCheckSequenceNumber = sequenceNumber;
+                BoundReplayDrift();
+            }
+        }
 
         /// <summary>
         /// Update key sequence number of virtual sublog associated with the specified keyHash.
@@ -114,22 +163,30 @@ namespace Garnet.server
         public void UpdateVirtualSublogKeySequenceNumber(long keyHash, long sequenceNumber)
             => UpdateVirtualSublogKeySequenceNumber(appendOnlyFile.Log.GetVirtualSublogIdx(keyHash), keyHash, sequenceNumber);
 
+        // Cold reset path: runs only on first read and on a version change (replica re-attach).
+        // Split out of the per-read version check so that check stays tiny.
+        void ResetSessionContext(ref ReplicaReadSessionContext replicaReadSessionContext)
+        {
+            replicaReadSessionContext.sessionVersion = CurrentVersion;
+            replicaReadSessionContext.lastVirtualSublogIdx = -1;
+            replicaReadSessionContext.maximumSessionSequenceNumber = 0;
+            if (replicaReadSessionContext.cachedSublogMax == null)
+                replicaReadSessionContext.cachedSublogMax = new long[serverOptions.AofVirtualSublogCount];
+            else
+                Array.Clear(replicaReadSessionContext.cachedSublogMax);
+        }
+
         /// <summary>
-        /// Ensures that the specified replica read session context is synchronized with the current session version.
+        /// Synchronize the session context with the current manager version, resetting it on first use
+        /// or on a version change (replica re-attach). Entry point for the batch read path; the
+        /// single-key path (<see cref="BeforeConsistentReadKey"/>) inlines this same check directly.
         /// </summary>
         /// <param name="replicaReadSessionContext">A reference to the session context to check and update.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void CheckConsistencyManagerVersion(ref ReplicaReadSessionContext replicaReadSessionContext)
         {
-            // If first time calling or version has been bumped reset read context
-            // NOTE: Version changes every time replica is reset and a attached to a new primary.
-            // When a batch of read commands executes, it all happens under epoch protection, hence version change will not affect read prefix consistency
-            if (replicaReadSessionContext.sessionVersion == -1 || replicaReadSessionContext.sessionVersion != CurrentVersion)
-            {
-                replicaReadSessionContext.sessionVersion = CurrentVersion;
-                replicaReadSessionContext.lastVirtualSublogIdx = -1;
-                replicaReadSessionContext.maximumSessionSequenceNumber = 0;
-            }
+            if (replicaReadSessionContext.sessionVersion != CurrentVersion)
+                ResetSessionContext(ref replicaReadSessionContext);
         }
 
         /// <summary>
@@ -137,30 +194,79 @@ namespace Garnet.server
         /// </summary>
         /// <param name="hash"></param>
         /// <param name="replicaReadSessionContext"></param>
+        /// <param name="waiter">Session-owned reusable wakeup primitive; replaced with a fresh
+        /// instance by <see cref="VirtualSublogReplayState.WaitForSequenceNumber"/> on cancel/timeout.</param>
         /// <param name="ct">Cancellation token that aborts the wait when the session ends.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        void VerifyKeyFreshness(long hash, ref ReplicaReadSessionContext replicaReadSessionContext, CancellationToken ct)
+        void VerifyKeyFreshness(long hash, ref ReplicaReadSessionContext replicaReadSessionContext,
+                                ref ConsistentReadWaiter waiter, CancellationToken ct)
         {
             var virtualSublogIdx = (short)appendOnlyFile.Log.GetVirtualSublogIdx(hash);
 
-            // Here we have to wait for replay to catch up
-            // Don't have to wait if reading from same sublog or maximumSessionTimestamp is behind the sublog frontier timestamp
-            if (replicaReadSessionContext.lastVirtualSublogIdx != -1 && replicaReadSessionContext.lastVirtualSublogIdx != virtualSublogIdx)
+            // Prefetch the key's sketch slot for later post-read update (AfterConsistentReadKey)
+            vsrs[virtualSublogIdx].PrefetchKeySequenceNumber(hash);
+
+            // Wait for replay to catch up only when reading a different sublog than the last read:
+            // consecutive same-sublog reads are prefix-consistent by construction.
+            if (replicaReadSessionContext.lastVirtualSublogIdx != -1 && replicaReadSessionContext.lastVirtualSublogIdx != virtualSublogIdx
+                && replicaReadSessionContext.maximumSessionSequenceNumber >= replicaReadSessionContext.cachedSublogMax[virtualSublogIdx])
             {
-                // Optimistic check without lock
-                if (replicaReadSessionContext.maximumSessionSequenceNumber >= GetSublogFrontierSequenceNumber(hash))
-                {
-                    vsrs[virtualSublogIdx].WaitForSequenceNumber(
-                        hash,
-                        replicaReadSessionContext.maximumSessionSequenceNumber,
-                        ct,
-                        replicaSyncTimeoutMs);
-                }
+                RefreshAndMaybeWait(virtualSublogIdx, hash, ref replicaReadSessionContext, ref waiter, ct);
             }
 
             // Store for future update
             replicaReadSessionContext.lastVirtualSublogIdx = virtualSublogIdx;
             replicaReadSessionContext.lastHash = hash;
+        }
+
+        // Cold path of VerifyKeyFreshness: the session has read past its cached view of this sublog's
+        // published max, so refresh from the live value and block until replay catches up if even the
+        // refreshed value is behind. Kept out of line so the no-wait fast path inlines.
+        void RefreshAndMaybeWait(short virtualSublogIdx, long hash, ref ReplicaReadSessionContext replicaReadSessionContext,
+                                 ref ConsistentReadWaiter waiter, CancellationToken ct)
+        {
+            var maxSessionSeqNum = replicaReadSessionContext.maximumSessionSequenceNumber;
+            var publishedMax = vsrs[virtualSublogIdx].Max;
+            replicaReadSessionContext.cachedSublogMax[virtualSublogIdx] = publishedMax;
+            if (maxSessionSeqNum >= publishedMax)
+            {
+                // About to wait. If the replay-side drift is large enough to be worth bounding, install a barrier round
+                BoundReplayDrift();
+                vsrs[virtualSublogIdx].WaitForSequenceNumber(hash, maxSessionSeqNum, ref waiter, ct, replicaSyncTimeoutMs);
+            }
+        }
+
+        /// <summary>
+        /// Scan all virtual sublogs' current max sequence numbers; if the spread exceeds
+        /// <see cref="replayDriftThreshold"/>, install a barrier round at the leader's value so that
+        /// replayers pause once they reach it and the laggards have time to catch up.
+        /// Invoked from two rare paths that dedupe on the active round: a reader about to wait
+        /// (<see cref="RefreshAndMaybeWait"/>) and a replay thread crossing its progress gate
+        /// (<see cref="UpdateVirtualSublogKeySequenceNumber(int, long, long)"/>).
+        /// </summary>
+        void BoundReplayDrift()
+        {
+            if (!driftBoundingEnabled) return;
+            // A round already in progress is bounding the drift; a disabled barrier also reports an
+            // in-progress round (one that never completes), so the scan is skipped in both cases.
+            if (replayBarrier.IsActive) return;
+
+            var virtualSublogCount = serverOptions.AofVirtualSublogCount;
+            long minFrontier = long.MaxValue, maxFrontier = long.MinValue;
+            for (var v = 0; v < virtualSublogCount; v++)
+            {
+                var frontier = vsrs[v].Max;
+                if (frontier < minFrontier) minFrontier = frontier;
+                if (frontier > maxFrontier) maxFrontier = frontier;
+            }
+            if (maxFrontier - minFrontier <= replayDriftThreshold) return;
+            // A sublog that has published no progress at all has no record stream yet (e.g. its
+            // replay session is still being established during attach). Barrier arrivals happen only
+            // on the per-record replay path, so a round could not complete until that sublog both
+            // starts and reaches the target; firing now would only park every started replay thread.
+            // Skip until all sublogs have progress.
+            if (minFrontier == 0) return;
+            replayBarrier.TryActivate(maxFrontier);
         }
 
         /// <summary>
@@ -172,15 +278,17 @@ namespace Garnet.server
         /// </summary>
         /// <param name="hash"></param>
         /// <param name="replicaReadSessionContext"></param>
+        /// <param name="waiter">Session-owned reusable wakeup primitive.</param>
         /// <param name="ct">Cancellation token that aborts the wait when the session ends.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void BeforeConsistentReadKey(long hash, ref ReplicaReadSessionContext replicaReadSessionContext, CancellationToken ct)
+        public void BeforeConsistentReadKey(long hash, ref ReplicaReadSessionContext replicaReadSessionContext,
+                                            ref ConsistentReadWaiter waiter, CancellationToken ct)
         {
-            // Check version
-            CheckConsistencyManagerVersion(ref replicaReadSessionContext);
+            if (replicaReadSessionContext.sessionVersion != CurrentVersion)
+                ResetSessionContext(ref replicaReadSessionContext);
 
             // Verify key freshness
-            VerifyKeyFreshness(hash, ref replicaReadSessionContext, ct);
+            VerifyKeyFreshness(hash, ref replicaReadSessionContext, ref waiter, ct);
         }
 
         /// <summary>
@@ -194,8 +302,9 @@ namespace Garnet.server
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void AfterConsistentReadKey(ref ReplicaReadSessionContext replicaReadSessionContext)
         {
+            var keySequenceNumber = vsrs[replicaReadSessionContext.lastVirtualSublogIdx].GetKeySequenceNumber(replicaReadSessionContext.lastHash);
             replicaReadSessionContext.maximumSessionSequenceNumber = Math.Max(
-                replicaReadSessionContext.maximumSessionSequenceNumber, GetKeySequenceNumber(replicaReadSessionContext.lastHash));
+                replicaReadSessionContext.maximumSessionSequenceNumber, keySequenceNumber);
         }
 
         /// <summary>
@@ -203,13 +312,15 @@ namespace Garnet.server
         /// </summary>
         /// <param name="key"></param>
         /// <param name="batchReadContext"></param>
+        /// <param name="waiter">Session-owned reusable wakeup primitive.</param>
         /// <param name="ct">Cancellation token that aborts the wait when the session ends.</param>
         /// <param name="hash"></param>
-        public void BeforeConsistentReadKeyBatch(ReadOnlySpan<byte> key, ref ReplicaReadSessionContext batchReadContext, CancellationToken ct, out long hash)
+        public void BeforeConsistentReadKeyBatch(ReadOnlySpan<byte> key, ref ReplicaReadSessionContext batchReadContext,
+                                                 ref ConsistentReadWaiter waiter, CancellationToken ct, out long hash)
         {
             // Verify key freshness
             hash = GarnetLog.HASH(key);
-            VerifyKeyFreshness(hash, ref batchReadContext, ct);
+            VerifyKeyFreshness(hash, ref batchReadContext, ref waiter, ct);
 
             // Keep track of max sequence number to check for updates after batch read.
             batchReadContext.maximumSessionSequenceNumber = Math.Max(

@@ -200,7 +200,10 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
             value = match.group("value")
 
             if name == "Total time":
-                if current and current.get("throughput") is not None:
+                if current and (
+                    current.get("throughput") is not None
+                    or current.get("reader_throughput") is not None
+                ):
                     samples.append(current)
                 current = {}
                 current["time_ms"] = _parse_number(value)
@@ -229,7 +232,10 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
                         columns.append(key)
 
     if current:
-        if current.get("throughput") is not None:
+        if (
+            current.get("throughput") is not None
+            or current.get("reader_throughput") is not None
+        ):
             samples.append(current)
     return samples, columns
 
@@ -405,14 +411,28 @@ def _render_text_table(rows: list[dict[str, str]], columns: list[str]) -> str:
     return "\n".join([header, separator, *body])
 
 
+def _git_summary_line(git_meta: dict | None) -> str:
+    git_meta = git_meta or {}
+    commit = git_meta.get("git_commit")
+    if commit is None:
+        return "Git: unknown"
+    dirty = git_meta.get("git_dirty")
+    state = "dirty" if dirty else "clean" if dirty is not None else "unknown"
+    return f"Git: {git_meta.get('git_branch')} @ {commit[:12]} ({state})"
+
+
 def _write_summary_file(
-    exp_dir: Path, experiment_name: str, warmup: int, runs: dict
+    exp_dir: Path,
+    experiment_name: str,
+    warmup: int,
+    runs: dict,
+    git_meta: dict | None = None,
 ) -> Path:
     grouped_rows = _build_summary_rows(runs)
-    lines = [
-        f"Experiment: {experiment_name}",
-        f"Warmup rows discarded: {warmup}",
-    ]
+    lines = [f"Experiment: {experiment_name}"]
+    if git_meta:
+        lines.append(_git_summary_line(git_meta))
+    lines.append(f"Warmup rows discarded: {warmup}")
 
     benchmark_column_order = {
         "aof": [
@@ -493,6 +513,33 @@ def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
         warmup_rows=warmup,
         expected_op=config.get("client_params", {}).get("op"),
     )
+
+    # Split-process AOF run: the Replica role's replay metrics land in _server.log (one
+    # [Total time] block per pass) while output.txt carries the Client role's reader metrics.
+    # Merge them pairwise by pass; the replica's time_ms/bytes describe the pass window, so
+    # the client's are dropped.
+    server_log = run_dir / "_server.log"
+    if (
+        benchmark == "aof"
+        and server_log.exists()
+        and "[Total time]" in server_log.read_text(errors="ignore")
+    ):
+        server_samples, server_columns = _parse_aof_output(server_log)
+        if len(server_samples) != len(samples):
+            raise ValueError(
+                f"{run_dir.name}: replica passes ({len(server_samples)}) != "
+                f"client passes ({len(samples)}) -- split-run outputs out of sync"
+            )
+        merged = []
+        for srv, cli in zip(server_samples, samples):
+            row = dict(srv)
+            row.update({k: v for k, v in cli.items() if k not in ("time_ms", "bytes")})
+            merged.append(row)
+        samples = merged
+        metric_columns = server_columns + [
+            c for c in metric_columns if c not in server_columns and c not in ("time_ms", "bytes")
+        ]
+
     repeat = int(config.get("repeat", 1) or 1)
     samples = _aggregate_repetitions(samples, metric_columns, repeat)
     stats = _summarize_samples(samples, metric_columns)
@@ -522,6 +569,17 @@ def _collect_runs(run_dirs: list, warmup: int) -> tuple[dict, dict[str, list]]:
     return runs, sweep_params
 
 
+def _read_meta(exp_dir: Path) -> dict:
+    """Read run-time provenance (git) persisted by run.py. Empty dict if meta.yaml is
+    absent -- e.g. results produced before this feature -- in which case callers skip
+    the git fields entirely for backward compatibility."""
+    meta_path = exp_dir / "meta.yaml"
+    if not meta_path.exists():
+        return {}
+    with open(meta_path) as f:
+        return yaml.safe_load(f) or {}
+
+
 def _process_one(config: str, warmup: int) -> None:
     spec = load_experiment_spec(config_path_for(config), default_name=Path(config).stem)
 
@@ -537,17 +595,23 @@ def _process_one(config: str, warmup: int) -> None:
 
     runs, sweep_params = _collect_runs(run_dirs, warmup)
 
+    git_meta = _read_meta(exp_dir)
+
     result = {
         "experiment_name": spec.name,
         "sweep_params": sweep_params,
         "warmup_rows_discarded": warmup,
         "runs": runs,
     }
+    if git_meta:
+        result["git_commit"] = git_meta.get("git_commit")
+        result["git_branch"] = git_meta.get("git_branch")
+        result["git_dirty"] = git_meta.get("git_dirty")
 
     out_path = exp_dir / "result.yaml"
     with open(out_path, "w") as f:
         yaml.dump(result, f)
-    summary_path = _write_summary_file(exp_dir, spec.name, warmup, runs)
+    summary_path = _write_summary_file(exp_dir, spec.name, warmup, runs, git_meta)
     print(f"\nResult written to: {out_path}")
     print(f"Summary written to: {summary_path}")
 

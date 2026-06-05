@@ -1,0 +1,59 @@
+# Experiment: aof_reader_gcs
+# Network-client analog of aof_reader, run as two processes: a Replica-role bench
+# in the server slot (AOF generation + embedded Garnet + replay workers, node 0
+# CPU and membind) and a Client-role bench in the client slot (GarnetClientSession
+# readers, node 1 CPU and membind), paced over the bench control channel
+# (BEGIN/END/DONE on --port + 1). The client regenerates the keyset locally, so
+# dbsize/keylength must match across the two scopes (check.py enforces this).
+# Replica stdout (replay-only) lands in _server.log; client stdout (reader-only)
+# in benchmark/output.txt; parse.py merges them per pass.
+# itp=128 => 128 GETs in flight per reader thread => pipelined throughput; the
+# reported reader latency is per-batch (one CompletePending per 128 GETs), so
+# effective per-op latency is batch / 128.
+# Barrier spin is pinned to forever (-1, never sleep).
+
+name: aof_reader_gcs
+description: "Split-process GarnetClientSession readers (Client role on node 1, Replica role on node 0): sublog count (1-32) x reader-thread count (1-32), itp=128"
+benchmark: aof
+no_server: false
+server_project: benchmark/Resp.benchmark/Resp.benchmark.csproj
+repeat: 7
+
+affinity:
+  server:
+    numa_node: 0
+  client:
+    numa_node: 1
+
+check:
+  num_cores: 32
+
+base:
+  server_params:
+    aof_bench: true
+    aof_bench_role: Replica
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    aof_gen_pages: 256
+    aof_barrier_spin_us: -1
+    port: 7379
+  client_params:
+    aof_bench: true
+    aof_bench_role: Client
+    client: GarnetClientSession
+    port: 7379
+    itp: 128
+    keylength: 8
+    dbsize: 10000000
+
+sweep:
+  server_params:
+    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32]
+  client_params:
+    aof_replay_reader: [1, 2, 4, 8, 16, 32]

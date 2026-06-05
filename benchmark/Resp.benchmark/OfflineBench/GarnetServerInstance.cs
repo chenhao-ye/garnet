@@ -38,11 +38,32 @@ namespace Resp.benchmark
         internal RespServerSession[] sessions;
         internal readonly string primaryId;
 
+        // Loopback endpoint the server listens on for network reader clients; null when the server is
+        // purely embedded (in-process readers).
+        internal readonly EndPoint endpoint;
+
         public GarnetServerInstance(Options options)
         {
             var serverOptions = AofBench.GetServerOptions(options);
             primaryId = Generator.CreateHexId();
-            server = new EmbeddedRespServer(serverOptions, Program.loggerFactory, new GarnetServerEmbedded());
+
+            // Start a network endpoint when local GarnetClientSession readers will connect, or when
+            // this process is the Replica role of a split-process run (the readers are remote).
+            if (options.IsReplayEnabled
+                && (options.AofBenchRole == AofBenchRole.Replica
+                    || (options.AofReplayReader > 0 && options.Client == ClientType.GarnetClientSession)))
+            {
+                endpoint = new IPEndPoint(IPAddress.Parse(options.Address), options.Port);
+                serverOptions.EndPoints = [endpoint];
+                // No embedded network server => the base GarnetServer creates a GarnetServerTcp listener.
+                server = new EmbeddedRespServer(serverOptions, Program.loggerFactory);
+                server.Start();
+            }
+            else // In-process readers use the embedded server with no listener.
+            {
+                server = new EmbeddedRespServer(serverOptions, Program.loggerFactory, new GarnetServerEmbedded());
+            }
+
             sessions = server.GetRespSessions(options.AofPhysicalSublogCount);
             AddAllSlots();
             sessions[0].clusterSession.UnsafeSetConfig(replicaOf: primaryId);
