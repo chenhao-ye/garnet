@@ -46,13 +46,14 @@ namespace Garnet.server
         public readonly ILogger logger;
 
         /// <summary>
-        /// Calculate virtual sublog index provided physical sublog index and replay task index
+        /// Calculate virtual sublog index provided physical sublog index and replay task index.
+        /// The virtual-sublog layout is owned by <see cref="GarnetLog"/>.
         /// </summary>
         /// <param name="sublogIdx"></param>
         /// <param name="replayIdx"></param>
         /// <returns></returns>
         public int GetVirtualSublogIdx(int sublogIdx, int replayIdx)
-            => (sublogIdx * serverOptions.AofReplayTaskCount) + replayIdx;
+            => Log.GetVirtualSublogIdx(sublogIdx, replayIdx);
 
         /// <summary>
         /// Garnet append only file constructor
