@@ -28,10 +28,22 @@ def config_path_for(name_or_path: str) -> Path:
 
 DEFAULT_BENCHMARK_PROJECT = "benchmark/Resp.benchmark/Resp.benchmark.csproj"
 DEFAULT_SERVER_PROJECT = "main/GarnetServer/GarnetServer.csproj"
-SUPPORTED_BENCHMARKS = {"online", "offline", "aof"}
-SWEEP_SCOPES = ("client_params", "server_params")
-SCOPE_PREFIXES = {"client_params": "c", "server_params": "s"}
-SWEEP_PARAM_PREFIXES = {"client_params": "client", "server_params": "server"}
+SUPPORTED_BENCHMARKS = {"online", "offline", "aof", "replication"}
+# client/server are the generic benchmark/server slots; primary/replica are the dedicated
+# GarnetServer slots of the replication benchmark.
+SWEEP_SCOPES = ("client_params", "server_params", "primary_params", "replica_params")
+SCOPE_PREFIXES = {
+    "client_params": "c",
+    "server_params": "s",
+    "primary_params": "p",
+    "replica_params": "r",
+}
+SWEEP_PARAM_PREFIXES = {
+    "client_params": "client",
+    "server_params": "server",
+    "primary_params": "primary",
+    "replica_params": "replica",
+}
 
 
 @dataclass(frozen=True)
@@ -49,13 +61,79 @@ class AffinitySpec:
 
 
 @dataclass(frozen=True)
+class RemoteEntry:
+    # ssh destination of the machine a replication role runs on (None = run locally) and
+    # the data-plane IP peers use to reach it (None = resolve the ssh name locally).
+    ssh: str | None = None
+    ip: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.ssh is not None:
+            d["ssh"] = self.ssh
+        if self.ip is not None:
+            d["ip"] = self.ip
+        return d
+
+
+REMOTE_ROLES = ("primary", "replica", "client")
+
+
+def _parse_remote(config: dict[str, Any]) -> dict[str, RemoteEntry]:
+    """The optional 'remote' section: maps replication roles to the machine they run on.
+    Entry forms: a plain ssh hostname string, or a mapping with 'ssh' and/or 'ip'."""
+    raw = config.get("remote")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"'remote' must be a mapping, got {type(raw).__name__}")
+    unknown = set(raw) - set(REMOTE_ROLES)
+    if unknown:
+        raise ValueError(f"remote has unknown roles: {sorted(unknown)}")
+    remote: dict[str, RemoteEntry] = {}
+    for role, block in raw.items():
+        if isinstance(block, str):
+            remote[role] = RemoteEntry(ssh=block)
+            continue
+        if not isinstance(block, dict):
+            raise ValueError(
+                f"remote.{role} must be an ssh hostname string or a mapping, "
+                f"got {type(block).__name__}"
+            )
+        bad = set(block) - {"ssh", "ip"}
+        if bad:
+            raise ValueError(f"remote.{role} has unknown keys: {sorted(bad)}")
+        ssh = block.get("ssh")
+        ip = block.get("ip")
+        if ssh is None and ip is None:
+            raise ValueError(f"remote.{role} requires 'ssh' and/or 'ip'")
+        for key, value in (("ssh", ssh), ("ip", ip)):
+            if value is not None and not isinstance(value, str):
+                raise ValueError(
+                    f"remote.{role}.{key} must be a string, got {type(value).__name__}"
+                )
+        remote[role] = RemoteEntry(ssh=ssh, ip=ip)
+    return remote
+
+
+def remote_mode(remote: dict[str, RemoteEntry]) -> bool:
+    """True when any replication role launches over ssh."""
+    return any(entry.ssh is not None for entry in remote.values())
+
+
+@dataclass(frozen=True)
 class Affinity:
     server: AffinitySpec | None = None
     client: AffinitySpec | None = None
     prepare: AffinitySpec | None = None
+    primary: AffinitySpec | None = None
+    replica: AffinitySpec | None = None
 
     def any_set(self) -> bool:
-        return any(p is not None for p in (self.server, self.client, self.prepare))
+        return any(
+            p is not None
+            for p in (self.server, self.client, self.prepare, self.primary, self.replica)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -65,6 +143,10 @@ class Affinity:
             out["client"] = self.client.to_dict()
         if self.prepare is not None:
             out["prepare"] = self.prepare.to_dict()
+        if self.primary is not None:
+            out["primary"] = self.primary.to_dict()
+        if self.replica is not None:
+            out["replica"] = self.replica.to_dict()
         return out
 
 
@@ -77,10 +159,13 @@ class ExperimentSpec:
     prepare_params: dict[str, Any]
     base_client_params: dict[str, Any]
     base_server_params: dict[str, Any]
+    base_primary_params: dict[str, Any]
+    base_replica_params: dict[str, Any]
     no_server: bool
     repeat: int
     combos: list[dict[str, dict[str, Any]]]
     affinity: Affinity
+    remote: dict[str, RemoteEntry]
     check: dict[str, Any]
     config: dict[str, Any]
     config_path: Path
@@ -92,6 +177,8 @@ class ResolvedRunSpec:
     run_name: str
     client_params: dict[str, Any]
     server_params: dict[str, Any]
+    primary_params: dict[str, Any]
+    replica_params: dict[str, Any]
     sweep_params: dict[str, Any]
 
 
@@ -139,15 +226,19 @@ def _parse_affinity(config: dict[str, Any]) -> Affinity:
         return Affinity()
     if not isinstance(raw, dict):
         raise ValueError(f"'affinity' must be a mapping, got {type(raw).__name__}")
-    unknown = set(raw) - {"server", "client", "prepare"}
+    unknown = set(raw) - {"server", "client", "prepare", "primary", "replica"}
     if unknown:
         raise ValueError(f"affinity has unknown roles: {sorted(unknown)}")
     server = _parse_affinity_block("server", raw.get("server"))
     client = _parse_affinity_block("client", raw.get("client"))
     prepare = _parse_affinity_block("prepare", raw.get("prepare"))
+    primary = _parse_affinity_block("primary", raw.get("primary"))
+    replica = _parse_affinity_block("replica", raw.get("replica"))
     if prepare is None:
         prepare = client
-    return Affinity(server=server, client=client, prepare=prepare)
+    return Affinity(
+        server=server, client=client, prepare=prepare, primary=primary, replica=replica
+    )
 
 
 def _parse_check(config: dict[str, Any]) -> dict[str, Any]:
@@ -202,10 +293,13 @@ def load_experiment_spec(
         prepare_params=dict(config.get("prepare", {}).get("client_params", {})),
         base_client_params=dict(config["base"]["client_params"]),
         base_server_params=dict(config["base"].get("server_params", {})),
+        base_primary_params=dict(config["base"].get("primary_params", {})),
+        base_replica_params=dict(config["base"].get("replica_params", {})),
         no_server=config.get("no_server", False),
         repeat=int(config.get("repeat", 1)),
         combos=combos,
         affinity=_parse_affinity(config),
+        remote=_parse_remote(config),
         check=_parse_check(config),
         config=config,
         config_path=path,
@@ -233,7 +327,7 @@ def expand_sweep(
 ) -> list[dict[str, dict[str, Any]]]:
     dims = _sweep_dimensions(sweep)
     if not dims:
-        return [{"client_params": {}, "server_params": {}}]
+        return [{scope: {} for scope in SWEEP_SCOPES}]
 
     combos: list[dict[str, dict[str, Any]]] = []
     value_lists = [values for _, _, values in dims]
@@ -302,11 +396,19 @@ def resolve_run_spec(
     server_params = dict(spec.base_server_params)
     server_params.update(combo.get("server_params", {}))
 
+    primary_params = dict(spec.base_primary_params)
+    primary_params.update(combo.get("primary_params", {}))
+
+    replica_params = dict(spec.base_replica_params)
+    replica_params.update(combo.get("replica_params", {}))
+
     return ResolvedRunSpec(
         combo=combo,
         run_name=run_name_for_combo(combo),
         client_params=client_params,
         server_params=server_params,
+        primary_params=primary_params,
+        replica_params=replica_params,
         sweep_params=flatten_sweep_params(combo),
     )
 

@@ -56,6 +56,7 @@ uv run experiment/run.py online_set online_set_aof online_set_multilog
 | `parse.py` | Parses each run's `benchmark/output.txt` into per-metric stats (median/mean/std/min/max), writes `result.yaml` (with git provenance from `meta.yaml`) and a human-readable `summary.txt`. |
 | `plot.py` | Renders a figure from a `plot_configs/<name>.yaml`, pulling series out of one or more experiments' `result.yaml`. |
 | `config.py` | Shared library (not a CLI): config loading, sweep expansion, run-name encoding, path resolution. |
+| `remote_util.py` | Shared library (not a CLI) behind the `remote` section: ssh launch wrapping, data-plane IP resolution, loopback detection, per-host preflight (cleanup + prebuild), and result copy-back. |
 | `plot_util.py` / `plot_style.py` | Shared plotting helpers: `result.yaml` loaders, figure factory, save/legend helpers, and the color/marker/label style maps. |
 
 ## Experiment Config Schema
@@ -94,7 +95,7 @@ sweep:                            # Cartesian product across listed dimensions
 |-----|---------|---------|
 | `name` | filename stem | Experiment name; also the `result/<name>/` directory. |
 | `description` | -- | Free text, echoed into the config snapshot. |
-| `benchmark` | **required** | `online`, `offline`, or `aof`; selects the output parser. |
+| `benchmark` | **required** | `online`, `offline`, `aof`, or `replication`; selects the output parser. |
 | `benchmark_project` | `benchmark/Resp.benchmark/Resp.benchmark.csproj` | Client project to `dotnet run`. |
 | `server_project` | `main/GarnetServer/GarnetServer.csproj` | Server project to `dotnet run`. |
 | `no_server` | `false` | If true, the server is not launched (e.g. the embedded `InProc` AofBench creates its own). `server_params` are then ignored (check.py warns). |
@@ -102,8 +103,71 @@ sweep:                            # Cartesian product across listed dimensions
 | `affinity` | none | NUMA pinning per role (see below). |
 | `check` | none | Optional pre-run requirements validated by `check.py` (currently `num_cores`); see below. |
 | `prepare` | none | An extra benchmark invocation run *before* the main benchmark of every run (e.g. to preload keys). |
-| `base` | **required** | `client_params` (required) and `server_params` (optional) shared by all runs. |
+| `base` | **required** | `client_params` (required) and `server_params` (optional) shared by all runs; replication configs add `primary_params` and `replica_params` (see below). |
+| `remote` | none | Map replication roles to ssh hosts for multi-machine runs (see below). |
 | `sweep` *or* `sweep_combo` | none | The parameter sweep (mutually exclusive). |
+
+### Replication benchmark (three processes)
+
+`benchmark: replication` runs an end-to-end replicated deployment: two real
+`GarnetServer` processes and the `Resp.benchmark` replication client, each described by
+its own scope and pinned by its own affinity role:
+
+| Scope | Process | Param flavor | Affinity role | Output |
+|-------|---------|--------------|---------------|--------|
+| `primary_params` | GarnetServer | GarnetServer flags | `primary` | `primary/output.txt` |
+| `replica_params` | GarnetServer | GarnetServer flags | `replica` | `replica/output.txt` |
+| `client_params` | Resp.benchmark (`replication_bench: true`) | bench flags | `client` | `client/output.txt` |
+
+`run.py` launches the primary, then the replica (waiting on each port), then bootstraps
+the cluster itself over plain RESP: config epochs + `CLUSTER ADDSLOTSRANGE` on the
+primary, `CLUSTER MEET` + `REPLICAOF` on the replica (REPLICAOF replies only after the
+initial sync completes, and is retried while the MEET gossip propagates). Only then does
+the client start, so the cluster is fully formed before any load. run.py also injects a
+per-role `checkpointdir` inside the run's result tree, keeping checkpoint/cluster-config
+state hermetic across reruns. The client preloads the keyspace, waits until the replica's
+replication offset vector catches up, then runs `repeat` passes of `runtime` seconds with
+`replication_writers` SET threads against the primary and `replication_readers` GET
+threads against the replica, printing per-pass `[Writer ...]`/`[Reader ...]` blocks and
+`[Replication lag bytes]` (max per-sublog primary-minus-replica offset gap). Set
+`no_server: true` (the generic server slot stays off), give both servers `cluster: true`
+and `aof: true`, and keep `aof_physical_sublog_count` equal in
+`primary_params`/`replica_params` -- check.py enforces these plus the
+`port`/`primary_port`/`replica_port` cross-references. See
+`configs/replication_smoke.yaml`.
+
+### Remote launch (`remote` section)
+
+The replication roles can run on different machines. `remote` maps a role to the ssh host
+that launches it; an entry is a hostname string or a mapping with `ssh` and/or `ip`:
+
+```yaml
+remote:
+  primary: node1                          # ssh node1; data-plane IP = resolved(node1)
+  replica: { ssh: node2, ip: 10.10.1.3 }  # explicit IP override
+  client:  node0                          # may be this machine: loopback auto-detected
+  # { ip: 10.10.1.1 } with no ssh: the role runs locally but peers reach it at this IP
+  # an absent role runs locally
+```
+
+Assumptions: bare `ssh <host>` works without a prompt, and every machine holds the same
+code at the same path relative to its `$HOME`. When any role has `ssh` (remote mode),
+run.py resolves each role's data-plane IP (`ip` override, else the ssh name, else the
+local short hostname -- all resolved locally, e.g. via `/etc/hosts`) and injects the
+server `bind` and client `primary_host`/`replica_host` address params; do not set those
+manually (check.py errors). Both server roles need resolvable IPs because the primary and
+replica connect to each other; only the client may be omitted freely. The cluster
+bootstrap always runs from this machine, over TCP to those IPs.
+
+Per unique ssh host, run.py preflights reachability and the repo path, kills leftover
+processes, wipes the stale remote `result/<name>/`, and prebuilds the projects its roles
+run (GarnetServer for primary/replica, the bench for the client). A remote role redirects
+its output to `result/<exp>/<run>/<role>/output.txt` relative to *its* repo (the local
+`<role>/_ssh.log` holds ssh diagnostics); after each run the role dirs are rsynced back
+into the local result tree before parsing. A host that is actually this machine
+(`ssh node0` loopback) is detected via a token file and writes into the local result tree
+directly -- no cleanup, prebuild, or copy-back. Affinity `numactl` prefixes execute on
+the machine the role runs on. See `configs/replication_remote_smoke.yaml`.
 
 ### `sweep` vs `sweep_combo`
 
@@ -122,11 +186,13 @@ sweep_combo:
   # ...
 ```
 
-Both scopes (`client_params`, `server_params`) may appear in a sweep. Each
-swept value becomes part of the run directory name, e.g.
+Every scope (`client_params`, `server_params`, `primary_params`, `replica_params`) may
+appear in a sweep. Each swept value becomes part of the run directory name, e.g.
 `c.threads.16` or `c.aof_physical_sublog_count.8-c.aof_replay_task_count.4`
-(prefix `c` = client, `s` = server). A run with no swept params is named
-`default`.
+(prefix `c` = client, `s` = server, `p` = primary, `r` = replica). A run with no swept
+params is named `default`. Sweep dimensions are independent, so a parameter that must
+stay equal across two scopes (e.g. `aof_physical_sublog_count` on the replication
+primary and replica) can only be swept via `sweep_combo` entries that set both.
 
 ### Parameter -> CLI flag translation (`run.py`)
 
@@ -149,6 +215,7 @@ affinity:
   client:  { numa_node: "0,1" }          # --cpunodebind=0,1 --membind=0,1 (multi-node)
   # client:  { numa_node: 1, cpus: "8-15" }  # --physcpubind=8-15 --membind=1
   # prepare: defaults to the client spec if omitted
+  # primary/replica: the replication benchmark's server processes
 ```
 
 `numa_node` is the `numactl` node spec for both `--cpunodebind` and `--membind`:
@@ -192,15 +259,20 @@ ERROR (unknown params, mode mismatches, or unmet `check` requirements such as
 5. For each run:
    a. Launch the server (skipped if `no_server`), wait until its
       host:port accepts a TCP connection (60s timeout).
-   b. Run the `prepare` step if configured.
-   c. Run the benchmark step.
-   d. Shut the server down (terminate, then kill after 10s).
+   b. Launch the replication primary then replica GarnetServers (when
+      `primary_params`/`replica_params` are set), wait on their ports, then
+      bootstrap the cluster over plain RESP (epochs, slots, MEET, REPLICAOF
+      blocking until the initial sync completes).
+   c. Run the `prepare` step if configured.
+   d. Run the benchmark step.
+   e. Shut the servers down: replica, then primary, then the generic server
+      (terminate, then kill after 10s).
 6. **Auto-parse** by calling `parse.py` on the config.
 
 `--dry-run` prints every command without executing or touching the filesystem.
 
-If the server process exits unexpectedly mid-run, the client is killed and the
-run aborts with an error.
+If any server-like process exits unexpectedly mid-run, the client is killed and
+the run aborts with an error.
 
 ## Benchmark Modes & Parsers (`parse.py`)
 
@@ -213,6 +285,7 @@ block.
 | `online` | Tabular `RespOnlineBench` rows after the `min (us)` header | latency percentiles (`min_us`..`p999_us`), `total_ops`, `iter_ops`, `tpt_mops` (throughput in Mops/s) |
 | `offline` | `Operation type:` / `Total time` / `Throughput` blocks | `time_ms`, `total_ops`, `throughput` (Mops/s) |
 | `aof` | Labeled `[name]: value` blocks per `Total time` sample | `time_ms`, `bytes`, `bandwidth` (GiB/s), `throughput` (M records/s), plus reader latency percentiles when present |
+| `replication` | Same labeled format, client output only (`_primary.log`/`_replica.log` are not parsed) | `time_ms`, `writer_throughput`/`reader_throughput` (Mops/s), `writer_lat_*`/`reader_lat_*` percentiles, `replication_lag_bytes` |
 
 For each metric column, `parse.py` records `median`, `mean`, `std`, `min`,
 `max` across the kept samples.
@@ -261,6 +334,9 @@ result/
       config.yaml           # resolved params + exact commands for this run
       prepare/output.txt    # raw prepare-step stdout (if a prepare step ran)
       benchmark/output.txt  # raw benchmark stdout (parsed by parse.py)
+      primary/output.txt    # replication runs: one subdir per role (rsynced back when
+      replica/output.txt    # the role ran on a remote machine; <role>/_ssh.log holds the
+      client/output.txt     # ssh diagnostics; client/ replaces benchmark/)
   <plot_name>/
     <plot_name>.pdf / .png  # rendered figure (by plot.py)
     <plot_name>_legend.*    # standalone legend (if legend_separate: true)
