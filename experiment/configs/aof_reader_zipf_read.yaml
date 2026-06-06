@@ -1,0 +1,30 @@
+# aof_reader variant: uniform AOF records, zipf reader GETs (global key index
+# hotness, same hot keys --aof-replay-dist Zipf would write). Same
+# sweep/settings as aof_reader otherwise.
+name: aof_reader_zipf_read
+description: Scale AOF physical sublog count (1-32) with one in-proc reader during ReplayDirect, zipf reader keys
+benchmark: aof
+no_server: true
+repeat: 7
+affinity:
+  client:
+    numa_node: 0
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    aof_gen_pages: 256
+    aof_replay_reader: 1
+    aof_barrier_spin_us: -1
+    aof_read_dist: Zipf
+sweep:
+  client_params:
+    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32]
