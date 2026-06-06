@@ -137,7 +137,13 @@ namespace Resp.benchmark
         [Option("aof-reader-skip", Required = false, Default = false, HelpText = "Pre-set every physical sublog's max sequence number to long.MaxValue at run start. Readers' consistency check is always pass, isolating the consistent-read fast-path cost from the wait path.")]
         public bool AofReaderSkip { get; set; }
 
-        [Option("pseudo-timestamp-pace", Required = false, Default = 2000, HelpText = "Ticks the generated pseudo timestamp advances per AOF record. Emulates a wall-clock sequence generator (at ~2 GHz, 2000 is ~1us per record).")]
+        [Option("aof-replay-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "Key distribution of the generated AOF records that AofBench replays: Uniform or Zipf.")]
+        public KeyDistribution AofReplayDist { get; set; }
+
+        [Option("aof-read-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "Key distribution of AofBench reader GETs over the global keyset: Uniform or Zipf.")]
+        public KeyDistribution AofReadDist { get; set; }
+
+        [Option("pseudo-timestamp-pace", Required = false, Default = 2000, HelpText = "Average pseudo-timestamp ticks between consecutive generated AOF records of the same sublog. Generated records emulate one global stream advancing pace/#sublogs ticks per record, dealt across sublogs. Emulates a wall-clock sequence generator (at ~2 GHz, 2000 is ~1us per record).")]
         public int PseudoTimestampPace { get; set; }
 
         /*
