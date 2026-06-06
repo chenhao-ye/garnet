@@ -167,10 +167,10 @@ namespace Resp.benchmark
         [Option("aof-replay-drift-threshold", Required = false, Default = 20000, HelpText = "Cross-sublog replay drift, in sequence-number units, tolerated on a replica before a replay-align barrier round is triggered. -1 disables the barrier.")]
         public int AofReplayDriftThreshold { get; set; }
 
-        [Option("aof-replay-drift-check-freq", Required = false, Default = 50, HelpText = "How often the cross-sublog drift is re-checked during replay, as a multiple of --aof-replay-drift-threshold: one scan per (this value x threshold) sequence-number window system-wide, rotated across replay threads (window index mod virtual sublog count), firing a replay-align round when the drift exceeds the threshold. 0 = readers about to wait are the only round source.")]
+        [Option("aof-replay-drift-check-freq", Required = false, Default = 16, HelpText = "How often the cross-sublog drift is re-checked during replay, as a multiple of --aof-replay-drift-threshold: one scan per (this value x threshold) sequence-number window system-wide, rotated across replay threads (window index mod virtual sublog count), firing a replay-align round when the drift exceeds the threshold. 0 = readers about to wait are the only round source.")]
         public int AofReplayDriftCheckFreq { get; set; }
 
-        [Option("aof-barrier-spin-us", Required = false, Default = 0, HelpText = "How long a replay thread spins at the replay-align barrier before sleeping: <0 = spin forever (never sleep), 0 = never spin (pure sleep), >0 = spin up to N microseconds then sleep for the remainder.")]
+        [Option("aof-barrier-spin-us", Required = false, Default = -1, HelpText = "How long a replay thread spins at the replay-align barrier before sleeping: <0 = spin forever (never sleep), 0 = never spin (pure sleep), >0 = spin up to N microseconds then sleep for the remainder.")]
         public int AofBarrierSpinUs { get; set; }
 
         [Option("aof-memory-size", Required = false, Default = "64m", HelpText = "Total AOF memory buffer used in bytes (rounds down to power of 2) - spills to disk after this limit.")]

@@ -97,14 +97,14 @@ namespace Garnet.server
         /// threshold. 0 disables the proactive check, leaving readers about to
         /// wait as the only round source.
         /// </summary>
-        public int AofReplayDriftCheckFreq = 50;
+        public int AofReplayDriftCheckFreq = 16;
 
         /// <summary>
         /// How long a replay thread spins at the replay-align barrier before falling back to a kernel wait:
         /// &lt; 0: spins forever (never sleeps); 0: never spins (pure sleep); &gt; 0: spins up to that many microseconds, then sleeps for the remainder.
         /// Spinning avoids the kernel park/wake cost when rounds are short and frequent, at the cost of burning CPU cycles.
         /// </summary>
-        public int AofBarrierSpinUs = 0;
+        public int AofBarrierSpinUs = -1;
 
         /// <summary>
         /// Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.
