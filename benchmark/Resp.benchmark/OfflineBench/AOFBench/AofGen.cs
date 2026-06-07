@@ -59,8 +59,6 @@ namespace Resp.benchmark
         byte[] globalKeys;
         byte[] sharedValue;
 
-        public const double ZipfTheta = 0.99;
-
         // Sublog each global key hashes to, indexed by global key index. Built with the
         // per-sublog keysets; the zipf generators dispatch sampled keys through it.
         int[] sublogAssign;
@@ -294,12 +292,12 @@ namespace Resp.benchmark
             // startClock must be larger than the max warmup clock
             var startClock = GenerateWarmupData(threads) + options.PseudoTimestampPace;
 
-            // Zipf generation emulates one global stream of (threads x per-generator budget)
+            // The zipf variants emulate one global stream of (threads x per-generator budget)
             // records: generator g owns the contiguous pseudo-clock range starting at
             // startClock + g x budget x globalStreamTick and dispatches each sampled record to
             // the sublog its key hashes to (see GenerateZipfStream). The budget matches the
             // volume the uniform path generates per sublog.
-            var zipf = options.AofReplayDist == KeyDistribution.Zipf;
+            var zipf = options.AofReplayDist != KeyDistribution.Uniform;
             var perThreadRecords = zipf ? (long)options.AofGenPages * RecordsPerPage() : 0L;
             var segments = zipf ? new Page[threads][][] : null;
             var endClocks = zipf ? new long[threads] : null;
@@ -584,7 +582,7 @@ namespace Resp.benchmark
         unsafe Page[][] GenerateZipfStream(int genIdx, long baseClock, long recordCount, out long endClock)
         {
             var sublogCount = options.AofPhysicalSublogCount;
-            var zipfg = new ZipfGenerator(new RandomGenerator((uint)(789110123 + genIdx)), options.DbSize, ZipfTheta);
+            var keyDist = new KeyDistAdaptor(options.AofReplayDist, options.DbSize, 789110123 + genIdx, options.ZipfTheta);
             var useShardedHeader = sublogCount > 1 || options.AofReplayTaskCount > 1;
             var pageSize = 1 << aofServerOptions.AofPageSizeBits();
             long pseudoClock = baseClock;
@@ -614,7 +612,7 @@ namespace Resp.benchmark
                 var valueLen = sharedValue.Length;
                 for (long k = 0; k < recordCount; k++)
                 {
-                    var keyIdx = zipfg.Next();
+                    var keyIdx = keyDist.Next();
                     var s = sublogAssign[keyIdx];
                     var keyPtr = keysPtr + keyIdx * keyLen;
                     var key = SpanByte.FromPinnedPointer(keyPtr, keyLen);

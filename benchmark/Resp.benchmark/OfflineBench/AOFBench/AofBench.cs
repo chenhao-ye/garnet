@@ -680,10 +680,7 @@ namespace Resp.benchmark
             var keys = readerKeys;
             var keyLen = readerKeyLen;
             var keyCount = keys.Length / keyLen;
-            var rng = new Random(0xCAFE + threadId);
-            var zipfg = options.AofReadDist == KeyDistribution.Zipf
-                ? new ZipfGenerator(new RandomGenerator((uint)(0xCAFE + threadId)), keyCount, AofGen.ZipfTheta)
-                : null;
+            var keyDist = new KeyDistAdaptor(options.AofReadDist, keyCount, 0xCAFE + threadId, options.ZipfTheta);
             var opsCompleted = 0L;
 
             // Pre-format GET command frame:
@@ -705,7 +702,7 @@ namespace Resp.benchmark
                 var prev = Stopwatch.GetTimestamp();
                 while (!done)
                 {
-                    var idx = zipfg != null ? zipfg.Next() : rng.Next(keyCount);
+                    var idx = keyDist.Next();
                     Buffer.MemoryCopy(keysPtr + idx * keyLen, keyDst, keyLen, keyLen);
                     session.TryConsumeMessages(bufPtr, totalLen);
                     var now = Stopwatch.GetTimestamp();
@@ -724,17 +721,14 @@ namespace Resp.benchmark
             var keys = readerKeys;
             var keyLen = readerKeyLen;
             var keyCount = keys.Length / keyLen;
-            var rng = new Random(0xCAFE + threadId);
-            var zipfg = options.AofReadDist == KeyDistribution.Zipf
-                ? new ZipfGenerator(new RandomGenerator((uint)(0xCAFE + threadId)), keyCount, AofGen.ZipfTheta)
-                : null;
+            var keyDist = new KeyDistAdaptor(options.AofReadDist, keyCount, 0xCAFE + threadId, options.ZipfTheta);
             var opsCompleted = 0L;
 
             waiter.Wait();
 
             while (!done)
             {
-                var idx = zipfg != null ? zipfg.Next() : rng.Next(keyCount);
+                var idx = keyDist.Next();
                 var key = Encoding.ASCII.GetString(keys, idx * keyLen, keyLen);
                 var start = Stopwatch.GetTimestamp();
                 client.Execute("GET", key);
@@ -752,10 +746,7 @@ namespace Resp.benchmark
             var keys = readerKeys;
             var keyLen = readerKeyLen;
             var keyCount = keys.Length / keyLen;
-            var rng = new Random(0xCAFE + threadId);
-            var zipfg = options.AofReadDist == KeyDistribution.Zipf
-                ? new ZipfGenerator(new RandomGenerator((uint)(0xCAFE + threadId)), keyCount, AofGen.ZipfTheta)
-                : null;
+            var keyDist = new KeyDistAdaptor(options.AofReadDist, keyCount, 0xCAFE + threadId, options.ZipfTheta);
             var opsCompleted = 0L;
             var wait = !options.Burst;
 
@@ -766,7 +757,7 @@ namespace Resp.benchmark
                 var start = Stopwatch.GetTimestamp();
                 for (var i = 0; i < parallel; i++)
                 {
-                    var idx = zipfg != null ? zipfg.Next() : rng.Next(keyCount);
+                    var idx = keyDist.Next();
                     client.ExecuteBatch("GET", Encoding.ASCII.GetString(keys, idx * keyLen, keyLen));
                 }
                 client.CompletePending(wait);

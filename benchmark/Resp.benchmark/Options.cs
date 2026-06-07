@@ -137,11 +137,14 @@ namespace Resp.benchmark
         [Option("aof-reader-skip", Required = false, Default = false, HelpText = "Pre-set every physical sublog's max sequence number to long.MaxValue at run start. Readers' consistency check is always pass, isolating the consistent-read fast-path cost from the wait path.")]
         public bool AofReaderSkip { get; set; }
 
-        [Option("aof-replay-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "Key distribution of the generated AOF records that AofBench replays: Uniform or Zipf.")]
+        [Option("aof-replay-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "Key distribution of the generated AOF records that AofBench replays: Uniform, Zipf, or ZipfRev (Zipf with the hotness order reversed).")]
         public KeyDistribution AofReplayDist { get; set; }
 
-        [Option("aof-read-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "Key distribution of AofBench reader GETs over the global keyset: Uniform or Zipf.")]
+        [Option("aof-read-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "Key distribution of AofBench reader GETs over the global keyset: Uniform, Zipf, or ZipfRev (Zipf with the hotness order reversed).")]
         public KeyDistribution AofReadDist { get; set; }
+
+        [Option("zipf-theta", Required = false, Default = 0.99, HelpText = "Theta of the Zipf key distributions used by --aof-replay-dist and --aof-read-dist.")]
+        public double ZipfTheta { get; set; }
 
         [Option("pseudo-timestamp-pace", Required = false, Default = 2000, HelpText = "Average pseudo-timestamp ticks between consecutive generated AOF records of the same sublog. Generated records emulate one global stream advancing pace/#sublogs ticks per record, dealt across sublogs. Emulates a wall-clock sequence generator (at ~2 GHz, 2000 is ~1us per record).")]
         public int PseudoTimestampPace { get; set; }
