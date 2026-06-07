@@ -107,6 +107,15 @@ namespace Garnet.server
         public int AofBarrierSpinUs = -1;
 
         /// <summary>
+        /// How long a replica reader session spins polling the sublog frontier before parking on
+        /// the consistent-read wait: &lt; 0: spins forever (never parks); 0: never spins (parks
+        /// immediately); &gt; 0: spins up to that many microseconds, then parks. A spinning reader
+        /// enqueues no waiter, so the replay thread's per-record waiter-signal pass stays on its
+        /// lock-free empty fast path instead of paying the wake train under frequent reader waits.
+        /// </summary>
+        public int AofReaderSpinUs = 0;
+
+        /// <summary>
         /// Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.
         /// </summary>
         public int AofReplayRingSize = 16384;
