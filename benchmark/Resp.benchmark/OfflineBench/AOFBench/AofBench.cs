@@ -4,6 +4,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text;
+using Embedded.server;
 using Garnet.server;
 using HdrHistogram;
 using Tsavorite.core;
@@ -137,6 +138,7 @@ namespace Resp.benchmark
             var useReaders = options.IsReplayEnabled && options.AofReplayReader > 0;
             var networkReaders = useReaders && options.Client == ClientType.GarnetClientSession;
             RespServerSession[] readerSessions = null;
+            EmbeddedNetworkSender[] readerSenders = null;
             GarnetClientSession[] readerClients = null;
             LongHistogram[] readerHistograms = null;
 
@@ -184,6 +186,20 @@ namespace Resp.benchmark
                             readerClients[i] = c;
                         }
                     }
+                    else if (options.AofReaderParanoid)
+                    {
+                        // Paranoid readers validate every reply, so they need the session's
+                        // network sender: build the sender/session pairs here. The sessions only
+                        // issue GET, so no pub/sub broker is needed.
+                        readerSessions = new RespServerSession[options.AofReplayReader];
+                        readerSenders = new EmbeddedNetworkSender[options.AofReplayReader];
+                        for (var i = 0; i < options.AofReplayReader; i++)
+                        {
+                            readerSenders[i] = new EmbeddedNetworkSender();
+                            readerSessions[i] = new RespServerSession(i, readerSenders[i],
+                                instance.server.StoreWrapper, subscribeBroker: null, null, true);
+                        }
+                    }
                     else
                     {
                         readerSessions = instance.server.GetRespSessions(options.AofReplayReader);
@@ -222,7 +238,8 @@ namespace Resp.benchmark
                         else
                         {
                             var session = readerSessions[idx];
-                            readers[idx] = new Thread(() => RunReader(x, session, hist));
+                            var sender = readerSenders?[idx];
+                            readers[idx] = new Thread(() => RunReader(x, session, sender, hist));
                         }
                     }
                 }
@@ -675,7 +692,37 @@ namespace Resp.benchmark
             _ = Interlocked.Add(ref total_records_replayed, recordsReplayedCount);
         }
 
-        unsafe void RunReader(int threadId, RespServerSession session, LongHistogram hist)
+        // Paranoid reader checks (--aof-reader-paranoid): a correct GET reply is a bulk string
+        // of exactly the configured value length; an error, a nil miss, or any other length
+        // throws, aborting the bench.
+        static void ValidateGetResult(string key, string result, int expectedValueLen)
+        {
+            if (result == null)
+                throw new Exception($"Paranoid reader: GET {key} returned nil (key missing).");
+            if (result.Length != expectedValueLen)
+                throw new Exception($"Paranoid reader: GET {key} returned {result.Length} bytes, expected {expectedValueLen}.");
+        }
+
+        // In-proc flavor: parses the raw RESP reply ("$<len>\r\n<payload>\r\n") the session wrote
+        // at the head of its network sender's response buffer (the embedded sender never consumes
+        // it, so the last reply starts at the head). The reply header is parsed within the first
+        // 32 bytes, far inside the sender's buffer.
+        static unsafe void ValidateGetReply(byte* reply, byte* keyPtr, int keyLen, int expectedValueLen)
+        {
+            var len = -1;
+            if (reply[0] == (byte)'$' && reply[1] != (byte)'-')
+            {
+                len = 0;
+                for (var i = 1; i < 32 && reply[i] != (byte)'\r'; i++)
+                    len = len * 10 + (reply[i] - '0');
+            }
+            if (len == expectedValueLen) return;
+            var key = Encoding.ASCII.GetString(keyPtr, keyLen);
+            var snippet = Encoding.ASCII.GetString(reply, 32).Replace("\r", "\\r").Replace("\n", "\\n");
+            throw new Exception($"Paranoid reader: GET {key} returned '{snippet}', expected a {expectedValueLen}-byte bulk string.");
+        }
+
+        unsafe void RunReader(int threadId, RespServerSession session, EmbeddedNetworkSender sender, LongHistogram hist)
         {
             var keys = readerKeys;
             var keyLen = readerKeyLen;
@@ -684,6 +731,10 @@ namespace Resp.benchmark
             var zipfg = options.AofReadDist == KeyDistribution.Zipf
                 ? new ZipfGenerator(new RandomGenerator((uint)(0xCAFE + threadId)), keyCount, AofGen.ZipfTheta)
                 : null;
+            // Paranoid mode reads each reply back from the head of the sender's response buffer
+            // (stable for the embedded sender, whose SendResponse never consumes it).
+            var paranoidReply = options.AofReaderParanoid ? sender.GetResponseObjectHead() : null;
+            var expectedValueLen = options.ValueLength;
             var opsCompleted = 0L;
 
             // Pre-format GET command frame:
@@ -708,6 +759,8 @@ namespace Resp.benchmark
                     var idx = zipfg != null ? zipfg.Next() : rng.Next(keyCount);
                     Buffer.MemoryCopy(keysPtr + idx * keyLen, keyDst, keyLen, keyLen);
                     session.TryConsumeMessages(bufPtr, totalLen);
+                    if (paranoidReply != null)
+                        ValidateGetReply(paranoidReply, keysPtr + idx * keyLen, keyLen, expectedValueLen);
                     var now = Stopwatch.GetTimestamp();
                     hist.RecordValue(now - prev);
                     prev = now;
@@ -728,6 +781,8 @@ namespace Resp.benchmark
             var zipfg = options.AofReadDist == KeyDistribution.Zipf
                 ? new ZipfGenerator(new RandomGenerator((uint)(0xCAFE + threadId)), keyCount, AofGen.ZipfTheta)
                 : null;
+            var paranoid = options.AofReaderParanoid;
+            var expectedValueLen = options.ValueLength;
             var opsCompleted = 0L;
 
             waiter.Wait();
@@ -737,8 +792,17 @@ namespace Resp.benchmark
                 var idx = zipfg != null ? zipfg.Next() : rng.Next(keyCount);
                 var key = Encoding.ASCII.GetString(keys, idx * keyLen, keyLen);
                 var start = Stopwatch.GetTimestamp();
-                client.Execute("GET", key);
-                client.CompletePending(true);
+                if (paranoid)
+                {
+                    var reply = client.ExecuteAsync("GET", key);
+                    client.CompletePending(true);
+                    ValidateGetResult(key, reply.Result, expectedValueLen);
+                }
+                else
+                {
+                    client.Execute("GET", key);
+                    client.CompletePending(true);
+                }
                 hist.RecordValue(Stopwatch.GetTimestamp() - start);
                 opsCompleted++;
             }
@@ -756,8 +820,13 @@ namespace Resp.benchmark
             var zipfg = options.AofReadDist == KeyDistribution.Zipf
                 ? new ZipfGenerator(new RandomGenerator((uint)(0xCAFE + threadId)), keyCount, AofGen.ZipfTheta)
                 : null;
+            var paranoid = options.AofReaderParanoid;
+            var expectedValueLen = options.ValueLength;
+            var batchKeys = paranoid ? new string[parallel] : null;
+            var batchReplies = paranoid ? new Task<string>[parallel] : null;
             var opsCompleted = 0L;
-            var wait = !options.Burst;
+            // Paranoid validates every reply of the batch, so it always waits, --burst or not.
+            var wait = !options.Burst || paranoid;
 
             waiter.Wait();
 
@@ -767,9 +836,21 @@ namespace Resp.benchmark
                 for (var i = 0; i < parallel; i++)
                 {
                     var idx = zipfg != null ? zipfg.Next() : rng.Next(keyCount);
-                    client.ExecuteBatch("GET", Encoding.ASCII.GetString(keys, idx * keyLen, keyLen));
+                    var key = Encoding.ASCII.GetString(keys, idx * keyLen, keyLen);
+                    if (paranoid)
+                    {
+                        batchKeys[i] = key;
+                        batchReplies[i] = client.ExecuteAsyncBatch("GET", key);
+                    }
+                    else
+                    {
+                        client.ExecuteBatch("GET", key);
+                    }
                 }
                 client.CompletePending(wait);
+                if (paranoid)
+                    for (var i = 0; i < parallel; i++)
+                        ValidateGetResult(batchKeys[i], batchReplies[i].Result, expectedValueLen);
                 hist.RecordValue(Stopwatch.GetTimestamp() - start);
                 opsCompleted += parallel;
             }

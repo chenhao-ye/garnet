@@ -137,6 +137,9 @@ namespace Resp.benchmark
         [Option("aof-reader-skip", Required = false, Default = false, HelpText = "Pre-set every physical sublog's max sequence number to long.MaxValue at run start. Readers' consistency check is always pass, isolating the consistent-read fast-path cost from the wait path.")]
         public bool AofReaderSkip { get; set; }
 
+        [Option("aof-reader-paranoid", Required = false, Default = false, HelpText = "Validate every reader GET reply: it must be a bulk string of exactly --valuelength bytes (no error, no nil miss). The bench aborts on the first mismatch. Adds per-op checking overhead and forces batched network readers to wait for replies even with --burst; in the split-process Client role, --valuelength must match the Replica's.")]
+        public bool AofReaderParanoid { get; set; }
+
         [Option("aof-replay-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "Key distribution of the generated AOF records that AofBench replays: Uniform or Zipf.")]
         public KeyDistribution AofReplayDist { get; set; }
 
