@@ -297,121 +297,156 @@ def render_replay_spectrum(plot_cfg: dict, deps: list[str], out_path: Path) -> N
     save_fig(fig, out_path)
 
 
+_LATENCY_UNIT_SCALE = {"ms": 1e-3, "us": 1.0}
+
+
 def render_replay_reader(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
-    # dependencies[0] = reader sweep (aof_physical_sublog_count x
-    # aof_replay_reader). Four figures share X = replay throughput; one
-    # datapoint per sublog count, pinned by the plot config's `filter` map of
-    # dotted param keys (e.g. client.aof_replay_reader: 1, client.itp: 128).
+    # dependencies[0] = reader experiment. Each `series` produces four figures
+    # sharing X = replay throughput, with one datapoint per sublog count.
+    #
+    # Config keys (all optional):
+    #   sublog_param  dotted param holding the sublog count and the source of
+    #                 k_values (default server.aof_physical_sublog_count; use
+    #                 client.aof_physical_sublog_count for in-proc experiments).
+    #   filter        base filter (dotted param keys) applied to every series,
+    #                 e.g. client.aof_replay_reader: 1, client.itp: 128.
+    #   latency_unit  "ms" (default) or "us"; scales the three latency figures.
+    #   series        list of {suffix, filter} -- one set of four figures each,
+    #                 with `filter` merged over the base filter. Defaults to a
+    #                 single unsuffixed set (no extra filter). Use it to split a
+    #                 second sweep dimension into separate figures, e.g. one set
+    #                 per aof_replay_dist value.
     if len(deps) != 1:
         raise ValueError(
             f"replay_reader template expects 1 dependency [reader sweep]; got {deps}"
         )
     result = load_result(deps[0])
-    k_values = sorted(result["sweep_params"]["server.aof_physical_sublog_count"])
-    cfg_filter = dict(plot_cfg.get("filter") or {})
+    sublog_param = plot_cfg.get("sublog_param", "server.aof_physical_sublog_count")
+    k_values = sorted(result["sweep_params"][sublog_param])
+    base_filter = dict(plot_cfg.get("filter") or {})
+
+    unit = str(plot_cfg.get("latency_unit", "us")).lower()
+    if unit not in _LATENCY_UNIT_SCALE:
+        raise ValueError(
+            f"latency_unit must be one of {sorted(_LATENCY_UNIT_SCALE)}; got {unit!r}"
+        )
+    lat_scale = _LATENCY_UNIT_SCALE[unit]
 
     # (figure file suffix, y metric in result.yaml, default y-axis label,
-    # y unit scale). parse.py records reader latencies in us; scale them to
-    # ms for the figures.
+    # y unit scale). parse.py records reader latencies in us.
     metric_figures = [
         ("tput", "reader_throughput", "Reader\nthroughput (Mop/s)", 1.0),
-        ("p50", "reader_lat_p50", "Reader\np50 latency (ms)", 1e-3),
-        ("p99", "reader_lat_p99", "Reader\np99 latency (ms)", 1e-3),
-        ("p999", "reader_lat_p99_9", "Reader\np99.9 latency (ms)", 1e-3),
+        ("p50", "reader_lat_p50", f"Reader\np50 latency ({unit})", lat_scale),
+        ("p99", "reader_lat_p99", f"Reader\np99 latency ({unit})", lat_scale),
+        ("p999", "reader_lat_p99_9", f"Reader\np99.9 latency ({unit})", lat_scale),
     ]
+
+    series = plot_cfg.get("series") or [{}]
 
     scale = float(plot_cfg.get("scale", 1.0))
     ncol, legend_width = resolve_legend_geom(plot_cfg, 3)
     legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
 
-    for fig_idx, (suffix, y_metric, default_ylabel, y_scale) in enumerate(
-        metric_figures
-    ):
-        # Per-figure axis overrides use figure-suffixed keys, in the style of
-        # the other plot config keys: e.g. `yticks_p99` overrides `yticks`
-        # for the p99 figure only; works for any axis-styling key.
-        fig_cfg = dict(plot_cfg)
-        suffix_tag = f"_{suffix}"
-        for cfg_key, value in plot_cfg.items():
-            if cfg_key.endswith(suffix_tag):
-                fig_cfg[cfg_key[: -len(suffix_tag)]] = value
-        fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
+    legend_saved = False
+    for s in series:
+        s_suffix = s.get("suffix", "")
+        s_filter = {**base_filter, **(s.get("filter") or {})}
+        for suffix, y_metric, default_ylabel, y_scale in metric_figures:
+            # Per-figure axis overrides use figure-suffixed keys, applied least
+            # to most specific so the most specific wins. For any axis-styling
+            # key (e.g. yticks, ymax, yscale):
+            #   <key>_<metric>              -> that metric across every series
+            #                                  (e.g. yticks_p99)
+            #   <key>_<series>_<metric>     -> one figure only
+            #                                  (e.g. yticks_zipf_p99)
+            fig_cfg = dict(plot_cfg)
+            override_tags = [f"_{suffix}"]
+            if s_suffix:
+                override_tags.append(f"_{s_suffix}_{suffix}")
+            for tag in override_tags:
+                for cfg_key, value in plot_cfg.items():
+                    if cfg_key.endswith(tag):
+                        fig_cfg[cfg_key[: -len(tag)]] = value
+            fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
 
-        all_x: list[float] = []
-        all_y: list[float] = []
-        for k in k_values:
-            key = "single_log" if k == 1 else f"multilog_m{k}"
-            filt = {**cfg_filter, "server.aof_physical_sublog_count": k}
-            # The config filter pins each series to one run per sublog count;
-            # the two extract_series calls pair as (replay tput, reader metric).
-            _, xs_replay, _ = extract_series(
-                result,
-                x_param="client.aof_replay_reader",
-                y_metric="throughput",
-                y_field="median",
-                filter_params=filt,
-            )
-            _, ys, _ = extract_series(
-                result,
-                x_param="client.aof_replay_reader",
-                y_metric=y_metric,
-                y_field="median",
-                filter_params=filt,
-            )
-            ys = [y * y_scale for y in ys]
-            if not xs_replay or len(xs_replay) != len(ys):
-                print(
-                    f"WARN: no paired data for aof_physical_sublog_count={k} "
-                    f"under filter {cfg_filter}",
-                    file=sys.stderr,
+            all_x: list[float] = []
+            all_y: list[float] = []
+            for k in k_values:
+                key = "single_log" if k == 1 else f"multilog_m{k}"
+                filt = {**s_filter, sublog_param: k}
+                # The filter pins each series to one run per sublog count; the
+                # two extract_series calls pair as (replay tput, reader metric).
+                _, xs_replay, _ = extract_series(
+                    result,
+                    x_param=sublog_param,
+                    y_metric="throughput",
+                    y_field="median",
+                    filter_params=filt,
                 )
-                continue
-            all_x.extend(xs_replay)
-            all_y.extend(ys)
-            ax.plot(
-                xs_replay,
-                ys,
-                color=color_map[key],
-                linestyle=linestyle_map[key],
-                marker=marker_map[key],
-                markersize=MARKER_SIZE,
-                linewidth=LINEWIDTH,
-                label=labels_map[key],
-                zorder=zorder_map.get(key, 2),
+                _, ys, _ = extract_series(
+                    result,
+                    x_param=sublog_param,
+                    y_metric=y_metric,
+                    y_field="median",
+                    filter_params=filt,
+                )
+                ys = [y * y_scale for y in ys]
+                if not xs_replay or len(xs_replay) != len(ys):
+                    print(
+                        f"WARN: no paired data for {sublog_param}={k} "
+                        f"under filter {filt}",
+                        file=sys.stderr,
+                    )
+                    continue
+                all_x.extend(xs_replay)
+                all_y.extend(ys)
+                ax.plot(
+                    xs_replay,
+                    ys,
+                    color=color_map[key],
+                    linestyle=linestyle_map[key],
+                    marker=marker_map[key],
+                    markersize=MARKER_SIZE,
+                    linewidth=LINEWIDTH,
+                    label=labels_map[key],
+                    zorder=zorder_map.get(key, 2),
+                )
+
+            y_log = fig_cfg.get("yscale") == "log"
+            default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+            default_xmax = max(all_x) * 1.05 if all_x else None
+            apply_axis_cfg(
+                ax,
+                fig_cfg,
+                default_xlabel="Replay throughput (Mop/s)",
+                default_ylabel=default_ylabel,
+                default_xmax=default_xmax,
+                default_ymax=default_ymax,
             )
 
-        y_log = fig_cfg.get("yscale") == "log"
-        default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
-        default_xmax = max(all_x) * 1.05 if all_x else None
-        apply_axis_cfg(
-            ax,
-            fig_cfg,
-            default_xlabel="Replay throughput (Mop/s)",
-            default_ylabel=default_ylabel,
-            default_xmax=default_xmax,
-            default_ymax=default_ymax,
-        )
+            # The long x-label would clip at the figure's right edge; anchor it
+            # slightly left of the axes center.
+            ax.xaxis.label.set_x(0.48)
 
-        # The long x-label would clip at the figure's right edge; anchor it
-        # slightly left of the axes center.
-        ax.xaxis.label.set_x(0.48)
+            if plot_cfg.get("legend_separate"):
+                # Every figure carries the same curves; save the shared legend
+                # once as <name>_legend.pdf.
+                if not legend_saved:
+                    save_legend(ax, out_path, width=legend_width, **legend_kwargs)
+                    legend_saved = True
+            else:
+                handles, labels = row_major_handles(ax, ncol)
+                ax.legend(
+                    handles,
+                    labels,
+                    loc="upper left",
+                    bbox_to_anchor=(0.0, 1.0),
+                    **legend_kwargs,
+                )
 
-        if plot_cfg.get("legend_separate"):
-            # All four figures carry the same curves; save the shared legend
-            # once as <name>_legend.pdf.
-            if fig_idx == 0:
-                save_legend(ax, out_path, width=legend_width, **legend_kwargs)
-        else:
-            handles, labels = row_major_handles(ax, ncol)
-            ax.legend(
-                handles,
-                labels,
-                loc="upper left",
-                bbox_to_anchor=(0.0, 1.0),
-                **legend_kwargs,
-            )
-
-        save_fig(fig, out_path.with_name(f"{out_path.stem}_{suffix}{out_path.suffix}"))
+            # Filename: <stem>[_<series suffix>]_<metric>.<ext>
+            tags = [out_path.stem] + ([s_suffix] if s_suffix else []) + [suffix]
+            save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
 
 
 def render_append(plot_cfg: dict, deps: list[str], out_path: Path) -> None:

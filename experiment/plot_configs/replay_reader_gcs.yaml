@@ -1,0 +1,16 @@
+name: replay_reader_gcs
+description: "Split-process reader throughput and latency vs. replay throughput; one datapoint per sublog count."
+template: replay_reader
+dependencies: [aof_reader_gcs]
+filter:
+  client.aof_replay_reader: 1
+  client.itp: 128
+scale: 0.5
+legend_separate: true
+# legend_scale: 0.5
+latency_unit: ms                  # split-process latencies are 0.15-2 ms
+xticks: [0, 10, 20, 30, 40, 50]
+yticks_tput: [0, 0.2, 0.4, 0.6, 0.8, 1]
+yticks_p50: [0, 0.1, 0.2]
+yticks_p99: [0, 0.5, 1, 1.5, 2]
+yticks_p999: [0, 0.5, 1, 1.5, 2]

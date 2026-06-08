@@ -1,15 +1,26 @@
 name: replay_reader
-description: "Reader throughput and latency vs. replay throughput; one datapoint per sublog count."
+description: "In-proc reader throughput and latency vs. replay throughput; one set of figures per replay distribution."
 template: replay_reader
-dependencies: [aof_reader_gcs]
-filter:
-  client.aof_replay_reader: 1
-  client.itp: 128
+dependencies: [aof_reader]
+# aof_reader is in-proc (no_server): sublog count is a client param, reader is
+# fixed at 1, and latencies are sub-millisecond (reported in us, the default).
+sublog_param: client.aof_physical_sublog_count
+# One set of four figures per replay distribution; the reader keys are Zipf, so
+# Uniform = misaligned, ZipfRev = equal-skew disjoint hot set, Zipf = aligned.
+series:
+  - { suffix: uniform, filter: { client.aof_replay_dist: Uniform } }
+  - { suffix: zipfrev, filter: { client.aof_replay_dist: ZipfRev } }
+  - { suffix: zipf, filter: { client.aof_replay_dist: Zipf } }
 scale: 0.5
 legend_separate: true
-# legend_scale: 0.5
-xticks: [0, 10, 20, 30, 40, 50]
-yticks_tput: [0, 0.2, 0.4, 0.6, 0.8, 1]
-yticks_p50: [0, 0.1, 0.2]
-yticks_p99: [0, 0.5, 1, 1.5, 2]
+xticks: [0, 10, 20, 30, 40]
+
+# Per-figure yticks. `yticks_<metric>` applies to that metric across all three
+# distributions; `yticks_<series>_<metric>` overrides one figure. The Zipf tail
+# (aligned hot sets) needs far taller latency axes than Uniform/ZipfRev.
+yticks_tput: [0, 0.5, 1, 1.5, 2]
+yticks_p50: [0, 0.2, 0.4, 0.6]
+yticks_p99: [0, 0.4, 0.8, 1.2]
 yticks_p999: [0, 0.5, 1, 1.5, 2]
+yticks_zipf_p99: [0, 2, 4, 6, 8]
+yticks_zipf_p999: [0, 5, 10, 15, 20]
