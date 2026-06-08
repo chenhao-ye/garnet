@@ -1,0 +1,38 @@
+# Based on aof_reader (in-proc zipf reader, ReplayDirect, single-pass, spin=-1).
+# 3-D sweep: drift threshold {10k..100k step 10k, plus -1 = barrier disabled}
+# x sublog count {2,4,8,16,32} x replay distribution {Uniform, ZipfRev, Zipf}.
+# freq fixed at 1 (tightest cadence: check interval == threshold). Against the
+# always-zipf reader the three replay dists give the alignment regimes
+# (benign / misaligned / aligned-stress) at each m, and the threshold sweep
+# maps the reader-tail vs replay tradeoff; -1 is the no-bounding baseline.
+# repeat 5 (165 cells -- see header note on runtime).
+name: aof_reader_threshold
+description: "Zipf reader: threshold {10k..100k,-1} x m {2..32} x replay dist {Uniform,ZipfRev,Zipf}, freq=1"
+benchmark: aof
+no_server: true
+repeat: 7
+affinity:
+  client:
+    numa_node: 0
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    aof_gen_pages: 256
+    aof_replay_reader: 1
+    aof_barrier_spin_us: -1
+    aof_replay_drift_check_freq: 1
+    aof_read_dist: Zipf
+sweep:
+  client_params:
+    aof_physical_sublog_count: [32, 16, 8, 4, 2]
+    aof_replay_drift_threshold: [10000, 20000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000, -1]
+    aof_replay_dist: [Uniform, ZipfRev, Zipf]
