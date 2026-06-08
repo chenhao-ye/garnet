@@ -86,7 +86,7 @@ namespace Garnet.server
         /// replay-align barrier round is triggered. A larger value lets sublogs diverge further
         /// (less reader blocking, looser bound); -1 disables the barrier.
         /// </summary>
-        public int AofReplayDriftThreshold = 20000;
+        public int AofReplayDriftThreshold = 10000;
 
         /// <summary>
         /// How often the cross-sublog drift is re-checked during replay, as a multiple of
@@ -97,7 +97,7 @@ namespace Garnet.server
         /// threshold. 0 disables the proactive check, leaving readers about to
         /// wait as the only round source.
         /// </summary>
-        public int AofReplayDriftCheckFreq = 16;
+        public int AofReplayDriftCheckFreq = 1;
 
         /// <summary>
         /// How long a replay thread spins at the replay-align barrier before falling back to a kernel wait:
