@@ -1,0 +1,28 @@
+name: replay_reader_threshold_curve
+description: "Reader tput/latency vs. replay throughput, tracing the drift-threshold sweep; one set of figures per replay distribution."
+template: replay_reader
+dependencies: [aof_reader_threshold]
+# aof_reader_threshold is in-proc; sublog count and the swept knobs are client
+# params, latencies are sub-millisecond (us, the default).
+sublog_param: client.aof_physical_sublog_count
+# Each curve (one per sublog count) is traced by sweeping the drift threshold;
+# -1 (barrier disabled) starves the reader to 0 tput / ~1s latency, so drop it.
+point_param: client.aof_replay_drift_threshold
+point_exclude: [-1]
+# One set of four figures per replay distribution (reader keys are always Zipf):
+# Uniform = benign, ZipfRev = misaligned, Zipf = aligned-stress.
+series:
+  - { suffix: uniform, filter: { client.aof_replay_dist: Uniform } }
+  - { suffix: zipfrev, filter: { client.aof_replay_dist: ZipfRev } }
+  - { suffix: zipf, filter: { client.aof_replay_dist: Zipf } }
+scale: 0.5
+legend_separate: true
+xticks: [0, 10, 20, 30, 40, 50]
+
+# Per-figure yticks; the aligned-Zipf tail needs far taller latency axes.
+yticks_tput: [0, 0.5, 1, 1.5, 2]
+yticks_p50: [0, 0.2, 0.4, 0.6, 0.8]
+yticks_p99: [0, 0.5, 1, 1.5]
+yticks_p999: [0, 1, 2, 3, 4, 5]
+yticks_zipf_p99: [0, 10, 20, 30]
+yticks_zipf_p999: [0, 10, 20, 30, 40, 50]

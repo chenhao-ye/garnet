@@ -308,9 +308,13 @@ def render_replay_reader(plot_cfg: dict, deps: list[str], out_path: Path) -> Non
     #   sublog_param  dotted param holding the sublog count and the source of
     #                 k_values (default server.aof_physical_sublog_count; use
     #                 client.aof_physical_sublog_count for in-proc experiments).
+    #   point_param   dotted param swept along each curve (default = sublog_param,
+    #                 i.e. one point per curve). Set it to trace a curve over a
+    #                 third sweep dimension, e.g. client.aof_replay_drift_threshold.
+    #   point_exclude list of point_param values to drop, e.g. [-1].
     #   filter        base filter (dotted param keys) applied to every series,
     #                 e.g. client.aof_replay_reader: 1, client.itp: 128.
-    #   latency_unit  "ms" (default) or "us"; scales the three latency figures.
+    #   latency_unit  "us" (default) or "ms"; scales the three latency figures.
     #   series        list of {suffix, filter} -- one set of four figures each,
     #                 with `filter` merged over the base filter. Defaults to a
     #                 single unsuffixed set (no extra filter). Use it to split a
@@ -324,6 +328,8 @@ def render_replay_reader(plot_cfg: dict, deps: list[str], out_path: Path) -> Non
     sublog_param = plot_cfg.get("sublog_param", "server.aof_physical_sublog_count")
     k_values = sorted(result["sweep_params"][sublog_param])
     base_filter = dict(plot_cfg.get("filter") or {})
+    point_param = plot_cfg.get("point_param", sublog_param)
+    point_exclude = set(plot_cfg.get("point_exclude") or [])
 
     unit = str(plot_cfg.get("latency_unit", "us")).lower()
     if unit not in _LATENCY_UNIT_SCALE:
@@ -374,24 +380,35 @@ def render_replay_reader(plot_cfg: dict, deps: list[str], out_path: Path) -> Non
             for k in k_values:
                 key = "single_log" if k == 1 else f"multilog_m{k}"
                 filt = {**s_filter, sublog_param: k}
-                # The filter pins each series to one run per sublog count; the
-                # two extract_series calls pair as (replay tput, reader metric).
-                _, xs_replay, _ = extract_series(
+                # Each curve's points sweep point_param (one point per value;
+                # the default point_param == sublog_param yields a single point
+                # per curve). Both extract_series calls share the filter and
+                # x_param, so they sort identically and pair index-for-index as
+                # (point value, replay tput, reader metric).
+                pts, xs_replay, _ = extract_series(
                     result,
-                    x_param=sublog_param,
+                    x_param=point_param,
                     y_metric="throughput",
                     y_field="median",
                     filter_params=filt,
                 )
                 _, ys, _ = extract_series(
                     result,
-                    x_param=sublog_param,
+                    x_param=point_param,
                     y_metric=y_metric,
                     y_field="median",
                     filter_params=filt,
                 )
-                ys = [y * y_scale for y in ys]
-                if not xs_replay or len(xs_replay) != len(ys):
+                # Drop excluded point values (e.g. -1, the unbounded baseline
+                # that starves the reader and explodes its latency).
+                kept = [
+                    (rep, met)
+                    for p, rep, met in zip(pts, xs_replay, ys)
+                    if p not in point_exclude
+                ]
+                xs_replay = [rep for rep, _ in kept]
+                ys = [met * y_scale for _, met in kept]
+                if not xs_replay:
                     print(
                         f"WARN: no paired data for {sublog_param}={k} "
                         f"under filter {filt}",
