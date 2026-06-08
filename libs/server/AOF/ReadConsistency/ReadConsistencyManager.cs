@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -28,7 +29,14 @@ namespace Garnet.server
         /// </summary>
         readonly int replicaSyncTimeoutMs = (int)serverOptions.ReplicaSyncTimeout.TotalMilliseconds;
 
-        readonly VirtualSublogReplayState[] vsrs = [.. Enumerable.Range(0, serverOptions.AofVirtualSublogCount).Select(_ => new VirtualSublogReplayState(appendOnlyFile.Log.physicalSublogShift + appendOnlyFile.Log.replayTaskShift))];
+        /// <summary>
+        /// Reader spin budget before parking, in Stopwatch ticks: -1 spins forever, 0 parks
+        /// immediately, &gt; 0 spins up to the budget (AofReaderSpinUs) and then parks.
+        /// </summary>
+        readonly long readerSpinTicks =
+            serverOptions.AofReaderSpinUs < 0 ? -1 : serverOptions.AofReaderSpinUs * Stopwatch.Frequency / 1_000_000;
+
+        readonly VirtualSublogReplayState[] vsrs = [.. Enumerable.Range(0, serverOptions.AofVirtualSublogCount).Select(virtualSublogIdx => new VirtualSublogReplayState(appendOnlyFile.Log.physicalSublogShift + appendOnlyFile.Log.replayTaskShift, serverOptions, virtualSublogIdx))];
 
         /// <summary>
         /// Maximum allowed drift (in sequence-number units) between leading and trailing sublog
@@ -44,17 +52,18 @@ namespace Garnet.server
         readonly bool driftBoundingEnabled = serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1;
 
         /// <summary>
-        /// Progress gate for replay-driven drift bounding, in sequence-number units
-        /// (AofReplayDriftCheckFreq x AofReplayDriftThreshold): each replay thread re-runs the
-        /// cross-sublog drift scan after locally progressing this much, so drift is bounded
-        /// proactively rather than only when a reader is about to wait (most reads never wait, so
-        /// drift could otherwise accumulate unchecked between waits and hurt read tail latency).
-        /// long.MaxValue when replay-driven firing is disabled, making the gate compare never true.
+        /// Interval, in sequence-number units, between two consecutive drift scans by the same
+        /// virtual sublog: window length (AofReplayDriftCheckFreq x AofReplayDriftThreshold)
+        /// x virtual sublog count. The shared sequence-number timeline is divided into windows,
+        /// each scanned by exactly one replay thread (window index mod sublog count), so the
+        /// system-wide scan spacing is one window while each sublog checks once per this
+        /// interval. Drift is thereby bounded proactively rather than only when a reader is
+        /// about to wait (most reads never wait, so drift could otherwise accumulate unchecked
+        /// between waits and hurt read tail latency). The Math.Max keeps the interval positive
+        /// for threshold 0 (a legal setting where any drift fires).
         /// </summary>
         readonly long replayDriftCheckInterval =
-            serverOptions.AofReplayDriftCheckFreq > 0 && serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1
-                ? Math.Max(1, (long)serverOptions.AofReplayDriftCheckFreq * serverOptions.AofReplayDriftThreshold)
-                : long.MaxValue;
+            Math.Max(1, (long)serverOptions.AofReplayDriftCheckFreq * serverOptions.AofReplayDriftThreshold) * serverOptions.AofVirtualSublogCount;
 
         /// <summary>
         /// Cooperative barrier used to bound inter-virtual-sublog replay drift. The reader activates it
@@ -64,7 +73,8 @@ namespace Garnet.server
         public readonly ReplayAlignBarrier replayBarrier = new(serverOptions.AofVirtualSublogCount, serverOptions.AofBarrierSpinUs);
 
         /// <summary>
-        /// Get sequence number for provided key.
+        /// Get sequence number for provided key: the key's sketch entry (its KRT), or with
+        /// <paramref name="frontier"/> the published max of the key's sublog (its LRT).
         /// </summary>
         /// <param name="key"></param>
         /// <param name="frontier"></param>
@@ -72,7 +82,7 @@ namespace Garnet.server
         public long GetKeySequenceNumber(ReadOnlySpan<byte> key, bool frontier = false)
         {
             var hash = GarnetLog.HASH(key);
-            return frontier ? GetSublogFrontierSequenceNumber(hash) : GetKeySequenceNumber(hash);
+            return frontier ? GetSublogMaxSequenceNumber(hash) : GetKeySequenceNumber(hash);
         }
 
         /// <summary>
@@ -93,14 +103,13 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Get frontier sequence number for provided hash
-        /// NOTE: Frontier sequence number is maximum sequence number between key specific sequence number and maximum observed sublog sequence number
+        /// Get the published max sequence number (the LRT) of the sublog the hash maps to.
         /// </summary>
         /// <param name="keyHash"></param>
         /// <returns></returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        long GetSublogFrontierSequenceNumber(long keyHash)
-            => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].GetFrontierSequenceNumber(keyHash);
+        long GetSublogMaxSequenceNumber(long keyHash)
+            => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].Max;
 
         /// <summary>
         /// Get key specific sequence number for provided hash
@@ -143,14 +152,20 @@ namespace Garnet.server
             // round is active.
             replayBarrier.CheckAndWait(vsrs[virtualSublogIdx].Max);
             vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
-            // Replay-driven drift bounding: once per replayDriftCheckInterval of this sublog's own
-            // progress, re-scan the cross-sublog drift and fire a round if it exceeds the threshold
-            // (never, when disabled: the interval is then long.MaxValue). Record sequence numbers are
-            // nondecreasing within a virtual sublog, so the gate adds one owner-local subtract +
-            // compare per record; the scan itself runs only at the gate.
-            if (sequenceNumber - vsrs[virtualSublogIdx].LastDriftCheckSequenceNumber >= replayDriftCheckInterval)
+            // Replay-driven drift bounding: scan when this sublog's replay enters a timeline
+            // window it owns (see replayDriftCheckInterval). A record-idle sublog skips its
+            // windows; readers about to wait remain the fallback round source.
+            if (sequenceNumber >= vsrs[virtualSublogIdx].NextDriftCheckSequenceNumber)
             {
-                vsrs[virtualSublogIdx].LastDriftCheckSequenceNumber = sequenceNumber;
+                // Whole-interval advances keep the boundary on this sublog's owned windows.
+                var next = vsrs[virtualSublogIdx].NextDriftCheckSequenceNumber + replayDriftCheckInterval;
+                if (next <= sequenceNumber)
+                {
+                    // First record, or fell a full interval behind (e.g. parked at a barrier
+                    // round): jump to the first owned boundary past the record.
+                    next += ((sequenceNumber - next) / replayDriftCheckInterval + 1) * replayDriftCheckInterval;
+                }
+                vsrs[virtualSublogIdx].NextDriftCheckSequenceNumber = next;
                 BoundReplayDrift();
             }
         }
@@ -232,7 +247,42 @@ namespace Garnet.server
             {
                 // About to wait. If the replay-side drift is large enough to be worth bounding, install a barrier round
                 BoundReplayDrift();
-                vsrs[virtualSublogIdx].WaitForSequenceNumber(hash, maxSessionSeqNum, ref waiter, ct, replicaSyncTimeoutMs);
+                if (SpinForSublogMax(virtualSublogIdx, maxSessionSeqNum, ref replicaReadSessionContext, ct))
+                    return;
+                vsrs[virtualSublogIdx].WaitForSequenceNumber(maxSessionSeqNum, ref waiter, ct, replicaSyncTimeoutMs);
+            }
+        }
+
+        /// <summary>
+        /// Spin-poll the sublog's published max for up to the reader spin budget instead of
+        /// parking; returns true once it passes the session's sequence number. A spinning
+        /// reader enqueues no waiter, so the replay thread's per-record waiter-signal pass
+        /// stays on its lock-free empty fast path (no wake train) while readers wait.
+        /// </summary>
+        bool SpinForSublogMax(short virtualSublogIdx, long maxSessionSeqNum,
+                              ref ReplicaReadSessionContext replicaReadSessionContext, CancellationToken ct)
+        {
+            if (readerSpinTicks == 0)
+                return false;
+            var deadline = readerSpinTicks > 0 ? Stopwatch.GetTimestamp() + readerSpinTicks : long.MaxValue;
+            var spins = 0;
+            while (true)
+            {
+                Thread.SpinWait(32);
+                var publishedMax = vsrs[virtualSublogIdx].Max;
+                if (maxSessionSeqNum < publishedMax)
+                {
+                    replicaReadSessionContext.cachedSublogMax[virtualSublogIdx] = publishedMax;
+                    return true;
+                }
+                // Deadline and cancellation are polled coarsely so the hot poll loop stays a
+                // single shared read; an unbounded spin still observes session teardown.
+                if ((++spins & 0xFF) == 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (Stopwatch.GetTimestamp() >= deadline)
+                        return false;
+                }
             }
         }
 

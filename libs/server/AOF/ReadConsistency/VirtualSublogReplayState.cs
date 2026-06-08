@@ -38,7 +38,7 @@ namespace Garnet.server
         sealed class MutableStates
         {
             // private state of the replay thread
-            [FieldOffset(64)] public long lastDriftCheckSequenceNumber;
+            [FieldOffset(64)] public long nextDriftCheckSequenceNumber;
 
             // shared state between the replay and reader threads
             [FieldOffset(128)] public long sketchMax;
@@ -52,19 +52,21 @@ namespace Garnet.server
         public readonly long Max => mutableStates.sketchMax;
 
         /// <summary>
-        /// Sequence number of the record at which the owning replay thread last ran the
-        /// replay-driven cross-sublog drift scan; 0 until the first gate fires. Owner-private:
-        /// only this sublog's replay thread accesses it (see <see cref="MutableStates"/>).
+        /// Sequence number at or beyond which the owning replay thread runs its next
+        /// replay-driven cross-sublog drift scan; long.MaxValue when the replay-driven check is
+        /// disabled. Seeded at construction and maintained by ReadConsistencyManager's rotating
+        /// drift-check schedule. Owner-private: only this sublog's replay thread accesses it
+        /// (see <see cref="MutableStates"/>).
         /// </summary>
-        public readonly long LastDriftCheckSequenceNumber
+        public readonly long NextDriftCheckSequenceNumber
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => mutableStates.lastDriftCheckSequenceNumber;
+            get => mutableStates.nextDriftCheckSequenceNumber;
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            set => mutableStates.lastDriftCheckSequenceNumber = value;
+            set => mutableStates.nextDriftCheckSequenceNumber = value;
         }
 
-        public VirtualSublogReplayState(int sketchShift)
+        public VirtualSublogReplayState(int sketchShift, GarnetServerOptions serverOptions, int virtualSublogIdx)
         {
             var size = SketchSlotSize;
             if ((size & (size - 1)) != 0)
@@ -72,20 +74,21 @@ namespace Garnet.server
             Array.Clear(sketch);
             mutableStates.sketchMax = 0;
             mutableStates.minWaiterTarget = long.MaxValue;
+            // drift-check responsibility is rotated among sublogs; each sublog is init with a different drift check time
+            if (serverOptions.AofReplayDriftCheckFreq > 0 && serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1)
+            {
+                var windowLength = Math.Max(1, (long)serverOptions.AofReplayDriftCheckFreq * serverOptions.AofReplayDriftThreshold);
+                mutableStates.nextDriftCheckSequenceNumber = virtualSublogIdx * windowLength;
+            }
+            else // drift-check disabled
+            {
+                mutableStates.nextDriftCheckSequenceNumber = long.MaxValue;
+            }
             this.sketchShift = sketchShift;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         readonly int GetSketchSlot(long hash) => (int)(((ulong)hash >> sketchShift) & SketchSlotMask);
-
-        /// <summary>
-        /// Gets the current frontier sequence number associated with the specified hash value.
-        /// </summary>
-        /// <param name="hash">The hash value for which to retrieve the frontier sequence number.</param>
-        /// <returns>The frontier sequence number corresponding to the specified hash value.</returns>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public readonly long GetFrontierSequenceNumber(long hash)
-            => Math.Max(sketch[GetSketchSlot(hash)], mutableStates.sketchMax);
 
         /// <summary>
         /// Gets the sequence number associated with the specified hash key.
@@ -117,7 +120,7 @@ namespace Garnet.server
         public void UpdateMaxSequenceNumber(long sequenceNumber)
         {
             _ = Utility.MonotonicUpdate(ref mutableStates.sketchMax, sequenceNumber, out _);
-            SignalIfFrontierAdvanced();
+            SignalIfMaxAdvanced();
         }
 
         /// <summary>
@@ -130,14 +133,8 @@ namespace Garnet.server
         public void UpdateKeySequenceNumber(long hash, long sequenceNumber)
         {
             _ = Utility.MonotonicUpdate(ref sketch[GetSketchSlot(hash)], sequenceNumber, out _);
-            // Publish the sublog max on every record. The reader's frontier is max(sketch[slot],
-            // sketchMax); sketchMax is advanced here in lockstep with the slot, so it is always >=
-            // any slot value. A waiter's release condition therefore reduces to the published max
-            // crossing its target (see SignalIfFrontierAdvanced) with no per-slot lag. The published
-            // max lives on its own cache line, so this per-record write does not invalidate the
-            // reader's immutable sketch / sketchShift fields.
             _ = Utility.MonotonicUpdate(ref mutableStates.sketchMax, sequenceNumber, out _);
-            SignalIfFrontierAdvanced();
+            SignalIfMaxAdvanced();
         }
 
         /// <summary>
@@ -145,7 +142,7 @@ namespace Garnet.server
         /// current published max. The fast path (no waiters, or the smallest target still ahead of the
         /// published max) is lock-free.
         /// </summary>
-        void SignalIfFrontierAdvanced()
+        void SignalIfMaxAdvanced()
         {
             // Fast path: smallest live target is still ahead of the published max (or the queue is
             // empty, in which case minWaiterTarget is long.MaxValue).
@@ -174,17 +171,16 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Waits until the session's frontier sequence number for the specified hash reaches or exceeds
-        /// the given maximum sequence number.
+        /// Waits until the sublog's published max sequence number passes the given session
+        /// sequence number.
         /// </summary>
-        /// <param name="hash">The hash value identifying the key whose frontier is being monitored.</param>
         /// <param name="maximumSessionSequenceNumber">The target sequence number to wait for.</param>
         /// <param name="waiter">Caller's session-owned reusable waiter. Must be non-null and not Cancelled
         /// on entry; replaced with a fresh instance if this call cancels or times out.</param>
         /// <param name="ct">Cancellation token that aborts the wait when signaled.</param>
         /// <param name="timeoutMs">Maximum time in milliseconds to wait before throwing.</param>
         /// <exception cref="OperationCanceledException">Thrown when ct is canceled or the wait times out.</exception>
-        public void WaitForSequenceNumber(long hash, long maximumSessionSequenceNumber,
+        public void WaitForSequenceNumber(long maximumSessionSequenceNumber,
                                           ref ConsistentReadWaiter waiter,
                                           CancellationToken ct, int timeoutMs)
         {
@@ -197,7 +193,7 @@ namespace Garnet.server
             lock (@lock)
             {
                 // Re-check under @lock -- atomic with Enqueue so a signal cannot race in between.
-                if (maximumSessionSequenceNumber < GetFrontierSequenceNumber(hash))
+                if (maximumSessionSequenceNumber < mutableStates.sketchMax)
                     return;
                 waitQueue.Enqueue(waiter, maximumSessionSequenceNumber);
                 if (maximumSessionSequenceNumber < mutableStates.minWaiterTarget)
