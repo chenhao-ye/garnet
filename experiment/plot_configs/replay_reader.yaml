@@ -11,8 +11,8 @@ series:
   - { suffix: uniform, filter: { client.aof_replay_dist: Uniform } }
   - { suffix: zipfrev, filter: { client.aof_replay_dist: ZipfRev } }
   - { suffix: zipf, filter: { client.aof_replay_dist: Zipf } }
-scale: 0.45            # height scale (same as aof_reader_threshold)
-width_scale: 0.33    # narrow width (same as aof_reader_threshold)
+width_scale: 0.33    # equal width_scale + height_scale => square figure
+height_scale: 0.33
 legend_separate: true  # bars named by a shared legend, x-axis stays clean
 
 # Per-figure yticks. `yticks_<metric>` applies to that metric across all three

@@ -492,8 +492,9 @@ def render_replay_reader_threshold(
     #                 e.g. [10000, ..., 60000] to drop -1 and higher thresholds.
     #   threshold_norm  divide x values by this for display, so ticks read as
     #                 multiples of a reference threshold (default 1).
-    #   width_scale   figure width scale (default = scale); set it below scale
-    #                 to narrow the figure while keeping scale's height.
+    #   width_scale, height_scale  figure width/height scales (both default to
+    #                 `scale`); set them equal for a square figure, or width
+    #                 below height to narrow it.
     #   curves        list of {style, filter, [label]} -- one colored curve
     #                 each; `style` names entries in plot_style's maps. Defaults
     #                 to the three replay distributions.
@@ -537,8 +538,11 @@ def render_replay_reader_threshold(
         {"style": "dist_zipf", "filter": {"client.aof_replay_dist": "Zipf"}},
     ]
 
-    scale = float(plot_cfg.get("scale", 1.0))
-    width_scale = float(plot_cfg.get("width_scale", scale))
+    # width_scale and height_scale size the figure independently (both default
+    # to `scale`); set them equal for a square figure.
+    _scale = float(plot_cfg.get("scale", 1.0))
+    width_scale = float(plot_cfg.get("width_scale", _scale))
+    height_scale = float(plot_cfg.get("height_scale", _scale))
     ncol, legend_width = resolve_legend_geom(plot_cfg, len(curves))
     legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
 
@@ -554,7 +558,7 @@ def render_replay_reader_threshold(
                     if cfg_key.endswith(tag):
                         fig_cfg[cfg_key[: -len(tag)]] = value
             fig, ax = build_fig_single_col(
-                1, 1, hw_ratio=0.75, width_scale=width_scale, height_scale=scale
+                1, 1, width_scale=width_scale, height_scale=height_scale
             )
 
             all_x: list[float] = []
@@ -646,7 +650,8 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
     #                 client.aof_physical_sublog_count).
     #   filter        base filter applied to every series.
     #   latency_unit  "us" (default) or "ms"; scales the three latency figures.
-    #   width_scale   figure width scale (default = scale).
+    #   width_scale, height_scale  figure width/height scales (both default to
+    #                 `scale`); set them equal for a square figure.
     #   series        list of {suffix, filter} -- one set of five figures each;
     #                 defaults to a single unsuffixed set.
     #   Figure-suffixed axis overrides: <key>_<metric> (all series) and
@@ -678,8 +683,11 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
 
     series = plot_cfg.get("series") or [{}]
 
-    scale = float(plot_cfg.get("scale", 1.0))
-    width_scale = float(plot_cfg.get("width_scale", scale))
+    # width_scale and height_scale size the figure independently (both default
+    # to `scale`); set them equal for a square figure.
+    _scale = float(plot_cfg.get("scale", 1.0))
+    width_scale = float(plot_cfg.get("width_scale", _scale))
+    height_scale = float(plot_cfg.get("height_scale", _scale))
     ncol, legend_width = resolve_legend_geom(plot_cfg, 3)
     legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
 
@@ -698,7 +706,7 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
                     if cfg_key.endswith(tag):
                         fig_cfg[cfg_key[: -len(tag)]] = value
             fig, ax = build_fig_single_col(
-                1, 1, hw_ratio=0.75, width_scale=width_scale, height_scale=scale
+                1, 1, width_scale=width_scale, height_scale=height_scale
             )
 
             heights: list[float] = []
