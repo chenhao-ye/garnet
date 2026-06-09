@@ -24,6 +24,10 @@ Each plot config carries a `template` field that selects a renderer:
                      normalized by `threshold_norm`), one curve per replay
                      distribution
                      dependencies: [<threshold sweep>]
+  - replay_reader_bar:
+                     per series, five bar figures (replay tput, reader tput,
+                     p50/p99/p99.9 latency) with one bar per sublog count
+                     dependencies: [<reader sweep>]
   - append:          append-scaling figure (sec:6.2)
                      dependencies: [<single experiment>]
   - set:             online SET throughput figure (no AOF vs single-log)
@@ -632,6 +636,137 @@ def render_replay_reader_threshold(
             save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
 
 
+def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
+    # dependencies[0] = reader experiment. Each `series` produces five bar
+    # figures (replay tput, reader tput, p50/p99/p99.9 latency); each figure has
+    # one bar per sublog count (SingleLog, MultiLog(2)...), colored by config.
+    #
+    # Config keys (all optional):
+    #   sublog_param  param holding the sublog count / bar categories (default
+    #                 client.aof_physical_sublog_count).
+    #   filter        base filter applied to every series.
+    #   latency_unit  "us" (default) or "ms"; scales the three latency figures.
+    #   width_scale   figure width scale (default = scale).
+    #   series        list of {suffix, filter} -- one set of five figures each;
+    #                 defaults to a single unsuffixed set.
+    #   Figure-suffixed axis overrides: <key>_<metric> (all series) and
+    #   <key>_<series>_<metric> (one figure), e.g. yticks_p99, yticks_zipf_p99.
+    if len(deps) != 1:
+        raise ValueError(
+            f"replay_reader_bar template expects 1 dependency [reader sweep]; got {deps}"
+        )
+    result = load_result(deps[0])
+    sublog_param = plot_cfg.get("sublog_param", "client.aof_physical_sublog_count")
+    base_filter = dict(plot_cfg.get("filter") or {})
+    k_values = sorted(result["sweep_params"][sublog_param])
+
+    unit = str(plot_cfg.get("latency_unit", "us")).lower()
+    if unit not in _LATENCY_UNIT_SCALE:
+        raise ValueError(
+            f"latency_unit must be one of {sorted(_LATENCY_UNIT_SCALE)}; got {unit!r}"
+        )
+    lat_scale = _LATENCY_UNIT_SCALE[unit]
+
+    # Single-line labels (short forms) so they fit the narrow figure height.
+    metric_figures = [
+        ("replay", "throughput", "Replay tput (Mop/s)", 1.0),
+        ("reader", "reader_throughput", "Reader tput (Mop/s)", 1.0),
+        ("p50", "reader_lat_p50", f"Reader p50 ({unit})", lat_scale),
+        ("p99", "reader_lat_p99", f"Reader p99 ({unit})", lat_scale),
+        ("p999", "reader_lat_p99_9", f"Reader p99.9 ({unit})", lat_scale),
+    ]
+
+    series = plot_cfg.get("series") or [{}]
+
+    scale = float(plot_cfg.get("scale", 1.0))
+    width_scale = float(plot_cfg.get("width_scale", scale))
+    ncol, legend_width = resolve_legend_geom(plot_cfg, 3)
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
+
+    legend_saved = False
+    for s in series:
+        s_suffix = s.get("suffix", "")
+        s_filter = {**base_filter, **(s.get("filter") or {})}
+        for suffix, y_metric, default_ylabel, y_scale in metric_figures:
+            # Figure-suffixed axis overrides, least to most specific.
+            fig_cfg = dict(plot_cfg)
+            override_tags = [f"_{suffix}"]
+            if s_suffix:
+                override_tags.append(f"_{s_suffix}_{suffix}")
+            for tag in override_tags:
+                for cfg_key, value in plot_cfg.items():
+                    if cfg_key.endswith(tag):
+                        fig_cfg[cfg_key[: -len(tag)]] = value
+            fig, ax = build_fig_single_col(
+                1, 1, hw_ratio=0.75, width_scale=width_scale, height_scale=scale
+            )
+
+            heights: list[float] = []
+            for i, k in enumerate(k_values):
+                key = "single_log" if k == 1 else f"multilog_m{k}"
+                filt = {**s_filter, sublog_param: k}
+                _, ys, _ = extract_series(
+                    result,
+                    x_param=sublog_param,
+                    y_metric=y_metric,
+                    y_field="median",
+                    filter_params=filt,
+                )
+                if not ys:
+                    print(
+                        f"WARN: no data for {sublog_param}={k} under filter {filt}",
+                        file=sys.stderr,
+                    )
+                    continue
+                height = ys[0] * y_scale
+                heights.append(height)
+                # One labeled bar per config so the shared legend names them
+                # (SingleLog, MultiLog(2)...); the x-axis itself stays clean.
+                ax.bar(
+                    i,
+                    height,
+                    color=color_map[key],
+                    edgecolor="black",
+                    linewidth=0.5,
+                    label=labels_map[key],
+                    zorder=2,
+                )
+
+            y_log = fig_cfg.get("yscale") == "log"
+            default_ymax = max(heights) * (1.5 if y_log else 1.1) if heights else None
+            apply_axis_cfg(
+                ax,
+                fig_cfg,
+                default_xlabel="",
+                default_ylabel=default_ylabel,
+                default_xticks=[],  # bars are named by the legend, not x ticks
+                default_ymax=default_ymax,
+            )
+
+            # Clean x-axis: the config of each bar is read from the legend.
+            ax.set_xticks([])
+            ax.set_xlim(-0.6, len(k_values) - 0.4)
+
+            if plot_cfg.get("legend_separate"):
+                # All figures share the same config bars; save the legend once.
+                if not legend_saved:
+                    save_legend(ax, out_path, width=legend_width, **legend_kwargs)
+                    legend_saved = True
+            else:
+                handles, labels = row_major_handles(ax, ncol)
+                ax.legend(
+                    handles,
+                    labels,
+                    loc="upper left",
+                    bbox_to_anchor=(0.0, 1.0),
+                    **legend_kwargs,
+                )
+
+            # Filename: <stem>[_<series suffix>]_<metric>.<ext>
+            tags = [out_path.stem] + ([s_suffix] if s_suffix else []) + [suffix]
+            save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
+
+
 def render_append(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     # dependencies[0] = MultiLog 2-D sweep (threads x aof_physical_sublog_count);
     # dependencies[1] (optional) = matching NoPrefix sweep, used to draw a
@@ -804,6 +939,7 @@ TEMPLATES = {
     "replay_spectrum": render_replay_spectrum,
     "replay_reader": render_replay_reader,
     "replay_reader_threshold": render_replay_reader_threshold,
+    "replay_reader_bar": render_replay_reader_bar,
     "append": render_append,
     "set": render_set,
 }
