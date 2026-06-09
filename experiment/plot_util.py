@@ -205,11 +205,19 @@ def build_fig(
 
 
 def build_fig_single_col(
-    nrows: int, ncols: int, hw_ratio: float = 1.0, width_scale: float = 1.0, **kwargs
+    nrows: int,
+    ncols: int,
+    hw_ratio: float = 1.0,
+    width_scale: float = 1.0,
+    height_scale: float | None = None,
+    **kwargs,
 ):
+    # height tracks width by default (the figure scales uniformly); pass
+    # height_scale to size height independently, e.g. a narrower width_scale
+    # while keeping the taller height of a larger scale.
     total_width = SINGLE_COLUMN_WIDTH * width_scale
-    subplot_width = total_width / ncols
-    subplot_height = subplot_width * hw_ratio
+    h_scale = width_scale if height_scale is None else height_scale
+    subplot_height = (SINGLE_COLUMN_WIDTH * h_scale / ncols) * hw_ratio
     return build_fig(nrows, ncols, total_width, subplot_height * nrows, **kwargs)
 
 
@@ -379,3 +387,7 @@ def save_fig(fig, fig_path: Path, tight_pad: float | None = 0.1):
         fig.savefig(png_path, dpi=300)
         print(f"Saved {png_path}")
         _link_to_figures(png_path)
+    # Release the figure now that it is written; templates that emit many
+    # figures in a loop would otherwise accumulate them (matplotlib warns past
+    # 20 open figures).
+    plt.close(fig)

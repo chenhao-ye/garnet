@@ -149,3 +149,18 @@ zorder_map["multilog_m1"] = 11
 zorder_map["noprefix"] = 12
 zorder_map["noprefix_m64"] = 12
 zorder_map["noprefix_physical"] = 12
+
+# Replay-distribution curves (replay_reader_threshold template): one color per
+# replay distribution, ordered benign -> misaligned -> aligned-stress so Zipf
+# (the stress case) draws on top.
+_dist_style = {
+    "dist_uniform": ("#a6d96a", "s", "Uniform", 10),
+    "dist_zipfrev": ("#fee08b", "v", "Zipf (diff r/w hotspot)", 11),
+    "dist_zipf": ("#fdae61", "^", "Zipf (same r/w hotspot)", 12),
+}
+for _key, (_color, _marker, _label, _z) in _dist_style.items():
+    color_map[_key] = _color
+    marker_map[_key] = _marker
+    linestyle_map[_key] = "-"
+    labels_map[_key] = _label
+    zorder_map[_key] = _z

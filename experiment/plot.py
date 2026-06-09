@@ -18,6 +18,12 @@ Each plot config carries a `template` field that selects a renderer:
                      vs. replay throughput, one datapoint per sublog count
                      pinned by the config's `filter` map
                      dependencies: [<reader sweep>]
+  - replay_reader_threshold:
+                     per sublog count, five figures (replay tput, reader tput,
+                     p50/p99/p99.9 latency) vs. a threshold knob (optionally
+                     normalized by `threshold_norm`), one curve per replay
+                     distribution
+                     dependencies: [<threshold sweep>]
   - append:          append-scaling figure (sec:6.2)
                      dependencies: [<single experiment>]
   - set:             online SET throughput figure (no AOF vs single-log)
@@ -466,6 +472,166 @@ def render_replay_reader(plot_cfg: dict, deps: list[str], out_path: Path) -> Non
             save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
 
 
+def render_replay_reader_threshold(
+    plot_cfg: dict, deps: list[str], out_path: Path
+) -> None:
+    # dependencies[0] = threshold-sweep reader experiment. For each sublog
+    # count (m) this emits one figure per metric, with X = the threshold knob
+    # and one colored curve per replay distribution.
+    #
+    # Config keys (all optional unless noted):
+    #   sublog_param  param identifying each figure-set / m (default
+    #                 client.aof_physical_sublog_count).
+    #   x_param       param on the x-axis (default
+    #                 client.aof_replay_drift_threshold).
+    #   x_include     if set, keep only these x_param values (an allow-list);
+    #                 e.g. [10000, ..., 60000] to drop -1 and higher thresholds.
+    #   threshold_norm  divide x values by this for display, so ticks read as
+    #                 multiples of a reference threshold (default 1).
+    #   width_scale   figure width scale (default = scale); set it below scale
+    #                 to narrow the figure while keeping scale's height.
+    #   curves        list of {style, filter, [label]} -- one colored curve
+    #                 each; `style` names entries in plot_style's maps. Defaults
+    #                 to the three replay distributions.
+    #   latency_unit  "us" (default) or "ms"; scales the three latency figures.
+    #   Figure-suffixed axis overrides: <key>_<metric> (all m) and
+    #   <key>_m{m}_<metric> (one figure), e.g. yticks_p99, yticks_m32_p99.
+    if len(deps) != 1:
+        raise ValueError(
+            "replay_reader_threshold template expects 1 dependency "
+            f"[threshold sweep]; got {deps}"
+        )
+    result = load_result(deps[0])
+    sublog_param = plot_cfg.get("sublog_param", "client.aof_physical_sublog_count")
+    x_param = plot_cfg.get("x_param", "client.aof_replay_drift_threshold")
+    x_include = plot_cfg.get("x_include")
+    x_include = None if x_include is None else set(x_include)
+    threshold_norm = float(plot_cfg.get("threshold_norm", 1))
+    m_values = sorted(result["sweep_params"][sublog_param])
+
+    unit = str(plot_cfg.get("latency_unit", "us")).lower()
+    if unit not in _LATENCY_UNIT_SCALE:
+        raise ValueError(
+            f"latency_unit must be one of {sorted(_LATENCY_UNIT_SCALE)}; got {unit!r}"
+        )
+    lat_scale = _LATENCY_UNIT_SCALE[unit]
+
+    # (figure file suffix, y metric in result.yaml, default y-axis label,
+    # y unit scale). parse.py records reader latencies in us.
+    # Single-line labels (short forms) so they fit the narrow figure height.
+    metric_figures = [
+        ("replay", "throughput", "Replay tput (Mop/s)", 1.0),
+        ("reader", "reader_throughput", "Reader tput (Mop/s)", 1.0),
+        ("p50", "reader_lat_p50", f"Reader p50 ({unit})", lat_scale),
+        ("p99", "reader_lat_p99", f"Reader p99 ({unit})", lat_scale),
+        ("p999", "reader_lat_p99_9", f"Reader p99.9 ({unit})", lat_scale),
+    ]
+
+    curves = plot_cfg.get("curves") or [
+        {"style": "dist_uniform", "filter": {"client.aof_replay_dist": "Uniform"}},
+        {"style": "dist_zipfrev", "filter": {"client.aof_replay_dist": "ZipfRev"}},
+        {"style": "dist_zipf", "filter": {"client.aof_replay_dist": "Zipf"}},
+    ]
+
+    scale = float(plot_cfg.get("scale", 1.0))
+    width_scale = float(plot_cfg.get("width_scale", scale))
+    ncol, legend_width = resolve_legend_geom(plot_cfg, len(curves))
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
+
+    legend_saved = False
+    for m in m_values:
+        for suffix, y_metric, default_ylabel, y_scale in metric_figures:
+            # Figure-suffixed axis overrides, least to most specific so the
+            # most specific wins: <key>_<metric> for that metric across all m,
+            # <key>_m{m}_<metric> for one figure.
+            fig_cfg = dict(plot_cfg)
+            for tag in (f"_{suffix}", f"_m{m}_{suffix}"):
+                for cfg_key, value in plot_cfg.items():
+                    if cfg_key.endswith(tag):
+                        fig_cfg[cfg_key[: -len(tag)]] = value
+            fig, ax = build_fig_single_col(
+                1, 1, hw_ratio=0.75, width_scale=width_scale, height_scale=scale
+            )
+
+            all_x: list[float] = []
+            all_y: list[float] = []
+            for curve in curves:
+                style = curve["style"]
+                filt = {**(curve.get("filter") or {}), sublog_param: m}
+                xs, ys, _ = extract_series(
+                    result,
+                    x_param=x_param,
+                    y_metric=y_metric,
+                    y_field="median",
+                    filter_params=filt,
+                )
+                # Keep only included x values (if an allow-list is set), then
+                # rescale x for display and y for its unit.
+                kept = [
+                    (x, y)
+                    for x, y in zip(xs, ys)
+                    if x_include is None or x in x_include
+                ]
+                xs_plot = [x / threshold_norm for x, _ in kept]
+                ys_plot = [y * y_scale for _, y in kept]
+                if not xs_plot:
+                    print(
+                        f"WARN: no data for {sublog_param}={m} under filter {filt}",
+                        file=sys.stderr,
+                    )
+                    continue
+                all_x.extend(xs_plot)
+                all_y.extend(ys_plot)
+                ax.plot(
+                    xs_plot,
+                    ys_plot,
+                    color=color_map[style],
+                    linestyle=linestyle_map[style],
+                    marker=marker_map[style],
+                    markersize=MARKER_SIZE,
+                    linewidth=LINEWIDTH,
+                    label=curve.get("label", labels_map[style]),
+                    zorder=zorder_map.get(style, 2),
+                )
+
+            y_log = fig_cfg.get("yscale") == "log"
+            default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+            default_xmax = max(all_x) * 1.05 if all_x else None
+            apply_axis_cfg(
+                ax,
+                fig_cfg,
+                default_xlabel="Replay imbalance threshold",
+                default_ylabel=default_ylabel,
+                default_xmax=default_xmax,
+                default_ymax=default_ymax,
+            )
+            # The long x-label would clip at the narrow figure's right edge;
+            # anchor it left of the axes center so it stays whole.
+            # ax.xaxis.label.set_x(0.43)
+            # Nudge the y-label down a little from the axes center.
+            ax.yaxis.label.set_y(0.42)
+
+            if plot_cfg.get("legend_separate"):
+                # Every figure carries the same curves; save the shared legend
+                # once as <name>_legend.pdf.
+                if not legend_saved:
+                    save_legend(ax, out_path, width=legend_width, **legend_kwargs)
+                    legend_saved = True
+            else:
+                handles, labels = row_major_handles(ax, ncol)
+                ax.legend(
+                    handles,
+                    labels,
+                    loc="upper left",
+                    bbox_to_anchor=(0.0, 1.0),
+                    **legend_kwargs,
+                )
+
+            # Filename: <stem>_m{m}_<metric>.<ext>
+            tags = [out_path.stem, f"m{m}", suffix]
+            save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
+
+
 def render_append(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     # dependencies[0] = MultiLog 2-D sweep (threads x aof_physical_sublog_count);
     # dependencies[1] (optional) = matching NoPrefix sweep, used to draw a
@@ -637,6 +803,7 @@ TEMPLATES = {
     "replay": render_replay,
     "replay_spectrum": render_replay_spectrum,
     "replay_reader": render_replay_reader,
+    "replay_reader_threshold": render_replay_reader_threshold,
     "append": render_append,
     "set": render_set,
 }

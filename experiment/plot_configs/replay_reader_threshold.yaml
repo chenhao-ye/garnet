@@ -1,0 +1,43 @@
+name: replay_reader_threshold
+description: "Per sublog count, replay tput / reader tput / reader latency vs. the replay-imbalance threshold; one curve per replay distribution."
+template: replay_reader_threshold
+dependencies: [aof_reader_threshold]
+# Defaults already match aof_reader_threshold (in-proc): sublog_param =
+# client.aof_physical_sublog_count, x_param = client.aof_replay_drift_threshold,
+# latency_unit = us. Keep only 10k..60k (drops -1 and the higher thresholds).
+x_include: [10000, 20000, 30000, 40000, 50000, 60000]
+# Normalize the axis to a 2k reference so ticks read as multiples of that base
+# threshold (10k -> 5, 60k -> 30).
+threshold_norm: 2000
+scale: 0.45          # height scale
+width_scale: 0.33    # narrower width; height stays at scale
+legend_separate: true
+xlabel: "Max imbalance"
+xticks: [5, 10, 20, 30]
+xmin: 4
+xmax: 30
+
+# Per-figure yticks. `yticks_<metric>` applies to that metric across all m;
+# `yticks_m{m}_<metric>` overrides one figure. Reader tput and p50 are stable
+# across m, but replay tput and the tail latencies scale with m, so those are
+# set per m.
+yticks_reader: [0, 0.5, 1, 1.5, 2]
+yticks_p50: [0, 0.2, 0.4, 0.6, 0.8]
+
+yticks_m2_replay: [0, 2, 4, 6]
+yticks_m4_replay: [0, 2, 4, 6, 8, 10]
+yticks_m8_replay: [0, 5, 10, 15, 20]
+yticks_m16_replay: [0, 10, 20, 30, 40]
+yticks_m32_replay: [0, 10, 20, 30, 40, 50]
+
+yticks_m2_p99: [0, 2, 4, 6]
+yticks_m4_p99: [0, 2, 4, 6]
+yticks_m8_p99: [0, 2, 4, 6, 8]
+yticks_m16_p99: [0, 5, 10, 15]
+yticks_m32_p99: [0, 5, 10, 15, 20, 25]
+
+yticks_m2_p999: [0, 5, 10, 15, 20]
+yticks_m4_p999: [0, 5, 10, 15, 20]
+yticks_m8_p999: [0, 5, 10, 15, 20]
+yticks_m16_p999: [0, 5, 10, 15, 20, 25]
+yticks_m32_p999: [0, 10, 20, 30, 40]
