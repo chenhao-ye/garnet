@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -27,6 +28,13 @@ namespace Garnet.server
         /// Maximum total time in milliseconds the consistent read wait may block before throwing.
         /// </summary>
         readonly int replicaSyncTimeoutMs = (int)serverOptions.ReplicaSyncTimeout.TotalMilliseconds;
+
+        /// <summary>
+        /// Reader spin budget before parking, in Stopwatch ticks: -1 spins forever, 0 parks
+        /// immediately, &gt; 0 spins up to the budget (AofReaderSpinUs) and then parks.
+        /// </summary>
+        readonly long readerSpinTicks =
+            serverOptions.AofReaderSpinUs < 0 ? -1 : serverOptions.AofReaderSpinUs * Stopwatch.Frequency / 1_000_000;
 
         readonly VirtualSublogReplayState[] vsrs = [.. Enumerable.Range(0, serverOptions.AofVirtualSublogCount).Select(virtualSublogIdx => new VirtualSublogReplayState(appendOnlyFile.Log.physicalSublogShift + appendOnlyFile.Log.replayTaskShift, serverOptions, virtualSublogIdx))];
 
@@ -65,7 +73,8 @@ namespace Garnet.server
         public readonly ReplayAlignBarrier replayBarrier = new(serverOptions.AofVirtualSublogCount, serverOptions.AofBarrierSpinUs);
 
         /// <summary>
-        /// Get sequence number for provided key.
+        /// Get sequence number for provided key: the key's sketch entry (its KRT), or with
+        /// <paramref name="frontier"/> the published max of the key's sublog (its LRT).
         /// </summary>
         /// <param name="key"></param>
         /// <param name="frontier"></param>
@@ -73,7 +82,7 @@ namespace Garnet.server
         public long GetKeySequenceNumber(ReadOnlySpan<byte> key, bool frontier = false)
         {
             var hash = GarnetLog.HASH(key);
-            return frontier ? GetSublogFrontierSequenceNumber(hash) : GetKeySequenceNumber(hash);
+            return frontier ? GetSublogMaxSequenceNumber(hash) : GetKeySequenceNumber(hash);
         }
 
         /// <summary>
@@ -94,14 +103,13 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Get frontier sequence number for provided hash
-        /// NOTE: Frontier sequence number is maximum sequence number between key specific sequence number and maximum observed sublog sequence number
+        /// Get the published max sequence number (the LRT) of the sublog the hash maps to.
         /// </summary>
         /// <param name="keyHash"></param>
         /// <returns></returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        long GetSublogFrontierSequenceNumber(long keyHash)
-            => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].GetFrontierSequenceNumber(keyHash);
+        long GetSublogMaxSequenceNumber(long keyHash)
+            => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].Max;
 
         /// <summary>
         /// Get key specific sequence number for provided hash
@@ -239,7 +247,42 @@ namespace Garnet.server
             {
                 // About to wait. If the replay-side drift is large enough to be worth bounding, install a barrier round
                 BoundReplayDrift();
-                vsrs[virtualSublogIdx].WaitForSequenceNumber(hash, maxSessionSeqNum, ref waiter, ct, replicaSyncTimeoutMs);
+                if (SpinForSublogMax(virtualSublogIdx, maxSessionSeqNum, ref replicaReadSessionContext, ct))
+                    return;
+                vsrs[virtualSublogIdx].WaitForSequenceNumber(maxSessionSeqNum, ref waiter, ct, replicaSyncTimeoutMs);
+            }
+        }
+
+        /// <summary>
+        /// Spin-poll the sublog's published max for up to the reader spin budget instead of
+        /// parking; returns true once it passes the session's sequence number. A spinning
+        /// reader enqueues no waiter, so the replay thread's per-record waiter-signal pass
+        /// stays on its lock-free empty fast path (no wake train) while readers wait.
+        /// </summary>
+        bool SpinForSublogMax(short virtualSublogIdx, long maxSessionSeqNum,
+                              ref ReplicaReadSessionContext replicaReadSessionContext, CancellationToken ct)
+        {
+            if (readerSpinTicks == 0)
+                return false;
+            var deadline = readerSpinTicks > 0 ? Stopwatch.GetTimestamp() + readerSpinTicks : long.MaxValue;
+            var spins = 0;
+            while (true)
+            {
+                Thread.SpinWait(32);
+                var publishedMax = vsrs[virtualSublogIdx].Max;
+                if (maxSessionSeqNum < publishedMax)
+                {
+                    replicaReadSessionContext.cachedSublogMax[virtualSublogIdx] = publishedMax;
+                    return true;
+                }
+                // Deadline and cancellation are polled coarsely so the hot poll loop stays a
+                // single shared read; an unbounded spin still observes session teardown.
+                if ((++spins & 0xFF) == 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (Stopwatch.GetTimestamp() >= deadline)
+                        return false;
+                }
             }
         }
 
