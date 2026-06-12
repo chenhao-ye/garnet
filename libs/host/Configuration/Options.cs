@@ -234,7 +234,7 @@ namespace Garnet
         public int AofReplayRingBatch { get; set; }
 
         [IntRangeValidation(0, int.MaxValue)]
-        [Option("aof-tail-witness-freq", Required = false, HelpText = "Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).")]
+        [Option("aof-tail-witness-freq", Required = false, HelpText = "Idle time in milliseconds after which a physical sublog's AOF sync task sends an in-band time pulse (CLUSTER ADVANCE_TIME) to the replica, keeping logical time flowing on idle sublogs (used only with multi-log in timestamp read mode).")]
         public int AofTailWitnessFreq { get; set; }
 
         [Option("aof-read-protocol", Required = false, HelpText = "Read protocol to use on replicas: 'timestamp' (default, prefix-consistent) or 'snapshot'.")]

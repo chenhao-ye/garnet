@@ -151,7 +151,6 @@ namespace Garnet.cluster
                 if (clusterProvider.serverOptions.AofPhysicalSublogCount > 1)
                 {
                     clusterProvider.storeWrapper.appendOnlyFile.ResetSequenceNumberGenerator();
-                    clusterProvider.storeWrapper.TaskManager.Cancel(TaskType.AdvanceTimeReplicaTask).Wait();
                 }
 
                 // Initialize checkpoint history
@@ -159,10 +158,6 @@ namespace Garnet.cluster
                     logger?.LogWarning("Failed acquiring latest memory checkpoint metadata at {method}", nameof(TakeOverAsPrimary));
 
                 _ = clusterProvider.BumpAndWaitForEpochTransition();
-
-                // Stop advance time task when reconfiguring node to be replica
-                if (clusterProvider.storeWrapper.serverOptions.AofPhysicalSublogCount > 1)
-                    clusterProvider.storeWrapper.TaskManager.Cancel(TaskType.AdvanceTimeReplicaTask).Wait();
 
                 // Resume all background maintenance that were possibly shutdown when this node became a replica
                 clusterProvider.storeWrapper.StartPrimaryTasks();

@@ -129,7 +129,10 @@ namespace Garnet.server
         public int AofSnapshotFreq = 5;
 
         /// <summary>
-        /// Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).
+        /// Idle time in milliseconds after which a physical sublog's AOF sync task sends an in-band
+        /// time pulse (CLUSTER ADVANCE_TIME) to the replica, keeping logical time flowing on idle
+        /// sublogs so prefix-consistent reads do not block. Used only with multi-log in timestamp
+        /// read mode; a sublog that keeps shipping records never pulses.
         /// </summary>
         public int AofTailWitnessFreq = 100;
 

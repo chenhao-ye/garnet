@@ -7,7 +7,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
-using Tsavorite.core;
 
 namespace Garnet.server
 {
@@ -121,34 +120,48 @@ namespace Garnet.server
                 Sse.Prefetch0(Unsafe.AsPointer(ref sketch[GetSketchSlot(hash)]));
         }
 
+        // Ownership discipline for sketch[] and sketchMax: every write happens either on the
+        // thread that owns replay for this virtual sublog (records, time pulses, batch maxes,
+        // recovery tasks) or on a thread that is the sole writer at that moment -- a coordinator
+        // while the owner is parked at a barrier (transaction peers, a custom-procedure leader
+        // updating participant sublogs), or a caller that has proven the owner quiescent (the
+        // AOF benchmark raising frontiers after its replay pass). Writers are therefore
+        // sequential -- never concurrent -- which is what makes the plain read-compare plus
+        // release store safe. Reader threads only load these fields.
+
         /// <summary>
-        /// Updates the maximum observed sequence number.
+        /// Updates the maximum observed sequence number. Owner-write (see the ownership
+        /// discipline above); monotonic by the compare below.
         /// </summary>
-        /// <remarks>Updates are thread-safe and guaranteed to be monotonically increasing.</remarks>
         /// <param name="sequenceNumber">The sequence number to compare against the current maximum.</param>
         public void UpdateMaxSequenceNumber(long sequenceNumber)
         {
-            _ = Utility.MonotonicUpdate(ref mutableStates.sketchMax, sequenceNumber, out _);
+            if (sequenceNumber > mutableStates.sketchMax)
+                Volatile.Write(ref mutableStates.sketchMax, sequenceNumber);
             SignalIfFrontierAdvanced();
         }
 
         /// <summary>
-        /// Updates the sequence number associated with the specified key hash.
+        /// Updates the sequence number associated with the specified key hash. Owner-write (see
+        /// the ownership discipline above); monotonic per slot by the compare below, which also
+        /// absorbs benign stamp inversions between independent operations.
         /// </summary>
-        /// <remarks>Updates are thread-safe and guaranteed to be monotonically increasing.</remarks>
         /// <param name="hash">The hash value identifying the key whose sequence number is to be updated.</param>
-        /// <param name="sequenceNumber">The new sequence number to associate with the specified key hash. Must be greater than or equal to the
+        /// <param name="sequenceNumber">The new sequence number to associate with the specified key hash. Must be greater than the
         /// current value to have an effect.</param>
         public void UpdateKeySequenceNumber(long hash, long sequenceNumber)
         {
-            _ = Utility.MonotonicUpdate(ref sketch[GetSketchSlot(hash)], sequenceNumber, out _);
+            ref var slot = ref sketch[GetSketchSlot(hash)];
+            if (sequenceNumber > slot)
+                Volatile.Write(ref slot, sequenceNumber);
             // Publish the sublog max on every record. The reader's frontier is max(sketch[slot],
             // sketchMax); sketchMax is advanced here in lockstep with the slot, so it is always >=
             // any slot value. A waiter's release condition therefore reduces to the published max
             // crossing its target (see SignalIfFrontierAdvanced) with no per-slot lag. The published
             // max lives on its own cache line, so this per-record write does not invalidate the
             // reader's immutable sketch / sketchShift fields.
-            _ = Utility.MonotonicUpdate(ref mutableStates.sketchMax, sequenceNumber, out _);
+            if (sequenceNumber > mutableStates.sketchMax)
+                Volatile.Write(ref mutableStates.sketchMax, sequenceNumber);
             SignalIfFrontierAdvanced();
         }
 

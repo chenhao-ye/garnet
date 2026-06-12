@@ -465,19 +465,19 @@ namespace Garnet.client
         }
 
         /// <summary>
-        /// Issue CLUSTER ADVANCE_TIME
+        /// Issue CLUSTER ADVANCE_TIME for one physical sublog: an in-band time pulse on the AOF
+        /// sync connection. Fire-and-forget like <see cref="GarnetClientSession.ExecuteClusterAppendLog"/>
+        /// -- no response is expected -- so the message rides the same one-way stream as the
+        /// sublog's APPENDLOG traffic and the replica receives it strictly after every record
+        /// shipped before it.
         /// </summary>
+        /// <param name="physicalSublogIdx"></param>
         /// <param name="sequenceNumber"></param>
-        /// <param name="aofAddress"></param>
-        /// <returns></returns>
         /// <seealso cref="T:Garnet.cluster.ClusterSession.NetworkClusterAdvanceTime"/>
-        public Task<string> ExecuteClusterAdvanceTime(long sequenceNumber, Span<byte> aofAddress)
+        public void ExecuteClusterAdvanceTime(int physicalSublogIdx, long sequenceNumber)
         {
-            var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-            tcsQueue.Enqueue(tcs);
             var curr = offset;
-            var argCount = 2;
-            var arraySize = 2 + argCount;
+            var arraySize = 4;
 
             while (!RespWriteUtils.TryWriteArrayLength(arraySize, ref curr, end))
             {
@@ -503,7 +503,7 @@ namespace Garnet.client
             offset = curr;
 
             //3
-            while (!RespWriteUtils.TryWriteArrayItem(sequenceNumber, ref curr, end))
+            while (!RespWriteUtils.TryWriteArrayItem(physicalSublogIdx, ref curr, end))
             {
                 Flush();
                 curr = offset;
@@ -511,16 +511,12 @@ namespace Garnet.client
             offset = curr;
 
             //4
-            while (!RespWriteUtils.TryWriteBulkString(aofAddress, ref curr, end))
+            while (!RespWriteUtils.TryWriteArrayItem(sequenceNumber, ref curr, end))
             {
                 Flush();
                 curr = offset;
             }
             offset = curr;
-
-            Flush();
-            Interlocked.Increment(ref numCommands);
-            return tcs.Task;
         }
     }
 }

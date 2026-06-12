@@ -143,6 +143,11 @@ namespace Garnet.server
                         logger);
                 }
 
+                // Replay-align rounds are disabled for the whole recovery: there are no reader
+                // sessions to protect yet, and the per-sublog logs are finite and end at different
+                // times, so a round fired near the end would wait for arrivals from sublogs whose
+                // drivers already finished.
+                appendOnlyFile.readConsistencyManager.replayBarrier.Disable();
                 try
                 {
                     Task.WaitAll([.. recoverDrivers.Select(driver => driver.CreateRecoverTask())]);
@@ -152,6 +157,7 @@ namespace Garnet.server
                 {
                     for (var physicalSublogIdx = 0; physicalSublogIdx < untilAddress.Length; physicalSublogIdx++)
                         recoverDrivers[physicalSublogIdx]?.Dispose();
+                    appendOnlyFile.readConsistencyManager.replayBarrier.Enable();
                 }
             }
 

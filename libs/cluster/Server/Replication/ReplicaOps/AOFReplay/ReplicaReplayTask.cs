@@ -114,6 +114,13 @@ namespace Garnet.cluster
                             ptr += entryLength;
                         }
 
+                        // A zero-length batch staged by the driver is a broadcast time pulse:
+                        // advance this task's virtual sublog (and arrive at any active
+                        // replay-align round) without a record.
+                        var pulseSequenceNumber = replayDriver.StagedPulseSequenceNumber;
+                        if (pulseSequenceNumber > 0)
+                            appendOnlyFile.readConsistencyManager.AdvanceVirtualSublogTime(virtualSublogIdx, pulseSequenceNumber);
+
                         // Update max sequence number for this virtual sublog which is mapped
                         appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, maxSequenceNumber);
                     }
@@ -136,6 +143,15 @@ namespace Garnet.cluster
         /// Enqueue a pre-header AOF record pointer. May block if the ring buffer is full (i.e., the replay task does not consume records fast enough).
         /// </summary>
         public unsafe void AddRecord(byte* ptr) => channel.Write(new ReplayRecord(ptr));
+
+        /// <summary>
+        /// Enqueue a null-pointer control slot instructing the consumer to apply the driver's
+        /// staged time pulse (<see cref="ReplicaReplayDriver.StagedPulseSequenceNumber"/>) to its
+        /// virtual sublog. Same producer rules as <see cref="AddRecord"/>; the driver broadcasts
+        /// the marker to every task's ring and runs the batch lifecycle to completion before
+        /// producing anything else, so the staged value is stable while the marker is in flight.
+        /// </summary>
+        public unsafe void AddPulseMarker() => channel.Write(new ReplayRecord(null));
 
         /// <summary>
         /// Mark the ring as batch-complete (flushes Tail and sets the Completed flag).
@@ -166,6 +182,13 @@ namespace Garnet.cluster
                 {
                     while (channel.Read(out var record))
                     {
+                        if (record.Ptr == null)
+                        {
+                            // Broadcast time pulse: advance this task's virtual sublog (and arrive
+                            // at any active replay-align round) without a record.
+                            appendOnlyFile.readConsistencyManager.AdvanceVirtualSublogTime(virtualSublogIdx, replayDriver.StagedPulseSequenceNumber);
+                            continue;
+                        }
                         var payloadLength = replaySublog.UnsafeGetLength(record.Ptr);
                         var entryPtr = record.Ptr + headerSize;
                         replicationManager.AofProcessor.ProcessAofRecordInternal(virtualSublogIdx, entryPtr, payloadLength, true, out var isCheckpointStart);

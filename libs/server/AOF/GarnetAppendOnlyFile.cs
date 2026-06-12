@@ -79,21 +79,6 @@ namespace Garnet.server
         public void Dispose() => Log.Dispose();
 
         /// <summary>
-        /// Get a sequence number that is strictly greater than any sequence number assigned to records
-        /// at or below the currently observed TailAddress.
-        /// </summary>
-        /// <remarks>
-        /// Correctness relies on ordering: the caller must read TailAddress BEFORE calling this method.
-        /// On the enqueue path, the sequence number is captured BEFORE the Enqueue (which advances TailAddress).
-        /// Therefore, any fresh <see cref="SequenceNumberGenerator.GetSequenceNumber"/> call made after
-        /// observing a TailAddress is guaranteed to return a value strictly greater than the sequence
-        /// numbers of all records at or below that TailAddress.
-        /// </remarks>
-        /// <returns>A sequence number strictly greater than those of all records up to the last observed tail.</returns>
-        public long GetLargerThanMaximumSequenceNumber()
-            => seqNumGen.GetSequenceNumber() + 1;
-
-        /// <summary>
         /// Create or update existing timestamp manager
         /// NOTE: We need to create a new version for consistency manager in order for running sessions to update their context on the next read
         /// </summary>

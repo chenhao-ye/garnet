@@ -35,6 +35,23 @@ namespace Garnet.cluster
         readonly TsavoriteLog physicalSublog;
         readonly bool useChannels = true;
 
+        // In-band time pulse state (see AofSyncTask.MaybeSendTimePulse for the producer). The
+        // session thread records the freshest pulse sequence number received on this sublog's
+        // replication stream; the thread that owns replay for this sublog applies it once the
+        // sublog is fully caught up. Pulses are cumulative, so a single latest-value slot
+        // suffices and overwriting an unapplied pulse loses nothing.
+        long pendingPulseSequenceNumber;
+        long appliedPulseSequenceNumber;
+
+        // Staging slot for broadcasting a pulse to the replay tasks through their rings or the
+        // batch context. Stable while a pulse batch is in flight: the applying thread is the only
+        // batch producer and runs each pulse batch to completion before producing anything else.
+        long stagedPulseSequenceNumber;
+        internal long StagedPulseSequenceNumber => Volatile.Read(ref stagedPulseSequenceNumber);
+
+        // Virtual sublog owned by this driver thread when there is a single replay task.
+        readonly int directVirtualSublogIdx;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool ResumeReplay() => activeWorkerMonitor.TryEnter();
 
@@ -61,6 +78,7 @@ namespace Garnet.cluster
             replayIterator = null;
             activeWorkerMonitor = new();
             physicalSublog = appendOnlyFile.Log.GetSubLog(physicalSublogIdx);
+            directVirtualSublogIdx = appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, 0);
             this.cts = cts;
             this.logger = logger;
 
@@ -270,8 +288,113 @@ namespace Garnet.cluster
             }
         }
 
-        public void Throttle() { }
+        /// <summary>
+        /// Invoked by the background consume loop at the top of every poll (busy or idle), outside
+        /// epoch protection: the natural point to fold a pending in-band time pulse into the
+        /// replay stream once the sublog is caught up.
+        /// </summary>
+        public void Throttle() => TryApplyPendingPulse();
         #endregion
+
+        /// <summary>
+        /// Record a time pulse received in-band on this sublog's replication stream. Runs on the
+        /// session thread. When that thread also owns replay for this sublog -- synchronous replay
+        /// (ReplicationOffsetMaxLag == 0), or asynchronous replay before the background iterator
+        /// exists -- the pulse is applied inline; otherwise the background consume loop picks it
+        /// up in <see cref="Throttle"/>.
+        /// </summary>
+        /// <param name="sequenceNumber">Pulse sequence number; promises no record on this sublog
+        /// appended after the pulse carries a smaller effective timestamp.</param>
+        public void SignalTimeAdvance(long sequenceNumber)
+        {
+            if (sequenceNumber <= Volatile.Read(ref pendingPulseSequenceNumber))
+                return;
+            Volatile.Write(ref pendingPulseSequenceNumber, sequenceNumber);
+
+            // replayIterator is created by this same session thread (on the first APPENDLOG
+            // chunk), so reading it here is not racy: null means no background consume loop exists
+            // yet and this thread is the sublog's de-facto replay owner.
+            var sessionThreadOwnsReplay = serverOptions.ReplicationOffsetMaxLag == 0 || replayIterator == null;
+            if (!sessionThreadOwnsReplay)
+                return;
+            if (!ResumeReplay())
+                return; // disposing; drop the pulse
+            try
+            {
+                TryApplyPendingPulse();
+            }
+            finally
+            {
+                SuspendReplay();
+            }
+        }
+
+        /// <summary>
+        /// Apply the pending time pulse if the sublog is fully caught up. The caught-up condition
+        /// is what makes the pulse safe to apply: every record received before the pulse was
+        /// appended to the local sublog before the pulse was recorded (same connection, same
+        /// session thread), so consuming through the local tail proves the pulse cannot overtake
+        /// any record it was ordered after. Must run on the thread that owns replay for this
+        /// sublog (see <see cref="SignalTimeAdvance"/>).
+        /// </summary>
+        void TryApplyPendingPulse()
+        {
+            var pending = Volatile.Read(ref pendingPulseSequenceNumber);
+            if (pending <= appliedPulseSequenceNumber)
+                return;
+            // Not caught up: records are still in flight and will carry time forward themselves;
+            // the pulse stays pending for the next idle poll.
+            if (replicationManager.GetSublogReplicationOffset(physicalSublogIdx) != physicalSublog.TailAddress)
+                return;
+            ApplyPulse(pending);
+            appliedPulseSequenceNumber = pending;
+        }
+
+        // Applies a pulse on the replay path. With one replay task the calling thread owns the
+        // virtual sublog and advances it directly; with multiple tasks the pulse is broadcast
+        // through the same ring/batch lifecycle as a record batch, so each task advances its own
+        // virtual sublog in stream order (preserving the single-writer discipline on
+        // VirtualSublogReplayState) and arrives at any active replay-align round.
+        unsafe void ApplyPulse(long sequenceNumber)
+        {
+            if (serverOptions.AofReplayTaskCount == 1)
+            {
+                appendOnlyFile.readConsistencyManager.AdvanceVirtualSublogTime(directVirtualSublogIdx, sequenceNumber);
+                return;
+            }
+
+            Volatile.Write(ref stagedPulseSequenceNumber, sequenceNumber);
+            try
+            {
+                if (useChannels)
+                {
+                    foreach (var t in replayTasks)
+                        t.AddPulseMarker();
+                    foreach (var t in replayTasks)
+                        t.CompleteBatch();
+                    if (!replayBatchContext.LeaderFollowerBarrier.WaitCompleted(serverOptions.ReplicaSyncTimeout, cts.Token))
+                        throw new GarnetException("Timed out draining time pulse batch", LogLevel.Warning, clientResponse: false);
+                    foreach (var t in replayTasks)
+                        t.ResetBatch();
+                    replayBatchContext.LeaderFollowerBarrier.Release();
+                }
+                else
+                {
+                    // Scan-and-filter mode (useChannels == false): broadcast through the shared
+                    // batch context as a zero-length batch with the staged pulse set.
+                    replayBatchContext.Record = null;
+                    replayBatchContext.RecordLength = 0;
+                    replayBatchContext.LeaderFollowerBarrier.SignalWorkReady();
+                    if (!replayBatchContext.LeaderFollowerBarrier.WaitCompleted(serverOptions.ReplicaSyncTimeout, cts.Token))
+                        throw new GarnetException("Timed out draining time pulse batch", LogLevel.Warning, clientResponse: false);
+                    replayBatchContext.LeaderFollowerBarrier.Release();
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref stagedPulseSequenceNumber, 0);
+            }
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void ValidateSublogIndex(int physicalSublogIdx)
