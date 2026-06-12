@@ -121,7 +121,12 @@ namespace Garnet.server
             => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].GetKeySequenceNumber(keyHash);
 
         /// <summary>
-        /// Update physical sublog max sequence number
+        /// Update physical sublog max sequence number across all of its virtual sublogs from a
+        /// thread that does not own their replay. The update is a plain monotonic store, so the
+        /// caller must be the sole writer of the affected virtual sublogs for the duration of the
+        /// call: the owning replay threads quiescent and no concurrent caller of this method
+        /// targeting the same physical sublog (e.g. the AOF benchmark raising a sublog's frontier
+        /// after its replay pass).
         /// </summary>
         /// <param name="physicalSublogIdx"></param>
         /// <param name="sequenceNumber"></param>
@@ -131,6 +136,24 @@ namespace Garnet.server
             // Update virtual sublog maximum value for all virtual sublogs
             for (var rt = 0; rt < replayTaskCount; rt++)
                 vsrs[appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, rt)].UpdateMaxSequenceNumber(sequenceNumber);
+        }
+
+        /// <summary>
+        /// Advance a virtual sublog's published max from a primary time pulse, i.e. with no record
+        /// replayed. Must run on the thread that owns replay for the virtual sublog, like every
+        /// other per-sublog update; the pulse then also counts as replay progress toward an active
+        /// replay-align round, so an idle sublog cannot strand a round (the next pulse's sequence
+        /// number always reaches the round target, which is some sublog's previously published max).
+        /// The arrival is non-blocking (see <see cref="ReplayAlignBarrier.CheckAndArrive"/>): an
+        /// idle sublog has nothing to pause, and the pulse-delivering thread must never park on
+        /// round completion.
+        /// </summary>
+        /// <param name="virtualSublogIdx"></param>
+        /// <param name="sequenceNumber"></param>
+        public void AdvanceVirtualSublogTime(int virtualSublogIdx, long sequenceNumber)
+        {
+            vsrs[virtualSublogIdx].UpdateMaxSequenceNumber(sequenceNumber);
+            replayBarrier.CheckAndArrive(virtualSublogIdx, vsrs[virtualSublogIdx].Max);
         }
 
         /// <summary>
@@ -150,7 +173,7 @@ namespace Garnet.server
             // Pause this replay thread when it has run ahead of an active round's target, bounding
             // drift from the lagging sublogs. Fast path is a single Volatile.Read + compare when no
             // round is active.
-            replayBarrier.CheckAndWait(vsrs[virtualSublogIdx].Max);
+            replayBarrier.CheckAndWait(virtualSublogIdx, vsrs[virtualSublogIdx].Max);
             vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
             // Replay-driven drift bounding: scan when this sublog's replay enters a timeline
             // window it owns (see replayDriftCheckInterval). A record-idle sublog skips its

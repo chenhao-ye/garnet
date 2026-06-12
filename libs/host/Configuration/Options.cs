@@ -233,12 +233,16 @@ namespace Garnet
         [Option("aof-replay-ring-size", Required = false, HelpText = "Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.")]
         public int AofReplayRingSize { get; set; }
 
+        [IntRangeValidation(1, 1 << 30, isRequired: false)]
+        [Option("aof-sketch-size", Required = false, HelpText = "Total number of slots (must be a power of two) across all virtual sublogs' per-key sequence-number sketches (the read-consistency KRT table) on a replica, divided evenly among them. Collision pressure is keyspace / total-slots, independent of the sublog count. A larger total reduces hash collisions at a higher memory and CPU-cache cost.")]
+        public int AofSketchSize { get; set; }
+
         [IntRangeValidation(1, 1024, isRequired: false)]
         [Option("aof-replay-ring-batch", Required = false, HelpText = "Number of records the producer batches into the replay ring buffer before publishing the tail to the consumer.")]
         public int AofReplayRingBatch { get; set; }
 
         [IntRangeValidation(0, int.MaxValue)]
-        [Option("aof-tail-witness-freq", Required = false, HelpText = "Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).")]
+        [Option("aof-tail-witness-freq", Required = false, HelpText = "Idle time in milliseconds after which a physical sublog's AOF sync task sends an in-band time pulse (CLUSTER ADVANCE_TIME) to the replica, keeping logical time flowing on idle sublogs (used only with multi-log in timestamp read mode).")]
         public int AofTailWitnessFreq { get; set; }
 
         [Option("aof-read-protocol", Required = false, HelpText = "Read protocol to use on replicas: 'timestamp' (default, prefix-consistent) or 'snapshot'.")]
@@ -885,6 +889,7 @@ namespace Garnet
                 AofBarrierSpinUs = AofBarrierSpinUs,
                 AofReaderSpinUs = AofReaderSpinUs,
                 AofReplayRingSize = AofReplayRingSize,
+                AofSketchSize = AofSketchSize,
                 AofReplayRingBatch = AofReplayRingBatch,
                 AofTailWitnessFreq = AofTailWitnessFreq,
                 AofReadWithTimestamp = string.IsNullOrEmpty(AofReadProtocol) || AofReadProtocol.Equals("timestamp", StringComparison.OrdinalIgnoreCase),

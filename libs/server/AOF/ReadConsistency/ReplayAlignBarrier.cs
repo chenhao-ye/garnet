@@ -19,14 +19,25 @@ namespace Garnet.server
     /// aid only -- prefix consistency is enforced by the reader's wait, so a round completing early or
     /// late never affects correctness.
     ///
-    /// There is a single arrival source: the replay threads' per-record <see cref="CheckAndWait"/>.
-    /// Each thread arrives at most once per round (it blocks immediately after arriving and does not
-    /// process another record until released), so a plain countdown of outstanding participants
-    /// suffices -- no per-sublog arrival tracking. A round therefore completes only while every
-    /// participant keeps replaying records: a participant that is about to stop (exiting at end of
-    /// run, pausing at a phase boundary, owning manager replaced) calls <see cref="Disable"/>, which
-    /// releases the active round and rejects new rounds until <see cref="Enable"/>, so peers are
-    /// never stranded waiting for an arrival that cannot come.
+    /// Arrivals come from the thread that owns each virtual sublog's replay, from two sources:
+    /// per replayed record via <see cref="CheckAndWait"/> (blocking -- the leader pauses so
+    /// laggards catch up), and per applied time pulse via <see cref="CheckAndArrive"/>
+    /// (non-blocking -- an idle sublog whose max is advanced by the primary's quiescence pulses
+    /// counts toward the round instead of stranding it, but has no replay work to pause and its
+    /// delivering thread must not park). A per-participant last-arrived-round slot makes arrivals
+    /// idempotent within a round, so the plain countdown stays correct when a non-blocking arrival
+    /// continues processing. A round therefore completes only while every participant keeps
+    /// replaying records or receiving pulses: a participant that is about to stop (exiting at end
+    /// of run, pausing at a phase boundary, owning manager replaced) calls <see cref="Disable"/>,
+    /// which releases the active round and rejects new rounds until <see cref="Enable"/>, so
+    /// peers are never stranded waiting for an arrival that cannot come.
+    ///
+    /// Known limitation: cross-sublog synchronized replay (transaction groups, custom
+    /// procedures) arrives through the same per-record path while its peers are parked at a
+    /// LeaderBarrier. A thread that parks at a round from inside such a scope, or a coordinator
+    /// arriving for a sublog it does not own, can stall the round until the synchronization
+    /// timeout. Transactions are out of scope for the current barrier work; the analysis and the
+    /// intended fix (thread-scoped arrival suppression) are recorded in the design notes.
     ///
     /// Fast path (no round active): a single Volatile.Read of a class field plus a long compare.
     /// </summary>
@@ -45,6 +56,14 @@ namespace Garnet.server
 
         readonly int participantCount;
 
+        // Last round each participant arrived at, indexed by virtual sublog. Written by the
+        // thread that owns the participant's replay (the same thread that calls CheckAndWait /
+        // CheckAndArrive for it), so plain reads/writes suffice on the record and pulse paths;
+        // synchronized replay can violate this (see the known limitation in the class remarks).
+        // Makes arrivals idempotent per round: a non-blocking pulse arrival continues processing
+        // and would otherwise decrement the countdown again on its next record.
+        readonly Round[] lastArrivedRound;
+
         // How long an arrived thread spins before falling back to a kernel wait:
         //   < 0 => spin forever (never sleep); 0 => never spin (pure kernel wait); > 0 => spin up to
         // this many Stopwatch ticks, then sleep for the remainder. Spinning avoids the park/wake cost
@@ -56,6 +75,7 @@ namespace Garnet.server
         public ReplayAlignBarrier(int participantCount, int spinMicroseconds)
         {
             this.participantCount = participantCount;
+            this.lastArrivedRound = new Round[participantCount];
             this.spinTicks = spinMicroseconds < 0
                 ? -1
                 : (long)(spinMicroseconds * (Stopwatch.Frequency / 1_000_000.0));
@@ -81,16 +101,45 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Called by a replay thread after advancing its virtual sublog's frontier. When a round is
-        /// active and this thread has reached the target, it arrives and blocks until every participant
-        /// arrives. Lock-free fast path when no round is active.
+        /// Called by a replay thread after advancing its virtual sublog's frontier with a replayed
+        /// record. When a round is active, this participant has reached the target, and it has not
+        /// already arrived at this round (e.g. via a pulse), it arrives and blocks until every
+        /// participant arrives. Lock-free fast path when no round is active.
         /// </summary>
+        /// <param name="virtualSublogIdx">The arriving participant; must be the thread that owns
+        /// this virtual sublog's replay.</param>
+        /// <param name="frontier">The participant's current published max sequence number.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void CheckAndWait(long frontier)
+        public void CheckAndWait(int virtualSublogIdx, long frontier)
         {
             var r = Volatile.Read(ref currentRound);
             if (r == null || frontier < r.target) return;
+            if (lastArrivedRound[virtualSublogIdx] == r) return;
+            lastArrivedRound[virtualSublogIdx] = r;
             Arrive(r);
+        }
+
+        /// <summary>
+        /// Non-blocking arrival, used when a time pulse advances an idle virtual sublog's frontier.
+        /// The participant is counted toward the round but never parks: an idle sublog has no
+        /// replay work to pause, and the threads that deliver pulses (a replica session thread in
+        /// synchronous replay, or the consume loop a session waits on through the ring batch)
+        /// must not block for the rest of the round, which can take arbitrarily long or never
+        /// complete during shutdown. The per-round arrival dedup keeps the countdown correct if
+        /// records for this sublog resume before the round completes.
+        /// </summary>
+        /// <param name="virtualSublogIdx">The arriving participant; must be the thread that owns
+        /// this virtual sublog's replay.</param>
+        /// <param name="frontier">The participant's current published max sequence number.</param>
+        public void CheckAndArrive(int virtualSublogIdx, long frontier)
+        {
+            var r = Volatile.Read(ref currentRound);
+            if (r == null || frontier < r.target) return;
+            if (lastArrivedRound[virtualSublogIdx] == r) return;
+            lastArrivedRound[virtualSublogIdx] = r;
+            if (Interlocked.Decrement(ref r.remaining) > 0)
+                return;
+            ReleaseRound(r);
         }
 
         void Arrive(Round r)
@@ -117,13 +166,18 @@ namespace Garnet.server
             }
             else
             {
-                // Last to arrive. Tear the round down only if it is still current, so a thread acting on
-                // a stale round reference cannot clobber a freshly activated one, then release the rest:
-                // the flag wakes spinners, the event wakes sleepers.
-                _ = Interlocked.CompareExchange(ref currentRound, null, r);
-                r.released = true;
-                r.release.Set();
+                ReleaseRound(r);
             }
+        }
+
+        // Last arrival: tear the round down only if it is still current, so a thread acting on a
+        // stale round reference cannot clobber a freshly activated one, then release the rest:
+        // the flag wakes spinners, the event wakes sleepers.
+        void ReleaseRound(Round r)
+        {
+            _ = Interlocked.CompareExchange(ref currentRound, null, r);
+            r.released = true;
+            r.release.Set();
         }
 
         /// <summary>

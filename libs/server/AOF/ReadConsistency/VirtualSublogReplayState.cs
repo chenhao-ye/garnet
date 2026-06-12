@@ -7,18 +7,15 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
-using Tsavorite.core;
 
 namespace Garnet.server
 {
     internal struct VirtualSublogReplayState
     {
-        const int SketchSlotSize = 1 << 15;
-        const int SketchSlotMask = SketchSlotSize - 1;
-
         readonly int sketchShift;  // physicalSublogShift + replayTaskShift
+        readonly int sketchSlotMask;  // sketch.Length - 1 (sketch length is a power of two)
 
-        readonly long[] sketch = new long[SketchSlotSize];
+        readonly long[] sketch;
 
         // All of this struct's mutable hot state. It lives in its own explicitly laid-out heap
         // object (see MutableStates) so that no write ever invalidates the struct's immutable
@@ -68,10 +65,18 @@ namespace Garnet.server
 
         public VirtualSublogReplayState(int sketchShift, GarnetServerOptions serverOptions, int virtualSublogIdx)
         {
-            var size = SketchSlotSize;
-            if ((size & (size - 1)) != 0)
-                throw new InvalidOperationException($"Size ({SketchSlotSize}) must be a power of 2");
-            Array.Clear(sketch);
+            // AofSketchSize is the TOTAL slot count across all virtual sublogs; each sublog gets
+            // an even 1/virtualSublogCount share. With total and the virtual sublog count both
+            // powers of two (the latter is m << replayTaskShift), the per-sublog size is a power
+            // of two as the slot mask requires.
+            var total = serverOptions.AofSketchSize;
+            if (total <= 0 || (total & (total - 1)) != 0)
+                throw new InvalidOperationException($"AofSketchSize ({total}) must be a positive power of 2");
+            if (total < serverOptions.AofVirtualSublogCount)
+                throw new InvalidOperationException($"AofSketchSize ({total}) must be >= the virtual sublog count ({serverOptions.AofVirtualSublogCount})");
+            var size = total / serverOptions.AofVirtualSublogCount;
+            sketch = new long[size];  // CLR zero-initializes
+            sketchSlotMask = size - 1;
             mutableStates.sketchMax = 0;
             mutableStates.minWaiterTarget = long.MaxValue;
             // drift-check responsibility is rotated among sublogs; each sublog is init with a different drift check time
@@ -88,7 +93,7 @@ namespace Garnet.server
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        readonly int GetSketchSlot(long hash) => (int)(((ulong)hash >> sketchShift) & SketchSlotMask);
+        readonly int GetSketchSlot(long hash) => (int)(((ulong)hash >> sketchShift) & (ulong)sketchSlotMask);
 
         /// <summary>
         /// Gets the sequence number associated with the specified hash key.
@@ -112,28 +117,47 @@ namespace Garnet.server
                 Sse.Prefetch0(Unsafe.AsPointer(ref sketch[GetSketchSlot(hash)]));
         }
 
+        // Ownership discipline for sketch[] and sketchMax: every write happens either on the
+        // thread that owns replay for this virtual sublog (records, time pulses, batch maxes,
+        // recovery tasks) or on a thread that is the sole writer at that moment -- a coordinator
+        // while the owner is parked at a barrier (transaction peers, a custom-procedure leader
+        // updating participant sublogs), or a caller that has proven the owner quiescent (the
+        // AOF benchmark raising frontiers after its replay pass). Writers are therefore
+        // sequential -- never concurrent -- which is what makes the plain read-compare plus
+        // release store safe. Reader threads only load these fields.
+
         /// <summary>
-        /// Updates the maximum observed sequence number.
+        /// Updates the maximum observed sequence number. Owner-write (see the ownership
+        /// discipline above); monotonic by the compare below.
         /// </summary>
-        /// <remarks>Updates are thread-safe and guaranteed to be monotonically increasing.</remarks>
         /// <param name="sequenceNumber">The sequence number to compare against the current maximum.</param>
         public void UpdateMaxSequenceNumber(long sequenceNumber)
         {
-            _ = Utility.MonotonicUpdate(ref mutableStates.sketchMax, sequenceNumber, out _);
+            if (sequenceNumber > mutableStates.sketchMax)
+                Volatile.Write(ref mutableStates.sketchMax, sequenceNumber);
             SignalIfMaxAdvanced();
         }
 
         /// <summary>
-        /// Updates the sequence number associated with the specified key hash.
+        /// Updates the sequence number associated with the specified key hash. Owner-write (see
+        /// the ownership discipline above); monotonic per slot by the compare below, which also
+        /// absorbs benign stamp inversions between independent operations.
         /// </summary>
-        /// <remarks>Updates are thread-safe and guaranteed to be monotonically increasing.</remarks>
         /// <param name="hash">The hash value identifying the key whose sequence number is to be updated.</param>
-        /// <param name="sequenceNumber">The new sequence number to associate with the specified key hash. Must be greater than or equal to the
+        /// <param name="sequenceNumber">The new sequence number to associate with the specified key hash. Must be greater than the
         /// current value to have an effect.</param>
         public void UpdateKeySequenceNumber(long hash, long sequenceNumber)
         {
-            _ = Utility.MonotonicUpdate(ref sketch[GetSketchSlot(hash)], sequenceNumber, out _);
-            _ = Utility.MonotonicUpdate(ref mutableStates.sketchMax, sequenceNumber, out _);
+            ref var slot = ref sketch[GetSketchSlot(hash)];
+            if (sequenceNumber > slot)
+                Volatile.Write(ref slot, sequenceNumber);
+            // Publish the sublog max on every record, in lockstep with the slot, so the published
+            // max is always >= any slot value. That invariant is what lets readers gate and
+            // waiters be released on the published max alone (see SignalIfMaxAdvanced), with no
+            // per-slot lag. The published max lives on its own cache line, so this per-record
+            // write does not invalidate the reader's immutable sketch / sketchShift fields.
+            if (sequenceNumber > mutableStates.sketchMax)
+                Volatile.Write(ref mutableStates.sketchMax, sequenceNumber);
             SignalIfMaxAdvanced();
         }
 

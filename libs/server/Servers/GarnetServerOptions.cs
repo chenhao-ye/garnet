@@ -126,6 +126,17 @@ namespace Garnet.server
         public int AofReplayRingBatch = 8;
 
         /// <summary>
+        /// Total number of slots (must be a power of two) across all virtual sublogs' per-key
+        /// sequence-number sketches (the read-consistency KRT table) on a replica, divided evenly
+        /// among the virtual sublogs. Because the keyspace is sharded across sublogs, the collision
+        /// pressure that governs read blocking is keyspace / total-slots, independent of the sublog
+        /// count. A larger total reduces hash collisions -- which would otherwise inflate keys'
+        /// tracked sequence numbers and block reads more often -- at a higher memory and CPU-cache
+        /// cost. Default 262144 keeps collisions negligible up to a ~10M-key working set.
+        /// </summary>
+        public int AofSketchSize = 262144;
+
+        /// <summary>
         /// When true, use the Timestamp (prefix-consistent) read protocol on replicas.
         /// When false, use the Snapshot read protocol.
         /// </summary>
@@ -138,7 +149,10 @@ namespace Garnet.server
         public int AofSnapshotFreq = 5;
 
         /// <summary>
-        /// Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).
+        /// Idle time in milliseconds after which a physical sublog's AOF sync task sends an in-band
+        /// time pulse (CLUSTER ADVANCE_TIME) to the replica, keeping logical time flowing on idle
+        /// sublogs so prefix-consistent reads do not block. Used only with multi-log in timestamp
+        /// read mode; a sublog that keeps shipping records never pulses.
         /// </summary>
         public int AofTailWitnessFreq = 100;
 
