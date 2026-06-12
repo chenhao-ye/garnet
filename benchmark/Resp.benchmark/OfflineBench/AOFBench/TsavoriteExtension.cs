@@ -22,6 +22,27 @@ namespace Resp.benchmark
             SetHeaderMethod = type.GetMethod("SetHeader", flags);
         }
 
+        // Serialized payload length of one record, before the log's entry header and alignment.
+        static unsafe int RecordLength<THeader, TInput>(ReadOnlySpan<byte> item1, ReadOnlySpan<byte> item2, ref TInput input)
+            where THeader : unmanaged where TInput : IStoreInput
+            => sizeof(THeader) + item1.TotalSize() + item2.TotalSize() + input.SerializedLength;
+
+        /// <summary>
+        /// Bytes one <see cref="DummyEnqueue{THeader, TInput}"/> record occupies in a page
+        /// (entry header plus aligned payload). All records with the same header type and item
+        /// lengths occupy the same number of bytes, so page capacity is pageSize / this value.
+        /// </summary>
+        public static int DummyEnqueueLength<THeader, TInput>(
+            this TsavoriteLog log,
+            ReadOnlySpan<byte> item1,
+            ReadOnlySpan<byte> item2,
+            ref TInput input)
+            where THeader : unmanaged where TInput : IStoreInput
+        {
+            var headerSize = (int)HeaderSizeField.GetValue(log);
+            return headerSize + (int)AlignMethod.Invoke(null, [RecordLength<THeader, TInput>(item1, item2, ref input)]);
+        }
+
         /// <summary>
         /// DummyEnqueue to provided buffer if there is enough space.
         /// Used to simulate AOF layout
@@ -47,7 +68,7 @@ namespace Resp.benchmark
             where THeader : unmanaged where TInput : IStoreInput
         {
             var headerSize = (int)HeaderSizeField.GetValue(log);
-            var length = sizeof(THeader) + item1.TotalSize() + item2.TotalSize() + input.SerializedLength;
+            var length = RecordLength<THeader, TInput>(item1, item2, ref input);
             var allocatedLength = headerSize + (int)AlignMethod.Invoke(null, [length]);
 
             if (beginPageAddress + allocatedLength > endPageAddress)

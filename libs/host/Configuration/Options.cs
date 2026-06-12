@@ -225,9 +225,17 @@ namespace Garnet
         [Option("aof-barrier-spin-us", Required = false, HelpText = "How long a replay thread spins at the replay-align barrier before sleeping: -1 = spin forever (never sleep), 0 = never spin (pure sleep), >0 = spin up to that many microseconds then sleep for the remainder.")]
         public int AofBarrierSpinUs { get; set; }
 
+        [IntRangeValidation(-1, int.MaxValue, isRequired: false)]
+        [Option("aof-reader-spin-us", Required = false, HelpText = "How long a replica reader session spins polling the sublog frontier before parking on the consistent-read wait: -1 = spin forever (never park), 0 = never spin (park immediately), >0 = spin up to that many microseconds then park.")]
+        public int AofReaderSpinUs { get; set; }
+
         [IntRangeValidation(64, 1 << 20, isRequired: false)]
         [Option("aof-replay-ring-size", Required = false, HelpText = "Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.")]
         public int AofReplayRingSize { get; set; }
+
+        [IntRangeValidation(1, 1 << 30, isRequired: false)]
+        [Option("aof-sketch-size", Required = false, HelpText = "Total number of slots (must be a power of two) across all virtual sublogs' per-key sequence-number sketches (the read-consistency KRT table) on a replica, divided evenly among them. Collision pressure is keyspace / total-slots, independent of the sublog count. A larger total reduces hash collisions at a higher memory and CPU-cache cost.")]
+        public int AofSketchSize { get; set; }
 
         [IntRangeValidation(1, 1024, isRequired: false)]
         [Option("aof-replay-ring-batch", Required = false, HelpText = "Number of records the producer batches into the replay ring buffer before publishing the tail to the consumer.")]
@@ -879,7 +887,9 @@ namespace Garnet
                 AofReplayDriftThreshold = AofReplayDriftThreshold,
                 AofReplayDriftCheckFreq = AofReplayDriftCheckFreq,
                 AofBarrierSpinUs = AofBarrierSpinUs,
+                AofReaderSpinUs = AofReaderSpinUs,
                 AofReplayRingSize = AofReplayRingSize,
+                AofSketchSize = AofSketchSize,
                 AofReplayRingBatch = AofReplayRingBatch,
                 AofTailWitnessFreq = AofTailWitnessFreq,
                 AofReadWithTimestamp = string.IsNullOrEmpty(AofReadProtocol) || AofReadProtocol.Equals("timestamp", StringComparison.OrdinalIgnoreCase),

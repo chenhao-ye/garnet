@@ -86,7 +86,7 @@ namespace Garnet.server
         /// replay-align barrier round is triggered. A larger value lets sublogs diverge further
         /// (less reader blocking, looser bound); -1 disables the barrier.
         /// </summary>
-        public int AofReplayDriftThreshold = 20000;
+        public int AofReplayDriftThreshold = 10000;
 
         /// <summary>
         /// How often the cross-sublog drift is re-checked during replay, as a multiple of
@@ -97,7 +97,7 @@ namespace Garnet.server
         /// threshold. 0 disables the proactive check, leaving readers about to
         /// wait as the only round source.
         /// </summary>
-        public int AofReplayDriftCheckFreq = 16;
+        public int AofReplayDriftCheckFreq = 1;
 
         /// <summary>
         /// How long a replay thread spins at the replay-align barrier before falling back to a kernel wait:
@@ -105,6 +105,15 @@ namespace Garnet.server
         /// Spinning avoids the kernel park/wake cost when rounds are short and frequent, at the cost of burning CPU cycles.
         /// </summary>
         public int AofBarrierSpinUs = -1;
+
+        /// <summary>
+        /// How long a replica reader session spins polling the sublog frontier before parking on
+        /// the consistent-read wait: &lt; 0: spins forever (never parks); 0: never spins (parks
+        /// immediately); &gt; 0: spins up to that many microseconds, then parks. A spinning reader
+        /// enqueues no waiter, so the replay thread's per-record waiter-signal pass stays on its
+        /// lock-free empty fast path instead of paying the wake train under frequent reader waits.
+        /// </summary>
+        public int AofReaderSpinUs = 0;
 
         /// <summary>
         /// Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.
@@ -115,6 +124,17 @@ namespace Garnet.server
         /// Number of records the producer batches into the replay ring buffer before publishing the tail to the consumer.
         /// </summary>
         public int AofReplayRingBatch = 8;
+
+        /// <summary>
+        /// Total number of slots (must be a power of two) across all virtual sublogs' per-key
+        /// sequence-number sketches (the read-consistency KRT table) on a replica, divided evenly
+        /// among the virtual sublogs. Because the keyspace is sharded across sublogs, the collision
+        /// pressure that governs read blocking is keyspace / total-slots, independent of the sublog
+        /// count. A larger total reduces hash collisions -- which would otherwise inflate keys'
+        /// tracked sequence numbers and block reads more often -- at a higher memory and CPU-cache
+        /// cost. Default 262144 keeps collisions negligible up to a ~10M-key working set.
+        /// </summary>
+        public int AofSketchSize = 262144;
 
         /// <summary>
         /// When true, use the Timestamp (prefix-consistent) read protocol on replicas.

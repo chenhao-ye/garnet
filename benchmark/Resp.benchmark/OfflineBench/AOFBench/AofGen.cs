@@ -59,6 +59,16 @@ namespace Resp.benchmark
         byte[] globalKeys;
         byte[] sharedValue;
 
+        // Sublog each global key hashes to, indexed by global key index. Built with the
+        // per-sublog keysets; the zipf generators dispatch sampled keys through it.
+        int[] sublogAssign;
+
+        // Pseudo-clock ticks between consecutive records of the emulated global stream. Generated
+        // records model ONE totally ordered log dealt across the sublogs: the stream advances one
+        // tick per record, so consecutive records WITHIN a sublog average PseudoTimestampPace
+        // apart while the cross-sublog interleaving stays on a single timeline.
+        readonly long globalStreamTick;
+
         long total_number_of_aof_records = 0L;
         long total_number_of_aof_bytes = 0L;
 
@@ -95,6 +105,7 @@ namespace Resp.benchmark
         {
             this.options = options;
             this.keyLen = DeriveKeyLen(options);
+            this.globalStreamTick = Math.Max(1, options.PseudoTimestampPace / Math.Max(1, options.AofPhysicalSublogCount));
             if (options.KeyLength > 0 && this.keyLen != options.KeyLength)
                 Console.WriteLine($"[Warning] --keylength {options.KeyLength} is too small for --dbsize {options.DbSize}; expanding to {this.keyLen}.");
             this.aofServerOptions = new GarnetServerOptions()
@@ -152,9 +163,9 @@ namespace Resp.benchmark
                 return;
             }
 
-            // Replay binds generator/worker thread t to sublog t. An empty bucket would spin
-            // the rejection-sampling loop in GeneratePages forever, hence the explicit throw.
-            var sublogAssign = new int[dbsize];
+            // Replay binds generator/worker thread t to sublog t. A bucket with zero keys would
+            // leave its sublog with no warmup upserts and no replayable records, hence the throw.
+            sublogAssign = new int[dbsize];
             bucketCounts = new int[sublogCount];
             for (int i = 0; i < dbsize; i++)
             {
@@ -180,14 +191,6 @@ namespace Resp.benchmark
                 offsets[s]++;
             }
 
-            int min = int.MaxValue, max = 0;
-            for (int s = 0; s < sublogCount; s++)
-            {
-                if (bucketCounts[s] < min) min = bucketCounts[s];
-                if (bucketCounts[s] > max) max = bucketCounts[s];
-            }
-            Console.WriteLine($"Per-sublog key distribution (dbsize={dbsize}, sublogs={sublogCount}): min={min} max={max}");
-            Console.WriteLine($"  counts=[{string.Join(", ", bucketCounts)}]");
         }
 
         // Phase B: (re)build kvPairBuffers for the current Run's threadCount.
@@ -264,7 +267,7 @@ namespace Resp.benchmark
             }
         }
 
-        // Hex-encode keyLen characters derived from MurmurHash3(i). High-entropy bytes
+        // Hex-encode keyLen characters derived from MurmurHash2x64A(i). High-entropy bytes
         // ensure Utility.HashBytes(key) % k is near-uniform for k up to 64.
         // If keyLen > 16 (very unusual), the tail is padded with '0'.
         static unsafe void FormatHexKey(byte[] dest, int offset, int keyLen, int i)
@@ -273,7 +276,7 @@ namespace Resp.benchmark
             BinaryPrimitives.WriteInt64LittleEndian(mix, i);
             ulong h;
             fixed (byte* p = mix)
-                h = Garnet.common.HashUtils.MurmurHash3x64A(p, 8);
+                h = Garnet.common.HashUtils.MurmurHash2x64A(p, 8);
             int hexLen = Math.Min(keyLen, 16);
             Encoding.ASCII.GetBytes(h.ToString("x16").AsSpan(0, hexLen), dest.AsSpan(offset, hexLen));
             for (int j = hexLen; j < keyLen; j++)
@@ -289,11 +292,24 @@ namespace Resp.benchmark
             // startClock must be larger than the max warmup clock
             var startClock = GenerateWarmupData(threads) + options.PseudoTimestampPace;
 
+            // The zipf variants emulate one global stream of (threads x per-generator budget)
+            // records: generator g owns the contiguous pseudo-clock range starting at
+            // startClock + g x budget x globalStreamTick and dispatches each sampled record to
+            // the sublog its key hashes to (see GenerateZipfStream). The budget matches the
+            // volume the uniform path generates per sublog.
+            var zipf = options.AofReplayDist != KeyDistribution.Uniform;
+            var perThreadRecords = zipf ? (long)options.AofGenPages * RecordsPerPage() : 0L;
+            var segments = zipf ? new Page[threads][][] : null;
+            var endClocks = zipf ? new long[threads] : null;
+            long BaseClock(int g) => startClock + g * perThreadRecords * globalStreamTick;
+
             var workers = new Thread[threads];
             for (var idx = 0; idx < threads; ++idx)
             {
                 var x = idx;
-                workers[idx] = new Thread(() => GeneratePages(x, startClock));
+                workers[idx] = zipf
+                    ? new Thread(() => segments[x] = GenerateZipfStream(x, BaseClock(x), perThreadRecords, out endClocks[x]))
+                    : new Thread(() => GeneratePages(x, startClock));
             }
 
             Stopwatch swatch = new();
@@ -304,8 +320,55 @@ namespace Resp.benchmark
                 worker.Join();
             swatch.Stop();
 
+            if (zipf)
+            {
+                // Each sublog's stream is the generators' segments concatenated in generator
+                // order: sequence numbers stay increasing within every sublog while per-sublog
+                // record volumes follow each sublog's share of the zipf mass. That holds only
+                // if the clock ranges the generators actually produced are disjoint and
+                // ascending, so validate them before merging.
+                for (var g = 0; g < threads; g++)
+                {
+                    if (endClocks[g] > (g + 1 < threads ? BaseClock(g + 1) : long.MaxValue))
+                        throw new Exception(
+                            $"Zipf generator {g} produced clock range [{BaseClock(g)}, {endClocks[g]}), " +
+                            $"overlapping generator {g + 1}'s base clock {BaseClock(g + 1)}.");
+                }
+                Console.WriteLine($"  zipf generator clock ranges=[{string.Join(", ", Enumerable.Range(0, threads).Select(g => $"[{BaseClock(g)}, {endClocks[g]})"))}]");
+
+                for (var s = 0; s < threads; s++)
+                {
+                    var pages = new List<Page>();
+                    for (var g = 0; g < threads; g++)
+                        pages.AddRange(segments[g][s]);
+                    pageBuffers[s] = pages.ToArray();
+                }
+            }
+
+            // Per-sublog load report: keys from the hash partition, records/pages/bytes from
+            // the generated page set. Uniform record shares track the key shares; under Zipf
+            // the gap between the two percentage columns is the dispatched load imbalance.
+            // Plain (non-bracketed) lines so parse.py does not pick them up as samples.
+            long totalPages = 0;
+            Console.WriteLine($"AofGen per-sublog load (sublogs={threads}, dbsize={options.DbSize:N0}):");
+            Console.WriteLine($"{"sublog",6} {"keys",12} {"keys%",7} {"records",14} {"records%",9} {"pages",6} {"bytes",16}");
+            for (var s = 0; s < threads; s++)
+            {
+                long records = 0, bytes = 0;
+                foreach (var p in pageBuffers[s])
+                {
+                    records += p.recordCount;
+                    bytes += p.payloadLength;
+                }
+                totalPages += pageBuffers[s].Length;
+                Console.WriteLine(
+                    $"{s,6} {bucketCounts[s],12:N0} {100.0 * bucketCounts[s] / options.DbSize,6:F1}% " +
+                    $"{records,14:N0} {100.0 * records / total_number_of_aof_records,8:F1}% " +
+                    $"{pageBuffers[s].Length,6} {bytes,16:N0}");
+            }
+
             var seconds = swatch.ElapsedMilliseconds / 1000.0;
-            Console.WriteLine($"Generated {threads}x{options.AofGenPages} pages of size {aofServerOptions.AofPageSize} in {seconds:N2} secs");
+            Console.WriteLine($"Generated {totalPages:N0} pages of size {aofServerOptions.AofPageSize} in {seconds:N2} secs");
             Console.WriteLine($"Generated number of AOF records: {total_number_of_aof_records:N0}");
             Console.WriteLine($"Generated number of AOF bytes: {total_number_of_aof_bytes:N0}");
         }
@@ -435,7 +498,10 @@ namespace Resp.benchmark
 
         unsafe void GeneratePages(int threadId, long startPseudoClock)
         {
-            long pseudoClock = startPseudoClock + threadId;
+            // Round-robin deal of the emulated global stream: sublogs start globalStreamTick
+            // apart and each advances PseudoTimestampPace per record, so round k of the deal
+            // (one record per sublog) occupies its own clock window within [k x pace, (k+1) x pace).
+            long pseudoClock = startPseudoClock + threadId * globalStreamTick;
             long pseudoTimestampPace = options.PseudoTimestampPace;
 
             var rng = new Random(789110123 + threadId);
@@ -506,6 +572,132 @@ namespace Resp.benchmark
             }
             _ = Interlocked.Add(ref total_number_of_aof_records, number_of_aof_records);
             _ = Interlocked.Add(ref total_number_of_aof_bytes, number_of_aof_bytes);
+        }
+
+        // One zipf generator: samples recordCount keys from the global zipf, appends each record
+        // to the page list of the sublog the key hashes to, and advances the global stream clock
+        // one tick per record. Returns the per-sublog page lists for this generator's clock
+        // range; endClock reports one tick past the last assigned sequence number, which the
+        // caller validates against the next generator's base clock before merging.
+        unsafe Page[][] GenerateZipfStream(int genIdx, long baseClock, long recordCount, out long endClock)
+        {
+            var sublogCount = options.AofPhysicalSublogCount;
+            var keyDist = new KeyDistAdaptor(options.AofReplayDist, options.DbSize, 789110123 + genIdx, options.ZipfTheta);
+            var useShardedHeader = sublogCount > 1 || options.AofReplayTaskCount > 1;
+            var pageSize = 1 << aofServerOptions.AofPageSizeBits();
+            long pseudoClock = baseClock;
+            long number_of_aof_records = 0L;
+            long number_of_aof_bytes = 0L;
+
+            var pages = new List<Page>[sublogCount];
+            var current = new Page[sublogCount];
+            var pageOffsets = new int[sublogCount];
+            for (var s = 0; s < sublogCount; s++)
+                pages[s] = new List<Page>();
+
+            // Seal the sublog's open page: record its payload length and retire it to the list.
+            void SealPage(int s)
+            {
+                var page = current[s];
+                if (page == null) return;
+                page.payloadLength = pageOffsets[s];
+                number_of_aof_bytes += page.payloadLength;
+                pages[s].Add(page);
+                current[s] = null;
+            }
+
+            fixed (byte* keysPtr = globalKeys)
+            fixed (byte* valuePtr = sharedValue)
+            {
+                var valueLen = sharedValue.Length;
+                for (long k = 0; k < recordCount; k++)
+                {
+                    var keyIdx = keyDist.Next();
+                    var s = sublogAssign[keyIdx];
+                    var keyPtr = keysPtr + keyIdx * keyLen;
+                    var key = SpanByte.FromPinnedPointer(keyPtr, keyLen);
+                    var v = SpanByte.FromPinnedPointer(valuePtr, valueLen);
+
+                    // A record that does not fit seals the open page and retries on a fresh one.
+                    while (true)
+                    {
+                        if (current[s] == null)
+                        {
+                            current[s] = new Page(pageSize);
+                            pageOffsets[s] = 0;
+                        }
+                        var page = current[s];
+                        bool enqueued;
+                        fixed (byte* pagePtr = page.payload)
+                        {
+                            var pageOffset = pagePtr + pageOffsets[s];
+                            var pageEnd = pagePtr + page.Length;
+                            StringInput input = default;
+                            var aofHeader = new AofHeader { opType = AofEntryType.StoreUpsert, storeVersion = 1, sessionID = 0 };
+                            if (!useShardedHeader)
+                            {
+                                enqueued = garnetLog.GetSubLog(s).DummyEnqueue(
+                                    ref pageOffset, pageEnd, aofHeader, key, v, ref input);
+                            }
+                            else
+                            {
+                                var replayTag = garnetLog.GetReplayTag(new ReadOnlySpan<byte>(keyPtr, keyLen));
+                                var extendedAofHeader = new AofShardedHeader
+                                {
+                                    basicHeader = new AofHeader
+                                    {
+                                        padding = AofHeader.MakePadding(AofHeaderType.ShardedHeader, replayTag),
+                                        opType = aofHeader.opType,
+                                        storeVersion = aofHeader.storeVersion,
+                                        sessionID = aofHeader.sessionID
+                                    },
+                                    sequenceNumber = pseudoClock
+                                };
+                                enqueued = garnetLog.GetSubLog(s).DummyEnqueue(
+                                    ref pageOffset, pageEnd, extendedAofHeader, key, v, ref input);
+                            }
+                            if (enqueued)
+                            {
+                                pageOffsets[s] = (int)(pageOffset - pagePtr);
+                                page.recordCount++;
+                            }
+                        }
+                        if (enqueued) break;
+                        if (page.recordCount == 0)
+                            throw new Exception($"Zipf record for sublog {s} does not fit in a {pageSize}-byte page.");
+                        SealPage(s);
+                    }
+                    if (useShardedHeader)
+                        pseudoClock += globalStreamTick;
+                    number_of_aof_records++;
+                }
+            }
+            for (var s = 0; s < sublogCount; s++)
+                SealPage(s);
+
+            endClock = pseudoClock;
+            _ = Interlocked.Add(ref total_number_of_aof_records, number_of_aof_records);
+            _ = Interlocked.Add(ref total_number_of_aof_bytes, number_of_aof_bytes);
+            var result = new Page[sublogCount][];
+            for (var s = 0; s < sublogCount; s++)
+                result[s] = pages[s].ToArray();
+            return result;
+        }
+
+        // Records that fit in one generated page. Every generated record has the same header
+        // type and key/value lengths, so it occupies the same number of page bytes
+        // (DummyEnqueueLength) and page capacity is a plain division. Sets the per-generator
+        // record budget of the zipf path to the same volume the uniform path generates per
+        // sublog (aof_gen_pages full pages).
+        int RecordsPerPage()
+        {
+            var key = (ReadOnlySpan<byte>)globalKeys.AsSpan(0, keyLen);
+            var value = (ReadOnlySpan<byte>)sharedValue;
+            StringInput input = default;
+            var recordSize = options.AofPhysicalSublogCount > 1 || options.AofReplayTaskCount > 1
+                ? garnetLog.GetSubLog(0).DummyEnqueueLength<AofShardedHeader, StringInput>(key, value, ref input)
+                : garnetLog.GetSubLog(0).DummyEnqueueLength<AofHeader, StringInput>(key, value, ref input);
+            return (1 << aofServerOptions.AofPageSizeBits()) / recordSize;
         }
     }
 }
