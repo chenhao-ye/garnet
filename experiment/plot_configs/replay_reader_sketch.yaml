@@ -1,0 +1,27 @@
+name: replay_reader_sketch
+description: "Per dbsize, replay/reader throughput and reader latency vs. sketch size (log x); one curve per sublog count."
+template: replay_reader_sketch
+dependencies: [aof_sketch]
+# aof_sketch is in-proc: sublog count, sketch size and dbsize are client params,
+# latencies are sub-microsecond (us, the default). One figure-set per dbsize,
+# one curve per sublog count, X = sketch size on a log2 axis.
+set_param: client.dbsize
+curve_param: client.aof_physical_sublog_count
+x_param: client.aof_sketch_size
+
+scale: 0.5
+legend_separate: true
+
+# Sketch size on a log2 axis; ticks label as 1k/16k/256k/4m. The template
+# frames the axis to the ticks (xmax = last tick, xmin = half the first tick).
+xscale: log
+xlabel: "Total KRT table size"
+xticks: [1024, 16384, 262144, 4194304]
+
+# Per-metric yticks (shared across dbsizes; ranges are similar). Override a
+# single figure with yticks_<dbsize>_<metric>, e.g. yticks_100m_p999.
+yticks_replay: [0, 10, 20, 30, 40]
+yticks_reader: [0, 0.5, 1, 1.5, 2]
+yticks_p50: [0, 0.2, 0.4, 0.6, 0.8]
+yticks_p99: [0, 1, 2, 3]
+yticks_p999: [0, 2, 4, 6, 8]

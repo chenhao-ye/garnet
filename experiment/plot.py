@@ -28,6 +28,11 @@ Each plot config carries a `template` field that selects a renderer:
                      per series, five bar figures (replay tput, reader tput,
                      p50/p99/p99.9 latency) with one bar per sublog count
                      dependencies: [<reader sweep>]
+  - replay_reader_sketch:
+                     per dbsize, five figures (replay tput, reader tput,
+                     p50/p99/p99.9 latency) vs. sketch size (log x, k/m tick
+                     labels), one curve per sublog count
+                     dependencies: [<sketch sweep>]
   - append:          append-scaling figure (sec:6.2)
                      dependencies: [<single experiment>]
   - set:             online SET throughput figure (no AOF vs single-log)
@@ -310,6 +315,50 @@ def render_replay_spectrum(plot_cfg: dict, deps: list[str], out_path: Path) -> N
 _LATENCY_UNIT_SCALE = {"ms": 1e-3, "us": 1.0}
 
 
+def _fmt_pow2_size(value) -> str:
+    """Format a byte/slot count as a binary-prefixed label: 1024 -> "1k",
+    1048576 -> "1m", 4194304 -> "4m"."""
+    v = int(value)
+    if v >= 1024 * 1024:
+        n = v / (1024 * 1024)
+        return f"{int(n) if float(n).is_integer() else n}m"
+    if v >= 1024:
+        n = v / 1024
+        return f"{int(n) if float(n).is_integer() else n}k"
+    return str(v)
+
+
+def _fmt_si_count(value) -> str:
+    """Format a decimal count as an SI-suffixed label: 10000000 -> "10m"."""
+    v = int(value)
+    for suffix, base in (("b", 1_000_000_000), ("m", 1_000_000), ("k", 1_000)):
+        if v >= base:
+            n = v / base
+            return f"{int(n) if float(n).is_integer() else n}{suffix}"
+    return str(v)
+
+
+def _build_metric_fig(plot_cfg: dict):
+    """Build a 1x1 figure for the metric-grid templates.
+
+    With only `scale` set, the figure keeps the default 4:3 width:height
+    (hw_ratio 0.75). If `width_scale` and/or `height_scale` are given, each
+    axis is sized directly (so equal values give a square); a missing one
+    falls back to `scale`.
+    """
+    scale = float(plot_cfg.get("scale", 1.0))
+    w = plot_cfg.get("width_scale")
+    h = plot_cfg.get("height_scale")
+    if w is None and h is None:
+        return build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
+    return build_fig_single_col(
+        1,
+        1,
+        width_scale=float(w) if w is not None else scale,
+        height_scale=float(h) if h is not None else scale,
+    )
+
+
 def render_replay_reader(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     # dependencies[0] = reader experiment. Each `series` produces four figures
     # sharing X = replay throughput, with one datapoint per sublog count.
@@ -492,9 +541,9 @@ def render_replay_reader_threshold(
     #                 e.g. [10000, ..., 60000] to drop -1 and higher thresholds.
     #   threshold_norm  divide x values by this for display, so ticks read as
     #                 multiples of a reference threshold (default 1).
-    #   width_scale, height_scale  figure width/height scales (both default to
-    #                 `scale`); set them equal for a square figure, or width
-    #                 below height to narrow it.
+    #   width_scale, height_scale  size each axis directly when set (equal =>
+    #                 square). With only `scale`, the figure keeps the default
+    #                 4:3 width:height.
     #   curves        list of {style, filter, [label]} -- one colored curve
     #                 each; `style` names entries in plot_style's maps. Defaults
     #                 to the three replay distributions.
@@ -538,11 +587,6 @@ def render_replay_reader_threshold(
         {"style": "dist_zipf", "filter": {"client.aof_replay_dist": "Zipf"}},
     ]
 
-    # width_scale and height_scale size the figure independently (both default
-    # to `scale`); set them equal for a square figure.
-    _scale = float(plot_cfg.get("scale", 1.0))
-    width_scale = float(plot_cfg.get("width_scale", _scale))
-    height_scale = float(plot_cfg.get("height_scale", _scale))
     ncol, legend_width = resolve_legend_geom(plot_cfg, len(curves))
     legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
 
@@ -557,9 +601,7 @@ def render_replay_reader_threshold(
                 for cfg_key, value in plot_cfg.items():
                     if cfg_key.endswith(tag):
                         fig_cfg[cfg_key[: -len(tag)]] = value
-            fig, ax = build_fig_single_col(
-                1, 1, width_scale=width_scale, height_scale=height_scale
-            )
+            fig, ax = _build_metric_fig(plot_cfg)
 
             all_x: list[float] = []
             all_y: list[float] = []
@@ -650,8 +692,8 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
     #                 client.aof_physical_sublog_count).
     #   filter        base filter applied to every series.
     #   latency_unit  "us" (default) or "ms"; scales the three latency figures.
-    #   width_scale, height_scale  figure width/height scales (both default to
-    #                 `scale`); set them equal for a square figure.
+    #   width_scale, height_scale  size each axis directly when set (equal =>
+    #                 square). With only `scale`, the figure keeps 4:3.
     #   series        list of {suffix, filter} -- one set of five figures each;
     #                 defaults to a single unsuffixed set.
     #   Figure-suffixed axis overrides: <key>_<metric> (all series) and
@@ -683,11 +725,6 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
 
     series = plot_cfg.get("series") or [{}]
 
-    # width_scale and height_scale size the figure independently (both default
-    # to `scale`); set them equal for a square figure.
-    _scale = float(plot_cfg.get("scale", 1.0))
-    width_scale = float(plot_cfg.get("width_scale", _scale))
-    height_scale = float(plot_cfg.get("height_scale", _scale))
     ncol, legend_width = resolve_legend_geom(plot_cfg, 3)
     legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
 
@@ -705,9 +742,7 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
                 for cfg_key, value in plot_cfg.items():
                     if cfg_key.endswith(tag):
                         fig_cfg[cfg_key[: -len(tag)]] = value
-            fig, ax = build_fig_single_col(
-                1, 1, width_scale=width_scale, height_scale=height_scale
-            )
+            fig, ax = _build_metric_fig(plot_cfg)
 
             heights: list[float] = []
             for i, k in enumerate(k_values):
@@ -772,6 +807,143 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
 
             # Filename: <stem>[_<series suffix>]_<metric>.<ext>
             tags = [out_path.stem] + ([s_suffix] if s_suffix else []) + [suffix]
+            save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
+
+
+def render_replay_reader_sketch(
+    plot_cfg: dict, deps: list[str], out_path: Path
+) -> None:
+    # dependencies[0] = sketch-size sweep reader experiment. For each value of
+    # `set_param` (e.g. dbsize) this emits one figure per metric (replay tput,
+    # reader tput, p50/p99/p99.9), with X = sketch size on a log2 axis and one
+    # curve per sublog count.
+    #
+    # Config keys (all optional):
+    #   set_param     param identifying each figure-set (default client.dbsize).
+    #   curve_param   param drawn as one curve each (default
+    #                 client.aof_physical_sublog_count).
+    #   x_param       param on the (log) x-axis (default client.aof_sketch_size).
+    #   filter        base filter applied to every figure.
+    #   latency_unit  "us" (default) or "ms"; scales the three latency figures.
+    #   width_scale, height_scale  size each axis directly when set (equal =>
+    #                 square). With only `scale`, the figure keeps 4:3.
+    #   xticks        sketch-size positions; labels auto-format as 1k/4m/...
+    #   Figure-suffixed axis overrides: <key>_<metric> (all sets) and
+    #   <key>_<set>_<metric> (one figure), where <set> is the SI-formatted set
+    #   value (e.g. yticks_p99, yticks_100m_p99).
+    if len(deps) != 1:
+        raise ValueError(
+            "replay_reader_sketch template expects 1 dependency "
+            f"[sketch sweep]; got {deps}"
+        )
+    result = load_result(deps[0])
+    set_param = plot_cfg.get("set_param", "client.dbsize")
+    curve_param = plot_cfg.get("curve_param", "client.aof_physical_sublog_count")
+    x_param = plot_cfg.get("x_param", "client.aof_sketch_size")
+    base_filter = dict(plot_cfg.get("filter") or {})
+    set_values = sorted(result["sweep_params"][set_param])
+    curve_values = sorted(result["sweep_params"][curve_param])
+
+    unit = str(plot_cfg.get("latency_unit", "us")).lower()
+    if unit not in _LATENCY_UNIT_SCALE:
+        raise ValueError(
+            f"latency_unit must be one of {sorted(_LATENCY_UNIT_SCALE)}; got {unit!r}"
+        )
+    lat_scale = _LATENCY_UNIT_SCALE[unit]
+
+    # Single-line labels (short forms) so they fit the narrow figure height.
+    metric_figures = [
+        ("replay", "throughput", "Replay tput (Mop/s)", 1.0),
+        ("reader", "reader_throughput", "Reader tput (Mop/s)", 1.0),
+        ("p50", "reader_lat_p50", f"Reader p50 ({unit})", lat_scale),
+        ("p99", "reader_lat_p99", f"Reader p99 ({unit})", lat_scale),
+        ("p999", "reader_lat_p99_9", f"Reader p99.9 ({unit})", lat_scale),
+    ]
+
+    ncol, legend_width = resolve_legend_geom(plot_cfg, 3)
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
+
+    legend_saved = False
+    for sv in set_values:
+        set_suffix = _fmt_si_count(sv)
+        for suffix, y_metric, default_ylabel, y_scale in metric_figures:
+            # Figure-suffixed axis overrides, least to most specific:
+            # <key>_<metric> across all sets, <key>_<set>_<metric> for one.
+            fig_cfg = dict(plot_cfg)
+            for tag in (f"_{suffix}", f"_{set_suffix}_{suffix}"):
+                for cfg_key, value in plot_cfg.items():
+                    if cfg_key.endswith(tag):
+                        fig_cfg[cfg_key[: -len(tag)]] = value
+            fig, ax = _build_metric_fig(plot_cfg)
+
+            all_y: list[float] = []
+            for k in curve_values:
+                key = "single_log" if k == 1 else f"multilog_m{k}"
+                filt = {**base_filter, set_param: sv, curve_param: k}
+                xs, ys, _ = extract_series(
+                    result,
+                    x_param=x_param,
+                    y_metric=y_metric,
+                    y_field="median",
+                    filter_params=filt,
+                )
+                ys = [y * y_scale for y in ys]
+                if not xs:
+                    print(
+                        f"WARN: no data for {set_param}={sv} {curve_param}={k}",
+                        file=sys.stderr,
+                    )
+                    continue
+                all_y.extend(ys)
+                ax.plot(
+                    xs,
+                    ys,
+                    color=color_map[key],
+                    linestyle=linestyle_map[key],
+                    marker=marker_map[key],
+                    markersize=MARKER_SIZE,
+                    linewidth=LINEWIDTH,
+                    label=labels_map[key],
+                    zorder=zorder_map.get(key, 2),
+                )
+
+            # Frame the log x-axis to its ticks: xmax at the last tick, xmin at
+            # half the first tick (a log axis cannot start at 0). Explicit
+            # xmin/xmax in the config still win.
+            xticks = fig_cfg.get("xticks")
+            if xticks and fig_cfg.get("xscale") == "log":
+                fig_cfg.setdefault("xmin", min(xticks) / 2)
+                fig_cfg.setdefault("xmax", max(xticks))
+
+            y_log = fig_cfg.get("yscale") == "log"
+            default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+            apply_axis_cfg(
+                ax,
+                fig_cfg,
+                default_xlabel="Sketch size",
+                default_ylabel=default_ylabel,
+                default_ymax=default_ymax,
+            )
+            # Relabel the x ticks with binary-prefixed sizes (1k, 4m, ...).
+            if xticks:
+                ax.set_xticklabels([_fmt_pow2_size(t) for t in xticks])
+
+            if plot_cfg.get("legend_separate"):
+                if not legend_saved:
+                    save_legend(ax, out_path, width=legend_width, **legend_kwargs)
+                    legend_saved = True
+            else:
+                handles, labels = row_major_handles(ax, ncol)
+                ax.legend(
+                    handles,
+                    labels,
+                    loc="upper left",
+                    bbox_to_anchor=(0.0, 1.0),
+                    **legend_kwargs,
+                )
+
+            # Filename: <stem>_<set>_<metric>.<ext>
+            tags = [out_path.stem, set_suffix, suffix]
             save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
 
 
@@ -948,6 +1120,7 @@ TEMPLATES = {
     "replay_reader": render_replay_reader,
     "replay_reader_threshold": render_replay_reader_threshold,
     "replay_reader_bar": render_replay_reader_bar,
+    "replay_reader_sketch": render_replay_reader_sketch,
     "append": render_append,
     "set": render_set,
 }
