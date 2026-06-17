@@ -193,12 +193,18 @@ def remote_preflight(spec, exp_dir: Path) -> dict[str, bool]:
             numactl = run_ssh(host, "which numactl")
             if numactl.returncode != 0:
                 raise RuntimeError(f"ssh {host}: affinity configured but 'numactl' not found")
+        # Kill leftover processes and wipe stale results in SEPARATE ssh calls. `pkill -f
+        # <stem>` matches the ssh wrapper's own command line (the stem text appears in it),
+        # so that wrapper is among the killed processes; combining it with the wipe in one
+        # command would kill the wrapper before `rm -rf` ran, leaking stale cluster state
+        # (a recovered nodes.conf re-grants slots and breaks the next bootstrap). The wipe's
+        # own command line contains no stem, so it always runs.
         run_ssh(
             host,
             f"pkill -f {shlex.quote(Path(spec.benchmark_project).stem)} 2>/dev/null; "
-            f"pkill -f {shlex.quote(Path(spec.server_project).stem)} 2>/dev/null; "
-            f"rm -rf {shlex.quote(f'{rel}/result/{spec.name}')}",
+            f"pkill -f {shlex.quote(Path(spec.server_project).stem)} 2>/dev/null; true",
         )
+        run_ssh(host, f"rm -rf {shlex.quote(f'{rel}/result/{spec.name}')}")
         for project in sorted(host_projects[host]):
             logger.info(f"Prebuilding {Path(project).stem} on {host} ...")
             build = run_ssh(

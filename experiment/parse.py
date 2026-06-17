@@ -48,7 +48,7 @@ AOF_METRIC_NAME_MAP = {
 
 HEADER_RE = re.compile(r"min\s*\(us\)")
 AOF_METRIC_RE = re.compile(r"^\[(?P<name>[^\]]+)\]:\s*(?P<value>.+)$")
-AOF_LATENCY_LINE_RE = re.compile(r"^\[(?P<who>Reader|Writer) latency us\]\s+(?P<value>.+)$")
+AOF_LATENCY_LINE_RE = re.compile(r"^\[(?P<who>Reader|Writer|Freshness) latency us\]\s+(?P<value>.+)$")
 AOF_LATENCY_FIELD_RE = re.compile(r"(?P<key>p\d+(?:\.\d+)?|max|mean)=(?P<value>[-+]?\d[\d,]*(?:\.\d+)?)")
 AOF_NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
 OFFLINE_OPERATION_RE = re.compile(r"^Operation type:\s*(?P<value>.+)$")
@@ -322,11 +322,14 @@ def _format_summary(
         return "None" if median is None else f"{median:.3f} M"
 
     if benchmark == "replication":
+        fresh = (stats.get("freshness_lat_p99_9") or {}).get("median")
+        fresh_str = "None" if fresh is None else f"{fresh:.1f} us"
         return ", ".join(
             [
                 f"  Parsed {run_name}: {num_samples} samples",
                 f"median writer={fmt_mops('writer_throughput')} ops/s",
                 f"median reader={fmt_mops('reader_throughput')} ops/s",
+                f"freshness p99.9={fresh_str}",
             ]
         )
 
@@ -392,7 +395,7 @@ def _build_summary_rows(runs: dict[str, dict]) -> dict[str, list[dict[str, str]]
         elif benchmark == "replication":
             row["writer_tpt_mops_s"] = fmt("writer_throughput")
             row["reader_tpt_mops_s"] = fmt("reader_throughput")
-            for who in ("writer", "reader"):
+            for who in ("writer", "reader", "freshness"):
                 for pct in ("p50", "p99", "p99_9"):
                     key = f"{who}_lat_{pct}"
                     if (stats.get(key) or {}).get("median") is not None:
@@ -471,6 +474,9 @@ def _write_summary_file(
             "samples",
             "writer_tpt_mops_s",
             "reader_tpt_mops_s",
+            "freshness_lat_p50_us",
+            "freshness_lat_p99_us",
+            "freshness_lat_p99_9_us",
             "replication_lag_bytes",
             "time_ms",
         ],

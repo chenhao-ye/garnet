@@ -30,6 +30,10 @@ namespace Resp.benchmark
 
         long writerOperationsCompleted;
         long readerOperationsCompleted;
+        long freshnessProbesCompleted;
+        // Monotonic across the whole run so every probe key FRESH:<seq> is new (presence on
+        // the replica then means the write is visible) and lands on an arbitrary sublog.
+        long freshSeq;
         static readonly long HistogramLowerBound = 1;
         static readonly long HistogramUpperBound = TimeStamp.Seconds(100);
         const int HistogramSigFigs = 2;
@@ -128,6 +132,13 @@ namespace Resp.benchmark
                     readerClients[i] = c;
                 }
 
+                // Freshness prober connections: SETs to the primary, visibility polls on the
+                // replica (READONLY, like the readers).
+                using var proberPrimary = ConnectClient(options.PrimaryHost, options.PrimaryPort);
+                using var proberReplica = ConnectClient(options.ReplicaHost, options.ReplicaPort);
+                proberReplica.Execute("READONLY");
+                proberReplica.CompletePending();
+
                 Preload(writerClients);
                 WaitReplicaCaughtUp(primaryInfo, replicaInfo);
 
@@ -140,7 +151,8 @@ namespace Resp.benchmark
                 {
                     var writerHists = NewHistograms(options.ReplicationWriters);
                     var readerHists = NewHistograms(options.ReplicationReaders);
-                    var threads = new Thread[options.ReplicationWriters + options.ReplicationReaders];
+                    var proberHist = new LongHistogram(HistogramLowerBound, HistogramUpperBound, HistogramSigFigs);
+                    var threads = new Thread[options.ReplicationWriters + options.ReplicationReaders + 1];
                     for (var i = 0; i < options.ReplicationWriters; i++)
                     {
                         var x = i;
@@ -151,6 +163,7 @@ namespace Resp.benchmark
                         var x = i;
                         threads[options.ReplicationWriters + i] = new Thread(() => RunReader(x, readerClients[x], readerHists[x]));
                     }
+                    threads[^1] = new Thread(() => RunProber(proberPrimary, proberReplica, proberHist));
                     foreach (var t in threads)
                         t.Start();
 
@@ -167,6 +180,7 @@ namespace Resp.benchmark
                     Console.WriteLine($"[Total time]: {swatch.ElapsedMilliseconds:N2} ms for pass {pass}");
                     PrintStats("Writer", writerOperationsCompleted, seconds, writerHists);
                     PrintStats("Reader", readerOperationsCompleted, seconds, readerHists);
+                    PrintStats("Freshness", freshnessProbesCompleted, seconds, [proberHist]);
                     Console.WriteLine($"[Replication lag bytes]: {lag:N0}");
                     Console.WriteLine("------------------------------");
 
@@ -174,6 +188,7 @@ namespace Resp.benchmark
                     waiter.Reset();
                     writerOperationsCompleted = 0;
                     readerOperationsCompleted = 0;
+                    freshnessProbesCompleted = 0;
                 }
             }
             finally
@@ -294,6 +309,36 @@ namespace Resp.benchmark
                 opsCompleted += parallel;
             }
             _ = Interlocked.Add(ref readerOperationsCompleted, opsCompleted);
+        }
+
+        // Freshness prober: keeps a single probe key in flight. Writes FRESH:<seq> (seq
+        // monotonically increasing, so each key is new and hashes to an arbitrary sublog) to
+        // the primary, then polls the replica until the key is visible, recording the
+        // primary-write to replica-visible delay. Sleeps 1ms between probes so the probe
+        // traffic stays negligible next to the writer/reader load.
+        void RunProber(GarnetClientSession primary, GarnetClientSession replica, LongHistogram hist)
+        {
+            var ops = 0L;
+
+            waiter.Wait();
+
+            while (!done)
+            {
+                var key = "FRESH:" + (++freshSeq);
+                _ = primary.ExecuteAsync("SET", key, "x").GetAwaiter().GetResult();
+                var start = Stopwatch.GetTimestamp();
+                while (!done)
+                {
+                    if (replica.ExecuteAsync("GET", key).GetAwaiter().GetResult() != null)
+                    {
+                        hist.RecordValue(Stopwatch.GetTimestamp() - start);
+                        ops++;
+                        break;
+                    }
+                }
+                Thread.Sleep(1);
+            }
+            _ = Interlocked.Add(ref freshnessProbesCompleted, ops);
         }
 
         // Prints the per-pass stats block ([<label> operations/throughput/latency]) from the
