@@ -26,6 +26,7 @@ base:
     keylength: 8
     valuelength: 8
     dbsize: 10000000
+    aof_replay_drift_threshold: -1
 
 sweep:
   client_params:
