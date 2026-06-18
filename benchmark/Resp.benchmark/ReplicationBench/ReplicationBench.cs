@@ -23,9 +23,12 @@ namespace Resp.benchmark
         volatile bool done = false;
 
         // Keyset: deterministic from dbsize/keylength (same generator as AofBench), so the
-        // preloaded keys and the measured uniform-random keys always agree.
+        // preloaded keys and the measured uniform-random keys always agree. keyStrings holds
+        // every key materialized once; the hot loops index it instead of allocating a string
+        // per op (see RunWriter/RunReader).
         readonly byte[] keys;
         readonly int keyLen;
+        readonly string[] keyStrings;
         readonly string valuePayload;
 
         long writerOperationsCompleted;
@@ -49,6 +52,13 @@ namespace Resp.benchmark
                 throw new Exception("--replication-bench requires --replication-writers and/or --replication-readers > 0");
             keyLen = AofGen.DeriveKeyLen(options);
             keys = AofGen.BuildGlobalKeys(options.DbSize, keyLen);
+            // Materialize each key as a string once. The reader/writer hot loops index this
+            // array rather than calling Encoding.ASCII.GetString per op; with a reused command
+            // array this keeps the GarnetClientSession path allocation-free, so a high
+            // writers/readers x itp load does not collapse into Server-GC churn.
+            keyStrings = new string[options.DbSize];
+            for (var i = 0; i < keyStrings.Length; i++)
+                keyStrings[i] = Encoding.ASCII.GetString(keys, i * keyLen, keyLen);
             valuePayload = new string('v', options.ValueLength);
         }
 
@@ -236,14 +246,16 @@ namespace Resp.benchmark
 
         void PreloadWorker(GarnetClientSession client, int idx, int total)
         {
-            var keyCount = keys.Length / keyLen;
+            var keyCount = keyStrings.Length;
             var begin = (int)((long)keyCount * idx / total);
             var end = (int)((long)keyCount * (idx + 1) / total);
             var parallel = Math.Max(1, options.IntraThreadParallelism);
+            var cmd = new string[] { "SET", null, valuePayload };
             var inFlight = 0;
             for (var i = begin; i < end; i++)
             {
-                client.ExecuteBatch("SET", Encoding.ASCII.GetString(keys, i * keyLen, keyLen), valuePayload);
+                cmd[1] = keyStrings[i];
+                client.ExecuteBatch(cmd);
                 if (++inFlight == parallel)
                 {
                     client.CompletePending(true);
@@ -267,11 +279,15 @@ namespace Resp.benchmark
         // (per-op when itp = 1). Uniform-random keys over the preloaded keyspace.
         void RunWriter(int threadId, GarnetClientSession client, LongHistogram hist)
         {
-            var keyCount = keys.Length / keyLen;
+            var keyCount = keyStrings.Length;
             var rng = new Random(0xBEEF + threadId);
             var parallel = Math.Max(1, options.IntraThreadParallelism);
             var wait = !options.Burst;
             var opsCompleted = 0L;
+            // Reused command array: only the key slot changes per op. Passing a pre-allocated
+            // array to ExecuteBatch avoids the params[] allocation, and InternalExecute
+            // consumes it synchronously, so reuse is safe.
+            var cmd = new string[] { "SET", null, valuePayload };
 
             waiter.Wait();
 
@@ -279,7 +295,10 @@ namespace Resp.benchmark
             {
                 var start = Stopwatch.GetTimestamp();
                 for (var i = 0; i < parallel; i++)
-                    client.ExecuteBatch("SET", Encoding.ASCII.GetString(keys, rng.Next(keyCount) * keyLen, keyLen), valuePayload);
+                {
+                    cmd[1] = keyStrings[rng.Next(keyCount)];
+                    client.ExecuteBatch(cmd);
+                }
                 client.CompletePending(wait);
                 hist.RecordValue(Stopwatch.GetTimestamp() - start);
                 opsCompleted += parallel;
@@ -291,11 +310,13 @@ namespace Resp.benchmark
         // (per-op when itp = 1). Uniform-random keys over the preloaded keyspace.
         void RunReader(int threadId, GarnetClientSession client, LongHistogram hist)
         {
-            var keyCount = keys.Length / keyLen;
+            var keyCount = keyStrings.Length;
             var rng = new Random(0xCAFE + threadId);
             var parallel = Math.Max(1, options.IntraThreadParallelism);
             var wait = !options.Burst;
             var opsCompleted = 0L;
+            // Reused command array (see RunWriter): avoids the per-op params[] allocation.
+            var cmd = new string[] { "GET", null };
 
             waiter.Wait();
 
@@ -303,7 +324,10 @@ namespace Resp.benchmark
             {
                 var start = Stopwatch.GetTimestamp();
                 for (var i = 0; i < parallel; i++)
-                    client.ExecuteBatch("GET", Encoding.ASCII.GetString(keys, rng.Next(keyCount) * keyLen, keyLen));
+                {
+                    cmd[1] = keyStrings[rng.Next(keyCount)];
+                    client.ExecuteBatch(cmd);
+                }
                 client.CompletePending(wait);
                 hist.RecordValue(Stopwatch.GetTimestamp() - start);
                 opsCompleted += parallel;
