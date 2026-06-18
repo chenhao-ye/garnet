@@ -106,17 +106,29 @@ def launch_ssh_role(full_cmd: list[str], ssh_log_path: Path, role: str, host: st
         return None
     ssh_log_path.parent.mkdir(parents=True, exist_ok=True)
     log_f = open(ssh_log_path, "w")
+    # Own session so the local launcher can be torn down as a group by run.py.
     return subprocess.Popen(
-        full_cmd, stdout=log_f, stderr=subprocess.STDOUT, cwd=str(ssh_log_path.parent)
+        full_cmd,
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
+        cwd=str(ssh_log_path.parent),
+        start_new_session=True,
     )
 
 
 def kill_remote_role(host: str | None, pattern: str) -> None:
-    """Best-effort remote kill by command-line pattern: closing the ssh channel does not
-    reliably terminate the remote command."""
+    """Terminate a remote role's whole process tree. Closing the ssh channel does not kill
+    the remote command, and `dotnet run` spawns an app-host child that outlives a kill of
+    the wrapper alone; the pattern matches both (the project path and the app-host binary
+    both contain the server name plus the port), so pkill signals the entire tree. SIGTERM
+    first for a clean port release, then SIGKILL for anything still alive."""
     if dry_run or host is None:
         return
-    run_ssh(host, f"pkill -f -- {shlex.quote(pattern)} 2>/dev/null; true")
+    q = shlex.quote(pattern)
+    run_ssh(
+        host,
+        f"pkill -TERM -f -- {q} 2>/dev/null; sleep 1; pkill -KILL -f -- {q} 2>/dev/null; true",
+    )
 
 
 def rsync_back(host: str, remote_rel_dir: str, local_dir: Path) -> None:

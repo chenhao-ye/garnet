@@ -25,8 +25,10 @@ Usage:
 
 import argparse
 import logging
+import os
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import time
@@ -248,11 +250,14 @@ def launch_server(
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_f = open(log_path, "w")
+    # New session => the process is a group leader; `dotnet run` and the app host it spawns
+    # share one group, so teardown can signal the whole tree at once (see shutdown_server).
     return subprocess.Popen(
         cmd,
         stdout=log_f,
         stderr=subprocess.STDOUT,
         cwd=str(log_path.parent),
+        start_new_session=True,
     )
 
 
@@ -367,15 +372,25 @@ def wait_for_server(host: str, port: int, proc: subprocess.Popen | None = None) 
     )
 
 
+def _signal_process_group(proc: subprocess.Popen, sig: int) -> None:
+    """Send `sig` to the process's whole group. Servers are launched with
+    start_new_session=True, so this reaches `dotnet run` and the app host it spawns
+    together -- signalling only the wrapper would orphan the running server."""
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError):
+        pass  # already gone
+
+
 def shutdown_server(proc: subprocess.Popen | None) -> None:
     if dry_run or proc is None:
         return
     logger.info("Shutting down server...")
-    proc.terminate()
+    _signal_process_group(proc, signal.SIGTERM)
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _signal_process_group(proc, signal.SIGKILL)
         proc.wait()
     logger.info("Server stopped")
 
@@ -401,11 +416,12 @@ def run_command(
             stdout=out_f,
             stderr=subprocess.STDOUT,
             cwd=str(run_dir),
+            start_new_session=True,
         )
         while proc.poll() is None:
             for server_proc in server_procs or []:
                 if server_proc.poll() is not None:
-                    proc.kill()
+                    _signal_process_group(proc, signal.SIGKILL)
                     proc.wait()
                     raise RuntimeError(
                         f"Server exited unexpectedly (code {server_proc.returncode}) "
