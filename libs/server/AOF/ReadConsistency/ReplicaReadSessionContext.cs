@@ -10,7 +10,7 @@ using Tsavorite.core;
 
 namespace Garnet.server
 {
-    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    [StructLayout(LayoutKind.Explicit, Size = 48)]
     public struct ReplicaReadSessionContext
     {
         /// <summary>
@@ -44,6 +44,14 @@ namespace Garnet.server
         /// </summary>
         [FieldOffset(32)]
         public long[] cachedSublogMax;
+
+        /// <summary>
+        /// Measurement-only reader-breakdown counters for this session, assigned when the session
+        /// context is (re)initialized. Owned by this session's reader thread (see
+        /// <see cref="ReaderWaitProbe"/>).
+        /// </summary>
+        [FieldOffset(40)]
+        public ReaderWaitProbe waitProbe;
     }
 
     public class ReadSessionState : IDisposable

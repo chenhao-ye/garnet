@@ -244,6 +244,10 @@ namespace Resp.benchmark
                     if (readers != null)
                         foreach (var r in readers)
                             r.Start();
+                    // Reader-breakdown: warmup ticks the drift-gate counters; zero them (and any
+                    // reader probes) now that warmup is done and every worker is paused at `waiter`,
+                    // so the dump below reflects only the measured pass.
+                    instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager?.ResetWaitProbes();
                 }
 
                 Stopwatch swatch = new();
@@ -295,6 +299,9 @@ namespace Resp.benchmark
 
                 if (useReaders)
                     PrintReaderStats(seconds, readerHistograms);
+
+                if (useReaders)
+                    PrintReaderBreakdown();
             }
             finally
             {
@@ -340,6 +347,23 @@ namespace Resp.benchmark
                     $"p99.9={Math.Round(merged.GetValueAtPercentile(99.9) / s, 2)} " +
                     $"max={Math.Round(merged.GetMaxValue() / s, 2)}");
             }
+        }
+
+        // Reader-breakdown (measurement-only): one plain line of the per-pass wait counters, so
+        // the harness's [name]: value parser ignores it. reader_waits/reader_checks is the
+        // fraction of consistency checks that had to wait; drift_fired/drift_checks is the
+        // fraction of replay-driven drift checks that fired a barrier round (a real replay wait).
+        void PrintReaderBreakdown()
+        {
+            var mgr = instance.server.StoreWrapper.appendOnlyFile.readConsistencyManager;
+            if (mgr == null) return;
+            var (checks, waits) = mgr.GetReaderWaitTotals();
+            var (driftChecks, driftFired) = mgr.GetDriftGateTotals();
+            var waitRatio = checks > 0 ? (double)waits / checks : 0.0;
+            var firedRatio = driftChecks > 0 ? (double)driftFired / driftChecks : 0.0;
+            Console.WriteLine(
+                $"READER_BREAKDOWN reader_checks={checks} reader_waits={waits} wait_ratio={waitRatio:F6} " +
+                $"drift_checks={driftChecks} drift_fired={driftFired} fired_ratio={firedRatio:F6}");
         }
 
         /// <summary>

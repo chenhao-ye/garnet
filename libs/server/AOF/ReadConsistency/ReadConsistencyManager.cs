@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -71,6 +72,62 @@ namespace Garnet.server
         /// per-record CheckAndWait calls. One participant per virtual sublog (one replay thread each).
         /// </summary>
         public readonly ReplayAlignBarrier replayBarrier = new(serverOptions.AofVirtualSublogCount, serverOptions.AofBarrierSpinUs);
+
+        // Reader-breakdown (measurement-only): one probe per reader session, registered on the
+        // session's first read. Each probe is written only by its session's reader thread; the
+        // list is summed/zeroed between measured passes when reader threads are quiesced.
+        readonly List<ReaderWaitProbe> readerProbes = new();
+        readonly object readerProbesLock = new();
+
+        ReaderWaitProbe RegisterReaderProbe()
+        {
+            var probe = new ReaderWaitProbe();
+            lock (readerProbesLock)
+                readerProbes.Add(probe);
+            return probe;
+        }
+
+        /// <summary>
+        /// Reader-breakdown: zero all reader probes and per-sublog drift-gate counters. Call
+        /// between measured passes (after warmup) while reader and replay threads are paused, so
+        /// each pass's counts are independent.
+        /// </summary>
+        public void ResetWaitProbes()
+        {
+            lock (readerProbesLock)
+                foreach (var probe in readerProbes)
+                {
+                    probe.checks = 0;
+                    probe.waits = 0;
+                }
+            for (var v = 0; v < vsrs.Length; v++)
+                vsrs[v].ResetGateCounters();
+        }
+
+        /// <summary>Reader-breakdown: summed reader consistency checks and waits across all sessions.</summary>
+        public (long checks, long waits) GetReaderWaitTotals()
+        {
+            long checks = 0, waits = 0;
+            lock (readerProbesLock)
+                foreach (var probe in readerProbes)
+                {
+                    checks += probe.checks;
+                    waits += probe.waits;
+                }
+            return (checks, waits);
+        }
+
+        /// <summary>Reader-breakdown: summed replay-driven drift-gate checks and checks that fired a round.</summary>
+        public (long checks, long fired) GetDriftGateTotals()
+        {
+            long checks = 0, fired = 0;
+            for (var v = 0; v < vsrs.Length; v++)
+            {
+                checks += vsrs[v].GateChecks;
+                fired += vsrs[v].GateFired;
+            }
+            return (checks, fired);
+        }
 
         /// <summary>
         /// Get sequence number for provided key: the key's sketch entry (its KRT), or with
@@ -166,7 +223,10 @@ namespace Garnet.server
                     next += ((sequenceNumber - next) / replayDriftCheckInterval + 1) * replayDriftCheckInterval;
                 }
                 vsrs[virtualSublogIdx].NextDriftCheckSequenceNumber = next;
-                BoundReplayDrift();
+                // Reader-breakdown: count this replay-driven drift check and whether it fired a round.
+                vsrs[virtualSublogIdx].IncrementGateCheck();
+                if (BoundReplayDrift())
+                    vsrs[virtualSublogIdx].IncrementGateFired();
             }
         }
 
@@ -185,6 +245,7 @@ namespace Garnet.server
             replicaReadSessionContext.sessionVersion = CurrentVersion;
             replicaReadSessionContext.lastVirtualSublogIdx = -1;
             replicaReadSessionContext.maximumSessionSequenceNumber = 0;
+            replicaReadSessionContext.waitProbe ??= RegisterReaderProbe();
             if (replicaReadSessionContext.cachedSublogMax == null)
                 replicaReadSessionContext.cachedSublogMax = new long[serverOptions.AofVirtualSublogCount];
             else
@@ -218,6 +279,9 @@ namespace Garnet.server
         {
             var virtualSublogIdx = (short)appendOnlyFile.Log.GetVirtualSublogIdx(hash);
 
+            // Reader-breakdown: every key freshness check (single writer: this session's reader).
+            replicaReadSessionContext.waitProbe.checks++;
+
             // Prefetch the key's sketch slot for later post-read update (AfterConsistentReadKey)
             vsrs[virtualSublogIdx].PrefetchKeySequenceNumber(hash);
 
@@ -245,6 +309,8 @@ namespace Garnet.server
             replicaReadSessionContext.cachedSublogMax[virtualSublogIdx] = publishedMax;
             if (maxSessionSeqNum >= publishedMax)
             {
+                // Reader-breakdown: this check could not proceed immediately (it will spin or park).
+                replicaReadSessionContext.waitProbe.waits++;
                 // About to wait. If the replay-side drift is large enough to be worth bounding, install a barrier round
                 BoundReplayDrift();
                 if (SpinForSublogMax(virtualSublogIdx, maxSessionSeqNum, ref replicaReadSessionContext, ct))
@@ -294,12 +360,12 @@ namespace Garnet.server
         /// (<see cref="RefreshAndMaybeWait"/>) and a replay thread crossing its progress gate
         /// (<see cref="UpdateVirtualSublogKeySequenceNumber(int, long, long)"/>).
         /// </summary>
-        void BoundReplayDrift()
+        bool BoundReplayDrift()
         {
-            if (!driftBoundingEnabled) return;
+            if (!driftBoundingEnabled) return false;
             // A round already in progress is bounding the drift; a disabled barrier also reports an
             // in-progress round (one that never completes), so the scan is skipped in both cases.
-            if (replayBarrier.IsActive) return;
+            if (replayBarrier.IsActive) return false;
 
             var virtualSublogCount = serverOptions.AofVirtualSublogCount;
             long minFrontier = long.MaxValue, maxFrontier = long.MinValue;
@@ -309,14 +375,17 @@ namespace Garnet.server
                 if (frontier < minFrontier) minFrontier = frontier;
                 if (frontier > maxFrontier) maxFrontier = frontier;
             }
-            if (maxFrontier - minFrontier <= replayDriftThreshold) return;
+            if (maxFrontier - minFrontier <= replayDriftThreshold) return false;
             // A sublog that has published no progress at all has no record stream yet (e.g. its
             // replay session is still being established during attach). Barrier arrivals happen only
             // on the per-record replay path, so a round could not complete until that sublog both
             // starts and reaches the target; firing now would only park every started replay thread.
             // Skip until all sublogs have progress.
-            if (minFrontier == 0) return;
+            if (minFrontier == 0) return false;
             replayBarrier.TryActivate(maxFrontier);
+            // The drift exceeded the threshold and a round was installed (or one raced in just now):
+            // either way this check drove the drift over the bound and made replay threads wait.
+            return true;
         }
 
         /// <summary>

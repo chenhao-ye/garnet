@@ -39,6 +39,11 @@ namespace Garnet.server
         {
             // private state of the replay thread
             [FieldOffset(64)] public long nextDriftCheckSequenceNumber;
+            // Measurement-only reader-breakdown counters (same owner-private cache line, only the
+            // owning replay thread writes): replay-driven drift-gate checks run, and checks that
+            // fired a barrier round (which makes replay threads wait).
+            [FieldOffset(72)] public long gateChecks;
+            [FieldOffset(80)] public long gateFired;
 
             // shared state between the replay and reader threads
             [FieldOffset(128)] public long sketchMax;
@@ -64,6 +69,27 @@ namespace Garnet.server
             get => mutableStates.nextDriftCheckSequenceNumber;
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             set => mutableStates.nextDriftCheckSequenceNumber = value;
+        }
+
+        /// <summary>Reader-breakdown: replay-driven drift-gate checks this sublog has run.</summary>
+        public readonly long GateChecks => mutableStates.gateChecks;
+
+        /// <summary>Reader-breakdown: gate checks that fired a barrier round (a real replay wait).</summary>
+        public readonly long GateFired => mutableStates.gateFired;
+
+        /// <summary>Reader-breakdown: record one drift-gate check (owning replay thread only).</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public readonly void IncrementGateCheck() => mutableStates.gateChecks++;
+
+        /// <summary>Reader-breakdown: record one gate check that fired a round (owning replay thread only).</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public readonly void IncrementGateFired() => mutableStates.gateFired++;
+
+        /// <summary>Reader-breakdown: zero the drift-gate counters (between measured passes).</summary>
+        public readonly void ResetGateCounters()
+        {
+            mutableStates.gateChecks = 0;
+            mutableStates.gateFired = 0;
         }
 
         public VirtualSublogReplayState(int sketchShift, GarnetServerOptions serverOptions, int virtualSublogIdx)
