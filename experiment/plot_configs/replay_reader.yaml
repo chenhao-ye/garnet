@@ -1,16 +1,17 @@
 name: replay_reader
 description: "In-proc replay/reader throughput and reader latency per sublog config (bar); one set per replay distribution."
 template: replay_reader_bar
-dependencies: [aof_reader]
-# aof_reader is in-proc (no_server): sublog count is a client param, reader is
-# fixed at 1, and latencies are sub-millisecond (reported in us, the default).
+dependencies: [aof_reader_uniform, aof_reader_zipfrev, aof_reader_zipf]
+# Each replay distribution is its own in-proc experiment (no_server): sublog
+# count is a client param, reader is fixed at 1, latencies are sub-millisecond
+# (reported in us, the default).
 sublog_param: client.aof_physical_sublog_count
 # One set of five bar figures per replay distribution; the reader keys are Zipf,
 # so Uniform = misaligned, ZipfRev = equal-skew disjoint hot set, Zipf = aligned.
 series:
-  - { suffix: uniform, filter: { client.aof_replay_dist: Uniform } }
-  - { suffix: zipfrev, filter: { client.aof_replay_dist: ZipfRev } }
-  - { suffix: zipf, filter: { client.aof_replay_dist: Zipf } }
+  - { suffix: uniform, dependency: aof_reader_uniform }
+  - { suffix: zipfrev, dependency: aof_reader_zipfrev }
+  - { suffix: zipf, dependency: aof_reader_zipf }
 width_scale: 0.33    # equal width_scale + height_scale => square figure
 height_scale: 0.33
 legend_separate: true  # bars named by a shared legend, x-axis stays clean
@@ -24,4 +25,4 @@ yticks_p50: [0, 0.2, 0.4, 0.6]
 yticks_p99: [0, 0.4, 0.8, 1.2]
 yticks_p999: [0, 0.5, 1, 1.5, 2]
 yticks_zipf_p99: [0, 2, 4, 6, 8]
-yticks_zipf_p999: [0, 5, 10, 15, 20]
+yticks_zipf_p999: [0, 4, 8, 12]

@@ -694,18 +694,17 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
     #   latency_unit  "us" (default) or "ms"; scales the three latency figures.
     #   width_scale, height_scale  size each axis directly when set (equal =>
     #                 square). With only `scale`, the figure keeps 4:3.
-    #   series        list of {suffix, filter} -- one set of five figures each;
-    #                 defaults to a single unsuffixed set.
+    #   series        list of {suffix, filter, dependency} -- one set of five
+    #                 figures each; defaults to a single unsuffixed set.
+    #                 `dependency` names which experiment to read (defaults to
+    #                 the first dependency), so distributions split into
+    #                 separate experiments each get their own series.
     #   Figure-suffixed axis overrides: <key>_<metric> (all series) and
     #   <key>_<series>_<metric> (one figure), e.g. yticks_p99, yticks_zipf_p99.
-    if len(deps) != 1:
-        raise ValueError(
-            f"replay_reader_bar template expects 1 dependency [reader sweep]; got {deps}"
-        )
-    result = load_result(deps[0])
+    if not deps:
+        raise ValueError("replay_reader_bar template expects >= 1 dependency")
     sublog_param = plot_cfg.get("sublog_param", "client.aof_physical_sublog_count")
     base_filter = dict(plot_cfg.get("filter") or {})
-    k_values = sorted(result["sweep_params"][sublog_param])
 
     unit = str(plot_cfg.get("latency_unit", "us")).lower()
     if unit not in _LATENCY_UNIT_SCALE:
@@ -732,6 +731,9 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
     for s in series:
         s_suffix = s.get("suffix", "")
         s_filter = {**base_filter, **(s.get("filter") or {})}
+        # Each series may read its own experiment (default: first dependency).
+        result = load_result(s.get("dependency", deps[0]))
+        k_values = sorted(result["sweep_params"][sublog_param])
         for suffix, y_metric, default_ylabel, y_scale in metric_figures:
             # Figure-suffixed axis overrides, least to most specific.
             fig_cfg = dict(plot_cfg)
