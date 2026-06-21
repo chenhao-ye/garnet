@@ -34,6 +34,7 @@ namespace Resp.benchmark
                 AofReplayDriftCheckFreq = options.AofReplayDriftCheckFreq,
                 AofBarrierSpinUs = options.AofBarrierSpinUs,
                 AofReaderSpinUs = options.AofReaderSpinUs,
+                AofSketchSize = options.AofSketchSize,
                 ReplicationOffsetMaxLag = 0,
                 CheckpointDir = OperatingSystem.IsLinux() ? "/tmp" : null,
             };

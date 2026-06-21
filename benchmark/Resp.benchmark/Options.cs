@@ -185,6 +185,9 @@ namespace Resp.benchmark
         [Option("aof-reader-spin-us", Required = false, Default = 0, HelpText = "How long a replica reader session spins polling the sublog frontier before parking on the consistent-read wait: <0 = spin forever (never park), 0 = never spin (park immediately), >0 = spin up to N microseconds then park.")]
         public int AofReaderSpinUs { get; set; }
 
+        [Option("aof-sketch-size", Required = false, Default = 262144, HelpText = "Total number of slots (must be a power of two) across all virtual sublogs' per-key sequence-number sketches (the read-consistency KRT table) on a replica, divided evenly among them. Collision pressure is keyspace / total-slots, independent of the sublog count. A larger total reduces hash collisions at a higher memory and CPU-cache cost.")]
+        public int AofSketchSize { get; set; }
+
         [Option("aof-memory-size", Required = false, Default = "64m", HelpText = "Total AOF memory buffer used in bytes (rounds down to power of 2) - spills to disk after this limit.")]
         public string AofMemorySize { get; set; }
 

@@ -13,12 +13,10 @@ namespace Garnet.server
 {
     internal struct VirtualSublogReplayState
     {
-        const int SketchSlotSize = 1 << 15;
-        const int SketchSlotMask = SketchSlotSize - 1;
-
         readonly int sketchShift;  // physicalSublogShift + replayTaskShift
+        readonly int sketchSlotMask;  // sketch.Length - 1 (sketch length is a power of two)
 
-        readonly long[] sketch = new long[SketchSlotSize];
+        readonly long[] sketch;
 
         // All of this struct's mutable hot state. It lives in its own explicitly laid-out heap
         // object (see MutableStates) so that no write ever invalidates the struct's immutable
@@ -94,10 +92,18 @@ namespace Garnet.server
 
         public VirtualSublogReplayState(int sketchShift, GarnetServerOptions serverOptions, int virtualSublogIdx)
         {
-            var size = SketchSlotSize;
-            if ((size & (size - 1)) != 0)
-                throw new InvalidOperationException($"Size ({SketchSlotSize}) must be a power of 2");
-            Array.Clear(sketch);
+            // AofSketchSize is the TOTAL slot count across all virtual sublogs; each sublog gets
+            // an even 1/virtualSublogCount share. With total and the virtual sublog count both
+            // powers of two (the latter is m << replayTaskShift), the per-sublog size is a power
+            // of two as the slot mask requires.
+            var total = serverOptions.AofSketchSize;
+            if (total <= 0 || (total & (total - 1)) != 0)
+                throw new InvalidOperationException($"AofSketchSize ({total}) must be a positive power of 2");
+            if (total < serverOptions.AofVirtualSublogCount)
+                throw new InvalidOperationException($"AofSketchSize ({total}) must be >= the virtual sublog count ({serverOptions.AofVirtualSublogCount})");
+            var size = total / serverOptions.AofVirtualSublogCount;
+            sketch = new long[size];  // CLR zero-initializes
+            sketchSlotMask = size - 1;
             mutableStates.sketchMax = 0;
             mutableStates.minWaiterTarget = long.MaxValue;
             // drift-check responsibility is rotated among sublogs; each sublog is init with a different drift check time
@@ -114,7 +120,7 @@ namespace Garnet.server
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        readonly int GetSketchSlot(long hash) => (int)(((ulong)hash >> sketchShift) & SketchSlotMask);
+        readonly int GetSketchSlot(long hash) => (int)(((ulong)hash >> sketchShift) & (ulong)sketchSlotMask);
 
         /// <summary>
         /// Gets the sequence number associated with the specified hash key.
