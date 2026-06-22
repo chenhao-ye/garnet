@@ -290,7 +290,7 @@ namespace Garnet.cluster
                     await iter.BulkConsumeAllAsync(
                         this,
                         aofSyncDriver.clusterProvider.serverOptions.ReplicaSyncDelayMs,
-                        maxChunkSize: 1 << 20,
+                        maxChunkSize: aofSyncDriver.clusterProvider.serverOptions.AofReplicationChunkSize,
                         cts.Token).ConfigureAwait(false);
                 }
                 catch (Exception ex)

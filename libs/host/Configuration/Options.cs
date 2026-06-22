@@ -229,6 +229,10 @@ namespace Garnet
         [Option("aof-reader-spin-us", Required = false, HelpText = "How long a replica reader session spins polling the sublog frontier before parking on the consistent-read wait: -1 = spin forever (never park), 0 = never spin (park immediately), >0 = spin up to that many microseconds then park.")]
         public int AofReaderSpinUs { get; set; }
 
+        [IntRangeValidation(1, int.MaxValue, isRequired: false)]
+        [Option("aof-replication-chunk-size", Required = false, HelpText = "Max bytes coalesced into one AOF replication chunk (ship and replay). Default 1048576 (1 MB).")]
+        public int AofReplicationChunkSize { get; set; }
+
         [IntRangeValidation(64, 1 << 20, isRequired: false)]
         [Option("aof-replay-ring-size", Required = false, HelpText = "Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.")]
         public int AofReplayRingSize { get; set; }
@@ -888,6 +892,7 @@ namespace Garnet
                 AofReplayDriftCheckFreq = AofReplayDriftCheckFreq,
                 AofBarrierSpinUs = AofBarrierSpinUs,
                 AofReaderSpinUs = AofReaderSpinUs,
+                AofReplicationChunkSize = AofReplicationChunkSize,
                 AofReplayRingSize = AofReplayRingSize,
                 AofSketchSize = AofSketchSize,
                 AofReplayRingBatch = AofReplayRingBatch,

@@ -426,7 +426,7 @@ namespace Garnet.cluster
                     await replayIterator.BulkConsumeAllAsync(
                         this,
                         serverOptions.ReplicaSyncDelayMs,
-                        maxChunkSize: 1 << 20,
+                        maxChunkSize: serverOptions.AofReplicationChunkSize,
                         cts.Token).ConfigureAwait(false);
                 }
                 catch (Exception ex)

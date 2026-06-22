@@ -113,7 +113,12 @@ namespace Garnet.server
         /// enqueues no waiter, so the replay thread's per-record waiter-signal pass stays on its
         /// lock-free empty fast path instead of paying the wake train under frequent reader waits.
         /// </summary>
-        public int AofReaderSpinUs = 0;
+        public int AofReaderSpinUs = -1;
+
+        /// <summary>
+        /// Max bytes coalesced into one AOF replication chunk (ship and replay).
+        /// </summary>
+        public int AofReplicationChunkSize = 1 << 20;
 
         /// <summary>
         /// Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.
