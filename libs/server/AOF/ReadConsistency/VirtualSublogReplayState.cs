@@ -139,26 +139,18 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Updates the sequence number associated with the specified key hash. Owner-write (see
-        /// the ownership discipline above); monotonic per slot by the compare below, which also
-        /// absorbs benign stamp inversions between independent operations.
+        /// Updates the key's sketch entry (its KRT) for the specified key hash. Owner-write (see the
+        /// ownership discipline above); monotonic per slot. Deliberately does NOT touch the published
+        /// max (LRT): the frontier is published separately by UpdateMaxSequenceNumber, so the LRT can
+        /// be published before this KRT (the deferred-KRT order in ReadConsistencyManager shields
+        /// reader session clocks from frontier jumps while the lagging sublogs catch up).
         /// </summary>
         /// <param name="hash">The hash value identifying the key whose sequence number is to be updated.</param>
         /// <param name="sequenceNumber">The new sequence number to associate with the specified key hash. Must be greater than the
         /// current value to have an effect.</param>
         public void UpdateKeySequenceNumber(long hash, long sequenceNumber)
         {
-            ref var slot = ref sketch[GetSketchSlot(hash)];
-            if (sequenceNumber > slot)
-                Volatile.Write(ref slot, sequenceNumber);
-            // Publish the sublog max on every record, in lockstep with the slot, so the published
-            // max is always >= any slot value. That invariant is what lets readers gate and
-            // waiters be released on the published max alone (see SignalIfMaxAdvanced), with no
-            // per-slot lag. The published max lives on its own cache line, so this per-record
-            // write does not invalidate the reader's immutable sketch / sketchShift fields.
-            if (sequenceNumber > mutableStates.sketchMax)
-                Volatile.Write(ref mutableStates.sketchMax, sequenceNumber);
-            SignalIfMaxAdvanced();
+            _ = Tsavorite.core.Utility.MonotonicUpdate(ref sketch[GetSketchSlot(hash)], sequenceNumber, out _);
         }
 
         /// <summary>
