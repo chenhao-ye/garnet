@@ -156,7 +156,7 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Updates the sequence number associated with the specified key hash.
+        /// Updates the key's sketch entry for the specified key hash.
         /// </summary>
         /// <remarks>Updates are thread-safe and guaranteed to be monotonically increasing.</remarks>
         /// <param name="hash">The hash value identifying the key whose sequence number is to be updated.</param>
@@ -165,8 +165,6 @@ namespace Garnet.server
         public void UpdateKeySequenceNumber(long hash, long sequenceNumber)
         {
             _ = Utility.MonotonicUpdate(ref sketch[GetSketchSlot(hash)], sequenceNumber, out _);
-            _ = Utility.MonotonicUpdate(ref mutableStates.sketchMax, sequenceNumber, out _);
-            SignalIfMaxAdvanced();
         }
 
         /// <summary>
