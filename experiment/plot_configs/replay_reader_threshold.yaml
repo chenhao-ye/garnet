@@ -5,16 +5,16 @@ dependencies: [aof_reader_threshold]
 # Defaults already match aof_reader_threshold (in-proc): sublog_param =
 # client.aof_physical_sublog_count, x_param = client.aof_replay_drift_threshold,
 # latency_unit = us. Keep only 10k..60k (drops -1 and the higher thresholds).
-x_include: [10000, 20000, 30000, 40000, 50000, 60000]
+x_include: [0, 10000, 20000, 30000, 40000, 50000, 60000]
 # Normalize the axis to a 2k reference so ticks read as multiples of that base
 # threshold (10k -> 5, 60k -> 30).
 threshold_norm: 2000
 width_scale: 0.33    # equal width_scale + height_scale => square figure
 height_scale: 0.33
 legend_separate: true
-xlabel: "Max imbalance"
-xticks: [5, 10, 20, 30]
-xmin: 4
+xlabel: "Max divergence"
+xticks: [0, 10, 20, 30]
+xmin: 0
 xmax: 30
 
 # Per-figure yticks. `yticks_<metric>` applies to that metric across all m;
