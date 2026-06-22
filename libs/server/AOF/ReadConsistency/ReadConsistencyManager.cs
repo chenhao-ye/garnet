@@ -73,8 +73,8 @@ namespace Garnet.server
         public readonly ReplayAlignBarrier replayBarrier = new(serverOptions.AofVirtualSublogCount, serverOptions.AofBarrierSpinUs);
 
         /// <summary>
-        /// Get sequence number for provided key: the key's sketch entry (its KRT), or with
-        /// <paramref name="frontier"/> the published max of the key's sublog (its LRT).
+        /// Get sequence number for provided key: the key's sketch entry, or with
+        /// <paramref name="frontier"/> the published max sequence number of the key's sublog.
         /// </summary>
         /// <param name="key"></param>
         /// <param name="frontier"></param>
@@ -103,7 +103,7 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Get the published max sequence number (the LRT) of the sublog the hash maps to.
+        /// Get the published max sequence number of the sublog the hash maps to.
         /// </summary>
         /// <param name="keyHash"></param>
         /// <returns></returns>
@@ -147,14 +147,11 @@ namespace Garnet.server
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void UpdateVirtualSublogKeySequenceNumber(int virtualSublogIdx, long keyHash, long sequenceNumber)
         {
-            // Pause this replay thread when it has run ahead of an active round's target, bounding
-            // drift from the lagging sublogs. Fast path is a single Volatile.Read + compare when no
-            // round is active.
-            replayBarrier.CheckAndWait(vsrs[virtualSublogIdx].Max);
-            vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
-            // Replay-driven drift bounding: scan when this sublog's replay enters a timeline
-            // window it owns (see replayDriftCheckInterval). A record-idle sublog skips its
-            // windows; readers about to wait remain the fallback round source.
+            vsrs[virtualSublogIdx].UpdateMaxSequenceNumber(sequenceNumber);
+
+            // Replay-driven drift bounding: scan when this sublog's replay enters a timeline window it
+            // owns (see replayDriftCheckInterval) and arm a barrier round at the leading frontier when
+            // the drift exceeds the threshold.
             if (sequenceNumber >= vsrs[virtualSublogIdx].NextDriftCheckSequenceNumber)
             {
                 // Whole-interval advances keep the boundary on this sublog's owned windows.
@@ -168,6 +165,19 @@ namespace Garnet.server
                 vsrs[virtualSublogIdx].NextDriftCheckSequenceNumber = next;
                 BoundReplayDrift();
             }
+
+            // Park this replay thread while it leads an active round, bounding drift from the lagging
+            // sublogs. This runs BEFORE the sketch entry is published below: while parked, the key's
+            // sketch entry still holds its previous value, so a reader that touches this key advances
+            // its session sequence number only to that previous value, never to the just-published
+            // frontier. The advance is thereby deferred until the lagging sublogs converge toward the
+            // frontier, at which point it no longer forces cross-sublog reads to wait. Fast path is a
+            // single Volatile.Read + compare when no round is active.
+            replayBarrier.CheckAndWait(vsrs[virtualSublogIdx].Max);
+
+            // Publish the key's sketch entry. The caller applies the store mutation after this
+            // returns, so the new value never becomes visible before its sketch entry.
+            vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
         }
 
         /// <summary>
