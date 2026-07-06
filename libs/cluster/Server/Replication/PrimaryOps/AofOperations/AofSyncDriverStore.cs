@@ -90,6 +90,15 @@ namespace Garnet.cluster
                         TruncatedUntil = prevAddress;
                 }
 
+                // On a replica this callback fires with no attached sync drivers, so nothing above
+                // bounds the truncation; clamp at the local replay offset so records the replay
+                // iterator has not yet applied are never truncated away underneath it (the iterator
+                // would silently fast-forward, or fault on a recycled page). On a primary the
+                // role-aware getter returns the sublog tail, which never binds.
+                var replayOffset = clusterProvider.replicationManager.GetReplicationOffset(physicalSublogIdx);
+                if (replayOffset < TruncatedUntil)
+                    TruncatedUntil = replayOffset;
+
                 // Inform that we have logically truncatedUntil
                 this.TruncatedUntil.MonotonicUpdate(TruncatedUntil, physicalSublogIdx);
             }
@@ -140,6 +149,17 @@ namespace Garnet.cluster
                             TruncatedUntil[physicalSublogIdx] = previousAddress[physicalSublogIdx];
                     }
                 }
+
+                // Clamp at the local replay offset for the same reason as the per-sublog overload:
+                // on a replica (no attached drivers) records not yet applied by the replay iterator
+                // must survive truncation; on a primary the getter returns the tail and never binds.
+                for (var physicalSublogIdx = 0; physicalSublogIdx < TruncatedUntil.Length; physicalSublogIdx++)
+                {
+                    var replayOffset = clusterProvider.replicationManager.GetReplicationOffset(physicalSublogIdx);
+                    if (replayOffset < TruncatedUntil[physicalSublogIdx])
+                        TruncatedUntil[physicalSublogIdx] = replayOffset;
+                }
+
                 // Inform that we have logically truncatedUntil
                 this.TruncatedUntil.MonotonicUpdate(ref TruncatedUntil);
             }
