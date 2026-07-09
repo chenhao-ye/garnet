@@ -1,0 +1,29 @@
+# Experiment: aof_replay_single
+# Single-thread replay rate measurement (SingleLog, m=1) with the same record shape and
+# keyspace as replication_goalbase (8B/8B, 1M keys), to cross-check the end-to-end
+# replication numbers: the replica cannot apply faster than this rate, so a sustained
+# primary write rate above it with small reported lag implies silent skipping.
+name: aof_replay_single
+description: "single-thread replay rate, 8B/8B, 1M keys, m=1 (goalbase record shape)"
+benchmark: aof
+no_server: true
+repeat: 5
+
+affinity:
+  client:
+    numa_node: 0
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 1000000
+    aof_replay_drift_threshold: -1
+    aof_physical_sublog_count: 1

@@ -1,0 +1,32 @@
+# Experiment: aof_enqueue_quick
+# Append-path perf regression check: EnqueueSharded at 64 threads for m {1, 64}
+# (the contended single-log extreme and the peak-throughput extreme). Run once on
+# the working tree (backpressure code present, disabled by default) and once on
+# HEAD to compare; the gated path is GarnetLog.Enqueue.
+name: aof_enqueue_quick
+description: "append perf check: 64 threads, m {1,64}, EnqueueSharded, 1M keys"
+benchmark: aof
+no_server: true
+repeat: 5
+
+affinity:
+  client:
+    numa_node: 0
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: EnqueueSharded
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 1000000
+    threads: 64
+
+sweep:
+  client_params:
+    aof_physical_sublog_count: [1, 64]

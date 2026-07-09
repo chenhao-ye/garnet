@@ -1,0 +1,35 @@
+# Experiment: replication_honest_m_sweep
+# Honest end-to-end m-scaling: zero-drop knobs at every point. Per-m ship budget =
+# 3/4 x 256m x m; replica receive-ahead bound 64m/sublog; replay drift threshold
+# calibrated by replication_drift_sweep32{,_fine} (TSC ticks; DRIFT_TBD replaced
+# with the chosen value before running). m=1 is the legacy single-log path where
+# the drift barrier and read protocol are inactive.
+name: replication_honest_m_sweep
+description: "honest m sweep {1..32}, calibrated drift, 64w/1r itp=256, 30s"
+benchmark: replication
+no_server: true
+repeat: 3
+remote:
+  primary: { ssh: node0, ip: 10.10.1.1 }
+  replica: { ssh: node0, ip: 10.10.1.1 }
+  client:  { ssh: node2, ip: 10.10.1.3 }
+affinity:
+  primary: { numa_node: 0 }
+  replica: { numa_node: 1 }
+base:
+  primary_params: { port: 7379, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 256m }
+  replica_params:  { port: 7380, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 256m, aof_replay_task_count: 1, replica_offset_max_lag: 67108864, aof_replay_drift_threshold: 2400000 }
+  client_params:   { replication_bench: true, client: GarnetClientSession, primary_port: 7379, replica_port: 7380, keylength: 8, valuelength: 8, dbsize: 1000000, replication_writers: 64, replication_readers: 1, itp: 256, runtime: 30 }
+sweep_combo:
+  - primary_params: { aof_physical_sublog_count: 1, aof_ship_max_lag: 201326592 }
+    replica_params: { aof_physical_sublog_count: 1 }
+  - primary_params: { aof_physical_sublog_count: 2, aof_ship_max_lag: 402653184 }
+    replica_params: { aof_physical_sublog_count: 2 }
+  - primary_params: { aof_physical_sublog_count: 4, aof_ship_max_lag: 805306368 }
+    replica_params: { aof_physical_sublog_count: 4 }
+  - primary_params: { aof_physical_sublog_count: 8, aof_ship_max_lag: 1610612736 }
+    replica_params: { aof_physical_sublog_count: 8 }
+  - primary_params: { aof_physical_sublog_count: 16, aof_ship_max_lag: 3221225472 }
+    replica_params: { aof_physical_sublog_count: 16 }
+  - primary_params: { aof_physical_sublog_count: 32, aof_ship_max_lag: 6442450944 }
+    replica_params: { aof_physical_sublog_count: 32 }

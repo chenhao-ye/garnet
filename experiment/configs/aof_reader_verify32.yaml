@@ -1,0 +1,37 @@
+# Experiment: aof_reader_verify32
+# Verification point: aof_reader_uniform's m=32 configuration as-is (ReplayDirect with
+# one zipf reader and the drift barrier at threshold 10000 ~= 4us TSC). If replay
+# sustains here while the live replica at the same threshold caps at ~11M, the barrier
+# cost is driven by feed asynchrony (round frequency ~ drift vs threshold; round
+# duration ~ slowest task's wait for data), which the microbench's synchronous
+# pre-generated feeds never exhibit.
+name: aof_reader_verify32
+description: "aof_reader_uniform m=32 point, barrier at 10000 ticks, ReplayDirect + 1 reader"
+benchmark: aof
+no_server: true
+repeat: 5
+
+affinity:
+  client:
+    numa_node: 0
+
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    aof_gen_pages: 256
+    aof_replay_reader: 1
+    aof_barrier_spin_us: -1
+    aof_replay_drift_threshold: 10000
+    aof_replay_drift_check_freq: 1
+    aof_read_dist: Zipf
+    aof_replay_dist: Uniform
+    aof_physical_sublog_count: 32

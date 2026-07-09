@@ -1,0 +1,26 @@
+# Experiment: replication_drift_ab32
+# Is the replay-align drift barrier the live-replay ceiling at m=32? Honest setup
+# (aof-ship-max-lag 6g + replica-offset-max-lag 64m, zero-drop) with the replica's
+# aof_replay_drift_threshold at the default 10000 vs -1 (disabled). The replay
+# microbenches that sustain ~90M at 32-way all run with the barrier disabled; the
+# replication runs never set it. If the -1 arm recovers toward ~30M writers with
+# 0 skips, the barrier is the bottleneck, not replay capacity.
+name: replication_drift_ab32
+description: "A/B replica drift barrier {10000,-1} at m=32, honest knobs, 64w/1r itp=256, 30s"
+benchmark: replication
+no_server: true
+repeat: 3
+remote:
+  primary: { ssh: node0, ip: 10.10.1.1 }
+  replica: { ssh: node0, ip: 10.10.1.1 }
+  client:  { ssh: node2, ip: 10.10.1.3 }
+affinity:
+  primary: { numa_node: 0 }
+  replica: { numa_node: 1 }
+base:
+  primary_params: { port: 7379, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 256m, aof_physical_sublog_count: 32, aof_ship_max_lag: 6442450944 }
+  replica_params:  { port: 7380, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 256m, aof_replay_task_count: 1, aof_physical_sublog_count: 32, replica_offset_max_lag: 67108864 }
+  client_params:   { replication_bench: true, client: GarnetClientSession, primary_port: 7379, replica_port: 7380, keylength: 8, valuelength: 8, dbsize: 1000000, replication_writers: 64, replication_readers: 1, itp: 256, runtime: 30 }
+sweep_combo:
+  - replica_params: { aof_replay_drift_threshold: 10000 }
+  - replica_params: { aof_replay_drift_threshold: -1 }

@@ -372,6 +372,24 @@ def wait_for_server(host: str, port: int, proc: subprocess.Popen | None = None) 
     )
 
 
+def wait_for_port_closed(host: str, port: int, timeout: float = 30.0) -> None:
+    """Wait until nothing accepts on host:port. Server teardown releases the port
+    asynchronously (remote kills doubly so), and the next run's readiness probe
+    would otherwise be satisfied by this run's server still winding down -- the
+    next bootstrap then lands in the gap after it exits and gets refused."""
+    if dry_run:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                pass
+        except OSError:
+            return
+        time.sleep(0.5)
+    logger.warning(f"Port {host}:{port} still accepting {timeout}s after shutdown")
+
+
 def _signal_process_group(proc: subprocess.Popen, sig: int) -> None:
     """Send `sig` to the process's whole group. Servers are launched with
     start_new_session=True, so this reaches `dotnet run` and the app host it spawns
@@ -621,11 +639,13 @@ def execute_run(
             remote_util.kill_remote_role(
                 role_ssh("replica"), f"{server_stem}.*--port {replica_params.get('port')}"
             )
+            wait_for_port_closed(*resolve_replication_server_endpoint(replica_params, "replica"))
         shutdown_server(primary_proc)
         if primary_params:
             remote_util.kill_remote_role(
                 role_ssh("primary"), f"{server_stem}.*--port {primary_params.get('port')}"
             )
+            wait_for_port_closed(*resolve_replication_server_endpoint(primary_params, "primary"))
         remote_util.kill_remote_role(role_ssh("client"), "--replication-bench")
         if not no_server:
             shutdown_server(server_proc)

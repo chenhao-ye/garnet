@@ -1,0 +1,34 @@
+# Experiment: replication_backpressure
+# Goalbase load with end-to-end backpressure: aof-ship-max-lag on the primary
+# (bounds the logical log's tail-minus-shipped lag, summed across sublogs) paired with
+# replica-offset-max-lag=64m on the replica (bounds its receive-ahead-of-replay; surfaces
+# replay lag to the primary as TCP backpressure on shipping). m=1 is the config that
+# silently dropped ~4200 ranges in replication_goalbase; expect writer throughput at the
+# replica-sustainable rate, no "MainMemoryReplication: Skipping" warnings, and no
+# ReplicaReplayTask crash (without the replica knob, async replay falls behind, the
+# replica's local in-memory AOF wraps under the replay scan, and the scan dies on a
+# recycled page). At m=32 healthy pipeline slack (~266MB summed) sits far under the 6g
+# budget: the gate must not engage.
+name: replication_backpressure
+description: "goalbase load + aof-ship-max-lag on primary, m {1,32}, 64w/1r itp=256, 30s"
+benchmark: replication
+no_server: true
+repeat: 3
+remote:
+  primary: { ssh: node0, ip: 10.10.1.1 }
+  replica: { ssh: node0, ip: 10.10.1.1 }
+  client:  { ssh: node2, ip: 10.10.1.3 }
+affinity:
+  primary: { numa_node: 0 }
+  replica: { numa_node: 1 }
+base:
+  primary_params: { port: 7379, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 256m }
+  replica_params:  { port: 7380, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 256m, aof_replay_task_count: 1, replica_offset_max_lag: 67108864 }
+  client_params:   { replication_bench: true, client: GarnetClientSession, primary_port: 7379, replica_port: 7380, keylength: 8, valuelength: 8, dbsize: 1000000, replication_writers: 64, replication_readers: 1, itp: 256, runtime: 30 }
+# aof_ship_max_lag is the logical-log (summed) budget: 3/4 of the aggregate
+# in-memory AOF, i.e. 3/4 x 256m x m. Single knob, -1 would disable.
+sweep_combo:
+  - primary_params: { aof_physical_sublog_count: 1, aof_ship_max_lag: 201326592 }
+    replica_params: { aof_physical_sublog_count: 1 }
+  - primary_params: { aof_physical_sublog_count: 32, aof_ship_max_lag: 6442450944 }
+    replica_params: { aof_physical_sublog_count: 32 }

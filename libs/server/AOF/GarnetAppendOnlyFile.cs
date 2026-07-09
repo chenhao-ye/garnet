@@ -35,6 +35,13 @@ namespace Garnet.server
         /// </summary>
         public GarnetLog Log { get; private set; }
 
+        /// <summary>
+        /// Primary-side replication backpressure gate. The cluster layer publishes the
+        /// replication lag (summed across physical sublogs) into it; the append paths in
+        /// <see cref="GarnetLog"/> stall on it. Null unless AofShipMaxLag is set.
+        /// </summary>
+        public readonly AofBackpressure backpressure;
+
         public readonly GarnetServerOptions serverOptions;
 
         public long HeaderSize => Log.HeaderSize;
@@ -69,6 +76,8 @@ namespace Garnet.server
             if (serverOptions.MultiLogEnabled)
                 seqNumGen = new SequenceNumberGenerator(0);
             this.logger = logger;
+            // must be before Log is constructed, which caches it for the append paths
+            backpressure = serverOptions.AofShipMaxLag > 0 ? new AofBackpressure(serverOptions, logger) : null;
             Log = new(this, serverOptions, logSettings, logger);
             // must be after Log is constructed
             CreateOrUpdateKeySequenceManager();
@@ -77,7 +86,11 @@ namespace Garnet.server
         /// <summary>
         /// Dispose append only file
         /// </summary>
-        public void Dispose() => Log.Dispose();
+        public void Dispose()
+        {
+            backpressure?.Dispose();
+            Log.Dispose();
+        }
 
         /// <summary>
         /// Create or update existing timestamp manager

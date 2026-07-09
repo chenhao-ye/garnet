@@ -129,7 +129,7 @@ state hermetic across reruns. The client preloads the keyspace, waits until the 
 replication offset vector catches up, then runs `repeat` passes of `runtime` seconds with
 `replication_writers` SET threads against the primary and `replication_readers` GET
 threads against the replica, printing per-pass `[Writer ...]`/`[Reader ...]` blocks and
-`[Replication lag bytes]` (max per-sublog primary-minus-replica offset gap). Set
+`[Replication lag bytes]` (primary-minus-replica offset gap summed across sublogs). Set
 `no_server: true` (the generic server slot stays off), give both servers `cluster: true`
 and `aof: true`, and keep `aof_physical_sublog_count` equal in
 `primary_params`/`replica_params` -- check.py enforces these plus the

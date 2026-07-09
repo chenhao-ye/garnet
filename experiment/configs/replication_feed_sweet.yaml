@@ -1,0 +1,24 @@
+# Experiment: replication_feed_sweet
+# Candidate operating point: fine feed (replica-sync-delay 1ms, 256k chunks) lets live
+# replay stay arrival-synchronized, so moderate drift thresholds see little drift and
+# few barrier rounds. Verify at 100us and 300us with honest knobs: expect full ~31M
+# writers AND sub-ms drift-bounded reads, dissolving the read-vs-write threshold trade.
+name: replication_feed_sweet
+description: "fine feed (1ms/256k) x drift {100us,300us}, m=32, 1g buffers, honest knobs, 64w/1r itp=256, 30s"
+benchmark: replication
+no_server: true
+repeat: 3
+remote:
+  primary: { ssh: node0, ip: 10.10.1.1 }
+  replica: { ssh: node0, ip: 10.10.1.1 }
+  client:  { ssh: node2, ip: 10.10.1.3 }
+affinity:
+  primary: { numa_node: 0 }
+  replica: { numa_node: 1 }
+base:
+  primary_params: { port: 7379, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 1g, aof_physical_sublog_count: 32, aof_ship_max_lag: 536870912, replica_sync_delay: 1, aof_replication_chunk_size: 262144 }
+  replica_params:  { port: 7380, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 1g, aof_replay_task_count: 1, aof_physical_sublog_count: 32, replica_offset_max_lag: 268435456, replica_sync_delay: 1, aof_replication_chunk_size: 262144 }
+  client_params:   { replication_bench: true, client: GarnetClientSession, primary_port: 7379, replica_port: 7380, keylength: 8, valuelength: 8, dbsize: 1000000, replication_writers: 64, replication_readers: 1, itp: 256, runtime: 30 }
+sweep_combo:
+  - replica_params: { aof_replay_drift_threshold: 240000 }
+  - replica_params: { aof_replay_drift_threshold: 720000 }

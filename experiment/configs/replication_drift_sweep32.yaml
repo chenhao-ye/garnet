@@ -1,0 +1,26 @@
+# Experiment: replication_drift_sweep32
+# Calibrate the replay-align drift threshold. Sequence numbers are raw TSC ticks
+# (~2.4 GHz => 2.4M ticks ~= 1ms). The default 10000 (~4us) collapses 32-way replay
+# to ~11M via continuous barrier rounds; -1 restores ~31M replay but wedges readers
+# (no rounds to release parked read waits). Sweep time-meaningful thresholds:
+# 1ms / 10ms / 100ms of drift, in the honest zero-drop setup.
+name: replication_drift_sweep32
+description: "drift threshold {1ms,10ms,100ms in TSC ticks} at m=32, honest knobs, 64w/1r itp=256, 30s"
+benchmark: replication
+no_server: true
+repeat: 3
+remote:
+  primary: { ssh: node0, ip: 10.10.1.1 }
+  replica: { ssh: node0, ip: 10.10.1.1 }
+  client:  { ssh: node2, ip: 10.10.1.3 }
+affinity:
+  primary: { numa_node: 0 }
+  replica: { numa_node: 1 }
+base:
+  primary_params: { port: 7379, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 256m, aof_physical_sublog_count: 32, aof_ship_max_lag: 6442450944 }
+  replica_params:  { port: 7380, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 256m, aof_replay_task_count: 1, aof_physical_sublog_count: 32, replica_offset_max_lag: 67108864 }
+  client_params:   { replication_bench: true, client: GarnetClientSession, primary_port: 7379, replica_port: 7380, keylength: 8, valuelength: 8, dbsize: 1000000, replication_writers: 64, replication_readers: 1, itp: 256, runtime: 30 }
+sweep_combo:
+  - replica_params: { aof_replay_drift_threshold: 2400000 }
+  - replica_params: { aof_replay_drift_threshold: 24000000 }
+  - replica_params: { aof_replay_drift_threshold: 240000000 }

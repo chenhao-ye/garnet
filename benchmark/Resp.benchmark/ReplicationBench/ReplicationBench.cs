@@ -34,6 +34,8 @@ namespace Resp.benchmark
         long writerOperationsCompleted;
         long readerOperationsCompleted;
         long freshnessProbesCompleted;
+        // Probes still in flight at pass end; their latencies never reach the histogram.
+        long freshnessProbesCensored;
         // Monotonic across the whole run so every probe key FRESH:<seq> is new (presence on
         // the replica then means the write is visible) and lands on an arbitrary sublog.
         long freshSeq;
@@ -93,14 +95,15 @@ namespace Resp.benchmark
             return [.. field.Split(',').Select(long.Parse)];
         }
 
-        // Max over physical sublogs of (primary tail - replica replayed offset), in AOF bytes.
+        // Replication lag in AOF bytes, summed over physical sublogs (the logical log's lag);
+        // terms floored at zero since the two offset snapshots are not atomic.
         static long ReplicationLagBytes(GarnetClientSession primary, GarnetClientSession replica)
         {
             var p = GetReplicationOffset(primary);
             var r = GetReplicationOffset(replica);
             var lag = 0L;
             for (var i = 0; i < Math.Min(p.Length, r.Length); i++)
-                lag = Math.Max(lag, p[i] - r[i]);
+                lag += Math.Max(0, p[i] - r[i]);
             return lag;
         }
 
@@ -159,6 +162,12 @@ namespace Resp.benchmark
 
                 for (var pass = 0; pass < options.Repeat; pass++)
                 {
+                    // Drain the previous pass's backlog so passes start caught up, bounded by
+                    // one pass duration; a residual start lag marks the load unsustainable.
+                    if (pass > 0)
+                        WaitReplicaCaughtUp(primaryInfo, replicaInfo, TimeSpan.FromSeconds(options.RunTime));
+                    var startLag = ReplicationLagBytes(primaryInfo, replicaInfo);
+
                     var writerHists = NewHistograms(options.ReplicationWriters);
                     var readerHists = NewHistograms(options.ReplicationReaders);
                     var proberHist = new LongHistogram(HistogramLowerBound, HistogramUpperBound, HistogramSigFigs);
@@ -181,9 +190,12 @@ namespace Resp.benchmark
                     waiter.Set();
                     Thread.Sleep(TimeSpan.FromSeconds(options.RunTime));
                     done = true;
-                    foreach (var t in threads)
+                    // The prober (last thread) may linger to resolve its in-flight probe;
+                    // stop the pass clock on the writers/readers so their rates are exact.
+                    foreach (var t in threads[..^1])
                         t.Join();
                     swatch.Stop();
+                    threads[^1].Join();
 
                     var lag = ReplicationLagBytes(primaryInfo, replicaInfo);
                     var seconds = swatch.ElapsedMilliseconds / 1000.0;
@@ -191,6 +203,8 @@ namespace Resp.benchmark
                     PrintStats("Writer", writerOperationsCompleted, seconds, writerHists);
                     PrintStats("Reader", readerOperationsCompleted, seconds, readerHists);
                     PrintStats("Freshness", freshnessProbesCompleted, seconds, [proberHist]);
+                    Console.WriteLine($"[Censored probes]: {freshnessProbesCensored:N0}");
+                    Console.WriteLine($"[Start lag bytes]: {startLag:N0}");
                     Console.WriteLine($"[Replication lag bytes]: {lag:N0}");
                     Console.WriteLine("------------------------------");
 
@@ -199,6 +213,7 @@ namespace Resp.benchmark
                     writerOperationsCompleted = 0;
                     readerOperationsCompleted = 0;
                     freshnessProbesCompleted = 0;
+                    freshnessProbesCensored = 0;
                 }
             }
             finally
@@ -266,13 +281,14 @@ namespace Resp.benchmark
         }
 
         // Blocks until the replica's replayed offset vector equals the primary's tail vector.
-        void WaitReplicaCaughtUp(GarnetClientSession primary, GarnetClientSession replica)
+        void WaitReplicaCaughtUp(GarnetClientSession primary, GarnetClientSession replica, TimeSpan? timeout = null)
         {
             var swatch = Stopwatch.StartNew();
-            while (!GetReplicationOffset(primary).SequenceEqual(GetReplicationOffset(replica)))
+            while (!GetReplicationOffset(primary).SequenceEqual(GetReplicationOffset(replica))
+                   && (timeout is null || swatch.Elapsed < timeout.Value))
                 Thread.Sleep(10);
             swatch.Stop();
-            Console.WriteLine($"[Catch up]: replica reached the primary offset in {swatch.ElapsedMilliseconds:N2} ms");
+            Console.WriteLine($"[Catch up]: {swatch.ElapsedMilliseconds:N2} ms");
         }
 
         // Writer thread: keeps `itp` SETs to the primary in flight, recording per-batch latency
@@ -343,15 +359,22 @@ namespace Resp.benchmark
         void RunProber(GarnetClientSession primary, GarnetClientSession replica, LongHistogram hist)
         {
             var ops = 0L;
+            var issued = 0L;
 
             waiter.Wait();
 
             while (!done)
             {
                 var key = "FRESH:" + (++freshSeq);
+                issued++;
                 _ = primary.ExecuteAsync("SET", key, "x").GetAwaiter().GetResult();
                 var start = Stopwatch.GetTimestamp();
-                while (!done)
+                // The in-flight probe outlives the pass by up to one pass duration: once
+                // writers stop, the replica drains and the write must become visible, so
+                // its (possibly long) latency is recorded instead of silently dropped.
+                // Only a probe invisible past the grace is censored -- real loss or wedge.
+                var graceTicks = (long)(options.RunTime * (double)Stopwatch.Frequency);
+                while (!done || Stopwatch.GetTimestamp() - start < graceTicks)
                 {
                     if (replica.ExecuteAsync("GET", key).GetAwaiter().GetResult() != null)
                     {
@@ -363,6 +386,7 @@ namespace Resp.benchmark
                 Thread.Sleep(1);
             }
             _ = Interlocked.Add(ref freshnessProbesCompleted, ops);
+            _ = Interlocked.Add(ref freshnessProbesCensored, issued - ops);
         }
 
         // Prints the per-pass stats block ([<label> operations/throughput/latency]) from the

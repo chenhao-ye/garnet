@@ -1,0 +1,32 @@
+# Experiment: replication_feed_ab32
+# Feed-granularity matrix at the tightest drift threshold (10000 ticks ~= 4us), where
+# live replay sits at ~12M: sweep shipping poll cadence (replica-sync-delay 5ms->1ms)
+# and chunk size (1m -> 256k -> 64k), applied to both primary (ship) and replica
+# (replay consume). If smoother/finer arrivals shrink cross-sublog drift and round
+# cost, tight thresholds recover live replay throughput. Baseline (delay=5, chunk=1m)
+# measured 12.0M in replication_drift_sweep32_big.
+name: replication_feed_ab32
+description: "feed matrix at 4us drift: sync-delay {1,5} x chunk {1m,256k,64k}, m=32, 1g buffers, honest knobs"
+benchmark: replication
+no_server: true
+repeat: 3
+remote:
+  primary: { ssh: node0, ip: 10.10.1.1 }
+  replica: { ssh: node0, ip: 10.10.1.1 }
+  client:  { ssh: node2, ip: 10.10.1.3 }
+affinity:
+  primary: { numa_node: 0 }
+  replica: { numa_node: 1 }
+base:
+  primary_params: { port: 7379, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 1g, aof_physical_sublog_count: 32, aof_ship_max_lag: 536870912 }
+  replica_params:  { port: 7380, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 1g, aof_replay_task_count: 1, aof_physical_sublog_count: 32, replica_offset_max_lag: 268435456, aof_replay_drift_threshold: 10000 }
+  client_params:   { replication_bench: true, client: GarnetClientSession, primary_port: 7379, replica_port: 7380, keylength: 8, valuelength: 8, dbsize: 1000000, replication_writers: 64, replication_readers: 1, itp: 256, runtime: 30 }
+sweep_combo:
+  - primary_params: { replica_sync_delay: 1 }
+    replica_params: { replica_sync_delay: 1 }
+  - primary_params: { replica_sync_delay: 1, aof_replication_chunk_size: 262144 }
+    replica_params: { replica_sync_delay: 1, aof_replication_chunk_size: 262144 }
+  - primary_params: { replica_sync_delay: 1, aof_replication_chunk_size: 65536 }
+    replica_params: { replica_sync_delay: 1, aof_replication_chunk_size: 65536 }
+  - primary_params: { aof_replication_chunk_size: 262144 }
+    replica_params: { aof_replication_chunk_size: 262144 }

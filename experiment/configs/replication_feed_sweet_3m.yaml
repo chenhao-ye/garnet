@@ -1,0 +1,23 @@
+# Experiment: replication_feed_sweet_3m
+# Does the fine-feed sweet spot survive a real network? Same arms as
+# replication_feed_sweet (1ms/256k feed, drift {100us,300us}, honest knobs) but
+# primary=node0, replica=node1, client=node2, no numa pinning. Real NIC jitter is
+# the main threat to the arrival-synchronization that keeps drift under moderate
+# thresholds. Co-located reference: 300us -> 27.5M writers / 0.29M readers @737us /
+# 12ms freshness / 27MB lag.
+name: replication_feed_sweet_3m
+description: "3-machine fine feed (1ms/256k) x drift {100us,300us}, m=32, 1g buffers, honest knobs"
+benchmark: replication
+no_server: true
+repeat: 3
+remote:
+  primary: { ssh: node0, ip: 10.10.1.1 }
+  replica: { ssh: node1, ip: 10.10.1.2 }
+  client:  { ssh: node2, ip: 10.10.1.3 }
+base:
+  primary_params: { port: 7379, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 1g, aof_physical_sublog_count: 32, aof_ship_max_lag: 536870912, replica_sync_delay: 1, aof_replication_chunk_size: 262144 }
+  replica_params:  { port: 7380, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 1g, aof_replay_task_count: 1, aof_physical_sublog_count: 32, replica_offset_max_lag: 268435456, replica_sync_delay: 1, aof_replication_chunk_size: 262144 }
+  client_params:   { replication_bench: true, client: GarnetClientSession, primary_port: 7379, replica_port: 7380, keylength: 8, valuelength: 8, dbsize: 1000000, replication_writers: 64, replication_readers: 1, itp: 256, runtime: 30 }
+sweep_combo:
+  - replica_params: { aof_replay_drift_threshold: 1440000 }
+  - replica_params: { aof_replay_drift_threshold: 2400000 }

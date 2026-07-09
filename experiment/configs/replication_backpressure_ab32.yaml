@@ -1,0 +1,24 @@
+# Experiment: replication_backpressure_ab32
+# Same-conditions A/B at m=32: aof-backpressure off vs on, goalbase load. Pins down
+# whether the gate's fast path costs writer throughput when lag never nears the
+# threshold (m=32 lag ~2MB vs 192MB stall threshold).
+name: replication_backpressure_ab32
+description: "A/B aof-backpressure {off,on} at m=32, 64w/1r itp=256, 30s"
+benchmark: replication
+no_server: true
+repeat: 3
+remote:
+  primary: { ssh: node0, ip: 10.10.1.1 }
+  replica: { ssh: node0, ip: 10.10.1.1 }
+  client:  { ssh: node2, ip: 10.10.1.3 }
+affinity:
+  primary: { numa_node: 0 }
+  replica: { numa_node: 1 }
+base:
+  primary_params: { port: 7379, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 256m, aof_physical_sublog_count: 32 }
+  replica_params:  { port: 7380, cluster: true, aof: true, aof_null_device: true, fast_aof_truncate: true, aof_commit_freq: -1, repl_diskless_sync: true, aof_memory: 256m, aof_replay_task_count: 1, aof_physical_sublog_count: 32 }
+  client_params:   { replication_bench: true, client: GarnetClientSession, primary_port: 7379, replica_port: 7380, keylength: 8, valuelength: 8, dbsize: 1000000, replication_writers: 64, replication_readers: 1, itp: 256, runtime: 30 }
+# Off arm: -1 disables (the default). On arm: logical-log budget = 3/4 x 256m x 32 = 6g.
+sweep_combo:
+  - primary_params: { aof_ship_max_lag: -1 }
+  - primary_params: { aof_ship_max_lag: 6442450944 }

@@ -18,6 +18,7 @@ namespace Garnet.cluster
         public class AofSyncTask : IBulkLogEntryConsumer, IDisposable
         {
             readonly ClusterProvider clusterProvider;
+            readonly AofSyncDriverStore aofSyncDriverStore;
             readonly int physicalSublogIdx;
             public readonly GarnetClientSession garnetClient;
             readonly string localNodeId;
@@ -26,6 +27,13 @@ namespace Garnet.cluster
             readonly long startAddress;
             TsavoriteLogScanSingleIterator iter;
             long previousAddress;
+
+            // Rate limiter for backpressure lag publishing: stalled appenders poll at
+            // AofBackpressure.PollIntervalMs, so publishing more often buys nothing and only
+            // adds work to this shipping thread. Accessed only by this task's consume loop.
+            // With backpressure disabled the publish block is skipped entirely.
+            readonly bool backpressureEnabled;
+            long lastLagPublishTicks;
 
             // In-band time pulse state (multi-log timestamp mode). When this sublog ships nothing
             // for AofTailWitnessFreq while some sublog's tail moved since this task's last pulse,
@@ -71,6 +79,7 @@ namespace Garnet.cluster
             /// <param name="logger"></param>
             public AofSyncTask(
                 ClusterProvider clusterProvider,
+                AofSyncDriverStore aofSyncDriverStore,
                 int physicalSublogIdx,
                 IPEndPoint endPoint,
                 long startAddress,
@@ -81,6 +90,7 @@ namespace Garnet.cluster
             {
                 var currentConfig = clusterProvider.clusterManager.CurrentConfig;
                 this.clusterProvider = clusterProvider;
+                this.aofSyncDriverStore = aofSyncDriverStore;
                 this.physicalSublogIdx = physicalSublogIdx;
                 this.startAddress = startAddress;
                 previousAddress = startAddress;
@@ -88,6 +98,7 @@ namespace Garnet.cluster
                 this.remoteNodeId = remoteNodeId;
                 this.cts = cts;
                 appendOnlyFile = clusterProvider.storeWrapper.appendOnlyFile;
+                backpressureEnabled = appendOnlyFile.backpressure != null;
                 timePulseEnabled = clusterProvider.serverOptions.MultiLogEnabled && clusterProvider.serverOptions.AofReadWithTimestamp;
                 if (timePulseEnabled)
                 {
@@ -185,6 +196,19 @@ namespace Garnet.cluster
                 // Trigger flush while we are out of epoch protection
                 garnetClient.CompletePending(false);
                 garnetClient.Throttle();
+
+                // Publish replication lag to the backpressure gate outside epoch protection.
+                // The consume loop invokes Throttle on every poll, so during a catch-up drain
+                // stalled appenders are released as chunks ship.
+                if (backpressureEnabled)
+                {
+                    var nowTicks = Environment.TickCount64;
+                    if (nowTicks - lastLagPublishTicks >= AofBackpressure.PollIntervalMs)
+                    {
+                        lastLagPublishTicks = nowTicks;
+                        aofSyncDriverStore.PublishReplicationLag();
+                    }
+                }
 
                 // The consume loop invokes Throttle on every poll, including empty ones, so this
                 // is also the idle hook for time pulses.
