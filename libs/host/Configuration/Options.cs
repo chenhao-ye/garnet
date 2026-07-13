@@ -485,6 +485,9 @@ namespace Garnet
         [Option("aof-null-device", Required = false, HelpText = "With fast-aof-truncate replication, use null device for AOF. Ensures no disk IO, but can cause data loss during replication.")]
         public bool? UseAofNullDevice { get; set; }
 
+        [Option("aof-ship-max-lag", Required = false, HelpText = "Stall primary AOF appends when the replication lag of the logical log exceeds this limit. -1: disabled, >=1: max lag in bytes.")]
+        public long AofShipMaxLag { get; set; }
+
         [System.Text.Json.Serialization.JsonIgnore]
         [FilePathValidation(true, false, false)]
         [Option("config-import-path", Required = false, HelpText = "Import (load) configuration options from the provided path")]
@@ -952,6 +955,7 @@ namespace Garnet
                 ReplicaAttachTimeout = ReplicaAttachTimeout <= 0 ? Timeout.InfiniteTimeSpan : TimeSpan.FromSeconds(ReplicaAttachTimeout),
                 ReplicaDisklessSyncFullSyncAofThreshold = ReplicaDisklessSyncFullSyncAofThreshold,
                 UseAofNullDevice = UseAofNullDevice.GetValueOrDefault(),
+                AofShipMaxLag = AofShipMaxLag,
                 ClusterUsername = ClusterUsername,
                 ClusterPassword = ClusterPassword,
                 DeviceType = deviceType,

@@ -433,6 +433,13 @@ namespace Garnet.server
         public bool UseAofNullDevice = false;
 
         /// <summary>
+        /// Stall primary AOF appends when the replication lag of the logical log (tail minus
+        /// shipped, summed across all sublogs) exceeds this limit. -1: disabled, >=1: max lag
+        /// in bytes. Pair with ReplicationOffsetMaxLag on replicas for end-to-end backpressure.
+        /// </summary>
+        public long AofShipMaxLag = -1;
+
+        /// <summary>
         /// Use specified device type
         /// </summary>
         public DeviceType DeviceType = DeviceType.Default;

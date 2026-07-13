@@ -25,6 +25,7 @@ namespace Garnet.server
         readonly SingleLog singleLog;
         readonly ShardedLog shardedLog;
         readonly Func<byte[]> cookieGeneratorCallback;
+        readonly AofBackpressure backpressure;
         readonly bool usingSingleLog;
         readonly bool usingSinglePhysicalLog;
         readonly ulong physicalSublogMask;
@@ -68,6 +69,7 @@ namespace Garnet.server
             };
 
             this.serverOptions = serverOptions;
+            this.backpressure = appendOnlyFile.backpressure;
             this.usingSingleLog = serverOptions.AofPhysicalSublogCount == 1 && serverOptions.AofReplayTaskCount == 1;
             this.usingSinglePhysicalLog = serverOptions.AofPhysicalSublogCount == 1;
 
@@ -617,6 +619,8 @@ namespace Garnet.server
             where TInput : IStoreInput
             where TEpochAccessor : IEpochAccessor
         {
+            backpressure?.Wait();
+
             if (usingSingleLog)
             {
                 var header = new AofHeader
@@ -682,6 +686,8 @@ namespace Garnet.server
             where TInput : IStoreInput
             where TEpochAccessor : IEpochAccessor
         {
+            backpressure?.Wait();
+
             if (usingSingleLog)
             {
                 var header = new AofHeader
@@ -743,6 +749,8 @@ namespace Garnet.server
         internal void Enqueue<TEpochAccessor>(AofEntryType opType, long version, int sessionId, ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, TEpochAccessor epochAccessor, long keyHash, out long logicalAddress)
             where TEpochAccessor : IEpochAccessor
         {
+            backpressure?.Wait();
+
             if (usingSingleLog)
             {
                 var header = new AofHeader
@@ -803,6 +811,8 @@ namespace Garnet.server
 
         internal unsafe void EnqueueStoredProc(AofEntryType opType, byte procedureId, long txnVersion, int sessionId, ref CustomProcedureInput procInput, CustomTransactionProcedure proc)
         {
+            backpressure?.Wait();
+
             if (usingSingleLog)
             {
                 var header = new AofHeader
@@ -874,6 +884,8 @@ namespace Garnet.server
 
         internal unsafe void EnqueueTxn(AofEntryType opType, long txnVersion, int sessionId, ulong physicalSublogAccessVector, BitVector[] virtualSublogAccessVector, int virtualSublogParticipantCount)
         {
+            backpressure?.Wait();
+
             if (usingSingleLog)
             {
                 var header = new AofHeader
@@ -940,6 +952,8 @@ namespace Garnet.server
 
         internal void EnqueueDatabaseCommit(AofEntryType opType, long version)
         {
+            backpressure?.Wait();
+
             if (usingSingleLog)
             {
                 var header = new AofHeader()
@@ -1009,6 +1023,10 @@ namespace Garnet.server
 
         internal unsafe void EnqueueSafeFlushAOF(AofEntryType opType, bool unsafeTruncateLog, int dbId)
         {
+            // The sharded branch below does not enqueue, so only the single-physical-log paths gate.
+            if (usingSinglePhysicalLog)
+                backpressure?.Wait();
+
             if (usingSingleLog)
             {
                 AofHeader header = new()

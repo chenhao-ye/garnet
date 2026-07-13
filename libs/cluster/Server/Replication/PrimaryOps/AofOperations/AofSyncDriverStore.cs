@@ -181,6 +181,48 @@ namespace Garnet.cluster
         }
 
         /// <summary>
+        /// Publish the replication lag of the logical log to the AOF backpressure gate: MultiLog
+        /// is one logical log split across physical sublogs, so the lag is the slowest attached
+        /// replica's tail-minus-shipped diff summed across all sublogs. Sync tasks call this as
+        /// they ship (outside epoch protection), and the store calls it whenever the driver set
+        /// changes, so stalled appenders are released when a lagging replica catches up or
+        /// detaches. With no drivers attached, lag 0 is published and the gate never engages.
+        /// Must not be called while holding the store lock.
+        /// </summary>
+        internal void PublishReplicationLag()
+        {
+            var appendOnlyFile = clusterProvider.storeWrapper.appendOnlyFile;
+            var backpressure = appendOnlyFile?.backpressure;
+            if (backpressure == null)
+                return;
+
+            var totalLag = 0L;
+            _lock.ReadLock();
+            try
+            {
+                if (!_disposed && numDrivers > 0)
+                {
+                    var sublogCount = clusterProvider.serverOptions.AofPhysicalSublogCount;
+                    for (var physicalSublogIdx = 0; physicalSublogIdx < sublogCount; physicalSublogIdx++)
+                    {
+                        var minShipped = long.MaxValue;
+                        for (var i = 0; i < numDrivers; i++)
+                            minShipped = Math.Min(minShipped, syncDrivers[i].GetPreviousAddress(physicalSublogIdx));
+                        var lag = appendOnlyFile.Log.GetTailAddress(physicalSublogIdx) - minShipped;
+                        if (lag > 0)
+                            totalLag += lag;
+                    }
+                }
+            }
+            finally
+            {
+                _lock.ReadUnlock();
+            }
+
+            backpressure.PublishReplicationLag(totalLag);
+        }
+
+        /// <summary>
         /// Get relevant information for all attached replicas
         /// </summary>
         /// <param name="PrimaryReplicationOffset"></param>
@@ -245,6 +287,10 @@ namespace Garnet.cluster
             }
             numDrivers = 0;
             Array.Clear(syncDrivers);
+
+            // Release any appender stalled on the backpressure gate; with no drivers attached
+            // PublishReplicationLag publishes 0 lag, which clears the stall.
+            PublishReplicationLag();
         }
 
         /// <summary>
@@ -343,6 +389,9 @@ namespace Garnet.cluster
                     aofSyncDriver = null;
                 }
             }
+
+            if (success)
+                PublishReplicationLag();
 
             return success;
         }
@@ -453,6 +502,9 @@ namespace Garnet.cluster
                 }
             }
 
+            if (success)
+                PublishReplicationLag();
+
             return true;
         }
 
@@ -502,6 +554,10 @@ namespace Garnet.cluster
             {
                 _lock.WriteUnlock();
             }
+
+            if (success)
+                PublishReplicationLag();
+
             return success;
         }
 
@@ -573,6 +629,10 @@ namespace Garnet.cluster
             {
                 _lock.WriteUnlock();
             }
+
+            // Release any appender stalled on the backpressure gate; role transition to replica
+            // tears the drivers down, so mirror Dispose and publish 0 lag to clear the stall.
+            PublishReplicationLag();
         }
 
         [Conditional("DEBUG")]
