@@ -35,6 +35,13 @@ namespace Garnet.cluster
         readonly TsavoriteLog physicalSublog;
         readonly bool useChannels = true;
 
+        // ReplicationOffsetMaxLag is a whole-log budget summed across all physical sublogs; each
+        // per-sublog driver throttles at an even 1/m share of it. Floored at 1 byte so a small
+        // positive budget never collapses into an unintended per-sublog synchronous throttle.
+        // Only read on the positive-budget path: the -1 (disabled) and 0 (synchronous) sentinels
+        // are handled by the raw ReplicationOffsetMaxLag checks in ThrottlePrimary and elsewhere.
+        readonly long perSublogReplicationOffsetMaxLag;
+
         // In-band time pulse state (see AofSyncTask.MaybeSendTimePulse for the producer). The
         // session thread records the freshest pulse sequence number received on this sublog's
         // replication stream; the thread that owns replay for this sublog applies it once the
@@ -72,6 +79,7 @@ namespace Garnet.cluster
             this.physicalSublogIdx = physicalSublogIdx;
             this.respSessionNetworkSender = respSessionNetworkSender;
             serverOptions = clusterProvider.serverOptions;
+            perSublogReplicationOffsetMaxLag = Math.Max(1, serverOptions.ReplicationOffsetMaxLag / serverOptions.AofPhysicalSublogCount);
             storeWrapper = clusterProvider.storeWrapper;
             appendOnlyFile = storeWrapper.appendOnlyFile;
             replicationManager = clusterProvider.replicationManager;
@@ -445,7 +453,7 @@ namespace Garnet.cluster
         public void ThrottlePrimary()
         {
             while (serverOptions.ReplicationOffsetMaxLag != -1 && replayIterator != null &&
-                appendOnlyFile.Log.GetTailAddress(physicalSublogIdx) - replicationManager.GetReplicationOffset(physicalSublogIdx) > serverOptions.ReplicationOffsetMaxLag)
+                appendOnlyFile.Log.GetTailAddress(physicalSublogIdx) - replicationManager.GetReplicationOffset(physicalSublogIdx) > perSublogReplicationOffsetMaxLag)
             {
                 cts.Token.ThrowIfCancellationRequested();
                 Thread.Yield();

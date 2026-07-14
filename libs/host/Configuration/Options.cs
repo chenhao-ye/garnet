@@ -446,7 +446,7 @@ namespace Garnet
         public int ReplicaSyncDelayMs { get; set; }
 
         [IntRangeValidation(-1, int.MaxValue)]
-        [Option("replica-offset-max-lag", Required = false, HelpText = "Throttle ClusterAppendLog when replica.AOFTailAddress - ReplicationOffset > ReplicationOffsetMaxLag. 0: Synchronous replay,  >=1: background replay with specified lag, -1: infinite lag")]
+        [Option("replica-offset-max-lag", Required = false, HelpText = "Throttle ClusterAppendLog when the replica's replication lag exceeds this budget, summed across all physical sublogs (each sublog throttles at an even 1/m share). 0: Synchronous replay,  >=1: background replay with the specified total lag, -1: infinite lag")]
         public int ReplicationOffsetMaxLag { get; set; }
 
         [OptionValidation]

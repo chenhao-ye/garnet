@@ -388,7 +388,7 @@ namespace Garnet.server
         public int ReplicaSyncDelayMs = 5;
 
         /// <summary>
-        /// Throttle ClusterAppendLog when replica.AOFTailAddress - ReplicationOffset > ReplicationOffsetMaxLag. 0: Synchronous replay,  >=1: background replay with specified lag, -1: infinite lag
+        /// Throttle ClusterAppendLog when the replica's replication lag exceeds this budget, summed across all physical sublogs (each sublog throttles at an even 1/m share). 0: Synchronous replay,  >=1: background replay with the specified total lag, -1: infinite lag
         /// </summary>
         public int ReplicationOffsetMaxLag = -1;
 
