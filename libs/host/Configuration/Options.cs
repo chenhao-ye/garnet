@@ -485,7 +485,7 @@ namespace Garnet
         [Option("aof-null-device", Required = false, HelpText = "With fast-aof-truncate replication, use null device for AOF. Ensures no disk IO, but can cause data loss during replication.")]
         public bool? UseAofNullDevice { get; set; }
 
-        [Option("aof-ship-max-lag", Required = false, HelpText = "Stall primary AOF appends when the replication lag of the logical log exceeds this limit. -1: disabled, >=1: max lag in bytes.")]
+        [Option("aof-ship-max-lag", Required = false, HelpText = "Stall primary AOF appends when the replication lag exceeds this budget, divided evenly per sublog (each sublog stalls at an even 1/m share). -1: disabled, >=1: max lag in bytes.")]
         public long AofShipMaxLag { get; set; }
 
         [System.Text.Json.Serialization.JsonIgnore]

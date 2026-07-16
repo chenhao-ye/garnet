@@ -615,11 +615,37 @@ namespace Garnet.server
             }
         }
 
+        // Fail-safe backpressure self-check for a single-key append: stall on the key's sublog
+        // when its lag (tail minus the published min-shipped watermark) exceeds the per-sublog
+        // budget. A stale watermark only over-estimates the lag, so this never permits a wrap.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        void BackpressureWaitKey(long keyHash)
+        {
+            if (backpressure == null)
+                return;
+            var sublogIdx = GetPhysicalSublogIdx(keyHash);
+            backpressure.Wait(sublogIdx, GetTailAddress(sublogIdx));
+        }
+
+        // Fail-safe backpressure self-check for a multi-sublog append (transaction / stored proc /
+        // database commit): stall on every participating sublog before acquiring sublog locks.
+        void BackpressureWaitVector(ulong physicalSublogAccessVector)
+        {
+            if (backpressure == null)
+                return;
+            var vector = physicalSublogAccessVector;
+            while (vector > 0)
+            {
+                var sublogIdx = vector.GetNextOffset();
+                backpressure.Wait(sublogIdx, GetTailAddress(sublogIdx));
+            }
+        }
+
         internal void Enqueue<TInput, TEpochAccessor>(AofEntryType opType, long version, int sessionId, ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, ref TInput input, TEpochAccessor epochAccessor, long keyHash, out long logicalAddress)
             where TInput : IStoreInput
             where TEpochAccessor : IEpochAccessor
         {
-            backpressure?.Wait();
+            BackpressureWaitKey(keyHash);
 
             if (usingSingleLog)
             {
@@ -686,7 +712,7 @@ namespace Garnet.server
             where TInput : IStoreInput
             where TEpochAccessor : IEpochAccessor
         {
-            backpressure?.Wait();
+            BackpressureWaitKey(keyHash);
 
             if (usingSingleLog)
             {
@@ -749,7 +775,7 @@ namespace Garnet.server
         internal void Enqueue<TEpochAccessor>(AofEntryType opType, long version, int sessionId, ReadOnlySpan<byte> key, ReadOnlySpan<byte> value, TEpochAccessor epochAccessor, long keyHash, out long logicalAddress)
             where TEpochAccessor : IEpochAccessor
         {
-            backpressure?.Wait();
+            BackpressureWaitKey(keyHash);
 
             if (usingSingleLog)
             {
@@ -811,7 +837,10 @@ namespace Garnet.server
 
         internal unsafe void EnqueueStoredProc(AofEntryType opType, byte procedureId, long txnVersion, int sessionId, ref CustomProcedureInput procInput, CustomTransactionProcedure proc)
         {
-            backpressure?.Wait();
+            if (usingSinglePhysicalLog)
+                backpressure?.Wait(0, GetTailAddress(0));
+            else
+                BackpressureWaitVector(proc.physicalSublogAccessVector);
 
             if (usingSingleLog)
             {
@@ -884,7 +913,10 @@ namespace Garnet.server
 
         internal unsafe void EnqueueTxn(AofEntryType opType, long txnVersion, int sessionId, ulong physicalSublogAccessVector, BitVector[] virtualSublogAccessVector, int virtualSublogParticipantCount)
         {
-            backpressure?.Wait();
+            if (usingSinglePhysicalLog)
+                backpressure?.Wait(0, GetTailAddress(0));
+            else
+                BackpressureWaitVector(physicalSublogAccessVector);
 
             if (usingSingleLog)
             {
@@ -952,7 +984,10 @@ namespace Garnet.server
 
         internal void EnqueueDatabaseCommit(AofEntryType opType, long version)
         {
-            backpressure?.Wait();
+            if (usingSinglePhysicalLog)
+                backpressure?.Wait(0, GetTailAddress(0));
+            else
+                BackpressureWaitVector(AllLogsBitmask());
 
             if (usingSingleLog)
             {
@@ -1025,7 +1060,7 @@ namespace Garnet.server
         {
             // The sharded branch below does not enqueue, so only the single-physical-log paths gate.
             if (usingSinglePhysicalLog)
-                backpressure?.Wait();
+                backpressure?.Wait(0, GetTailAddress(0));
 
             if (usingSingleLog)
             {

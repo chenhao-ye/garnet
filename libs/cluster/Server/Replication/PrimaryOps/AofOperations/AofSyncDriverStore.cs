@@ -181,37 +181,28 @@ namespace Garnet.cluster
         }
 
         /// <summary>
-        /// Publish the replication lag of the logical log to the AOF backpressure gate: MultiLog
-        /// is one logical log split across physical sublogs, so the lag is the slowest attached
-        /// replica's tail-minus-shipped diff summed across all sublogs. Sync tasks call this as
-        /// they ship (outside epoch protection), and the store calls it whenever the driver set
-        /// changes, so stalled appenders are released when a lagging replica catches up or
-        /// detaches. With no drivers attached, lag 0 is published and the gate never engages.
-        /// Must not be called while holding the store lock.
+        /// Publish one physical sublog's minimum shipped address across all attached replicas into
+        /// the AOF backpressure gate (long.MaxValue when none is attached, which releases it). A
+        /// sync task calls this for its own sublog as it ships, so only the watermark of the sublog
+        /// that made progress is recomputed and written. Appenders self-check their own tail against
+        /// the watermark, so this is a freshness hint, never a correctness action: a stale value
+        /// makes appenders stall sooner, not later. Must not be called while holding the store lock.
         /// </summary>
-        internal void PublishReplicationLag()
+        internal void PublishShippedAddress(int physicalSublogIdx)
         {
             var appendOnlyFile = clusterProvider.storeWrapper.appendOnlyFile;
             var backpressure = appendOnlyFile?.backpressure;
             if (backpressure == null)
                 return;
 
-            var totalLag = 0L;
+            var minShipped = long.MaxValue;
             _lock.ReadLock();
             try
             {
                 if (!_disposed && numDrivers > 0)
                 {
-                    var sublogCount = clusterProvider.serverOptions.AofPhysicalSublogCount;
-                    for (var physicalSublogIdx = 0; physicalSublogIdx < sublogCount; physicalSublogIdx++)
-                    {
-                        var minShipped = long.MaxValue;
-                        for (var i = 0; i < numDrivers; i++)
-                            minShipped = Math.Min(minShipped, syncDrivers[i].GetPreviousAddress(physicalSublogIdx));
-                        var lag = appendOnlyFile.Log.GetTailAddress(physicalSublogIdx) - minShipped;
-                        if (lag > 0)
-                            totalLag += lag;
-                    }
+                    for (var i = 0; i < numDrivers; i++)
+                        minShipped = Math.Min(minShipped, syncDrivers[i].GetPreviousAddress(physicalSublogIdx));
                 }
             }
             finally
@@ -219,7 +210,47 @@ namespace Garnet.cluster
                 _lock.ReadUnlock();
             }
 
-            backpressure.PublishReplicationLag(totalLag);
+            backpressure.PublishShippedAddress(physicalSublogIdx, minShipped);
+        }
+
+        /// <summary>
+        /// Publish every physical sublog's minimum shipped address across all attached replicas into
+        /// the AOF backpressure gate (long.MaxValue per sublog when none is attached, or during
+        /// dispose, which releases the gate). The store calls this whenever the driver set changes,
+        /// since attaching or detaching a replica can change every sublog's minimum at once. Must
+        /// not be called while holding the store lock.
+        /// </summary>
+        internal void PublishShippedAddresses()
+        {
+            var appendOnlyFile = clusterProvider.storeWrapper.appendOnlyFile;
+            var backpressure = appendOnlyFile?.backpressure;
+            if (backpressure == null)
+                return;
+
+            var sublogCount = clusterProvider.serverOptions.AofPhysicalSublogCount;
+            _lock.ReadLock();
+            try
+            {
+                if (_disposed || numDrivers == 0)
+                {
+                    for (var physicalSublogIdx = 0; physicalSublogIdx < sublogCount; physicalSublogIdx++)
+                        backpressure.PublishShippedAddress(physicalSublogIdx, long.MaxValue);
+                }
+                else
+                {
+                    for (var physicalSublogIdx = 0; physicalSublogIdx < sublogCount; physicalSublogIdx++)
+                    {
+                        var minShipped = long.MaxValue;
+                        for (var i = 0; i < numDrivers; i++)
+                            minShipped = Math.Min(minShipped, syncDrivers[i].GetPreviousAddress(physicalSublogIdx));
+                        backpressure.PublishShippedAddress(physicalSublogIdx, minShipped);
+                    }
+                }
+            }
+            finally
+            {
+                _lock.ReadUnlock();
+            }
         }
 
         /// <summary>
@@ -288,9 +319,9 @@ namespace Garnet.cluster
             numDrivers = 0;
             Array.Clear(syncDrivers);
 
-            // Release any appender stalled on the backpressure gate; with no drivers attached
-            // PublishReplicationLag publishes 0 lag, which clears the stall.
-            PublishReplicationLag();
+            // With no drivers attached, PublishShippedAddresses writes a max watermark per sublog,
+            // making every appender's computed lag non-positive so none stalls on the gate.
+            PublishShippedAddresses();
         }
 
         /// <summary>
@@ -391,7 +422,7 @@ namespace Garnet.cluster
             }
 
             if (success)
-                PublishReplicationLag();
+                PublishShippedAddresses();
 
             return success;
         }
@@ -503,7 +534,7 @@ namespace Garnet.cluster
             }
 
             if (success)
-                PublishReplicationLag();
+                PublishShippedAddresses();
 
             return true;
         }
@@ -556,7 +587,7 @@ namespace Garnet.cluster
             }
 
             if (success)
-                PublishReplicationLag();
+                PublishShippedAddresses();
 
             return success;
         }
@@ -630,9 +661,9 @@ namespace Garnet.cluster
                 _lock.WriteUnlock();
             }
 
-            // Release any appender stalled on the backpressure gate; role transition to replica
-            // tears the drivers down, so mirror Dispose and publish 0 lag to clear the stall.
-            PublishReplicationLag();
+            // No drivers remain, so PublishShippedAddresses writes a max watermark per sublog and
+            // no appender stays stalled on the gate.
+            PublishShippedAddresses();
         }
 
         [Conditional("DEBUG")]

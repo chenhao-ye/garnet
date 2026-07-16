@@ -3,6 +3,7 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 
@@ -10,49 +11,53 @@ namespace Garnet.server
 {
     /// <summary>
     /// Primary-side replication backpressure for the AOF, constructed only when AofShipMaxLag
-    /// is set (a null gate means disabled; call sites gate with ?.). MultiLog is one logical
-    /// log split across physical
-    /// sublogs, so the cluster layer publishes the logical log's replication lag: the slowest
-    /// attached replica's tail-minus-shipped diff, summed across all sublogs. Appenders stall
-    /// while it exceeds the configured budget. Without this gate, an in-memory AOF (null device
-    /// with fast-aof-truncate) recycles pages past unshipped records and silently drops them
-    /// for lagging replicas. Wrap protection assumes lag spreads across sublogs; a single
-    /// sublog still wraps at its own buffer size regardless of the total.
+    /// is set (a null gate means disabled; call sites gate with ?.). Without it, an in-memory AOF
+    /// (null device with fast-aof-truncate) recycles pages past unshipped records and silently
+    /// drops them for a lagging replica.
     ///
-    /// Stalled appenders sleep-poll the published lag; publishers only write a volatile field
-    /// and never wake anyone, keeping the shipping threads' cost flat under load. The stall
-    /// and resume thresholds differ (hysteresis), so the system alternates between longer
-    /// free-run and drain phases instead of oscillating at the stall boundary.
+    /// The gate is fail-safe by construction. For each physical sublog the shipping side publishes
+    /// a watermark: the minimum shipped address across all attached replicas (long.MaxValue when
+    /// none is attached). An appender, before reserving space on sublog s, computes its own lag
+    /// as tail(s) - watermark(s) and stalls while it exceeds the per-sublog budget. Because the
+    /// watermark is a past snapshot of a monotonically increasing shipped address, the computed
+    /// lag is a conservative over-estimate: a stale or frozen watermark makes the appender stall
+    /// sooner, never later. So if the shipping side slows or stops publishing, the appender's own
+    /// advancing tail drives the computed lag up and it stalls itself: safety rests on the appender
+    /// measuring its own tail against the watermark, not on any publish landing in time.
     ///
-    /// A replica that ships slowly throttles the primary indefinitely, which is the intended
-    /// contract; one that stops shipping entirely stalls appends until its connection faults
-    /// and its sync driver is removed (the removal publish then releases the stall), the same
-    /// contract as the replica-side ReplicationOffsetMaxLag throttle.
+    /// The budget is AofShipMaxLag (a whole-log budget) divided evenly per sublog, matching the
+    /// replica-side ReplicationOffsetMaxLag convention. The watermark is read-mostly: appenders
+    /// only read it, the shipping side writes it periodically, so its cache line stays shared in
+    /// appender caches between publishes and coherence traffic scales with publish frequency, not
+    /// append frequency. Publish frequency therefore trades throughput (a fresher watermark stalls
+    /// less conservatively) for nothing on the safety side.
     /// </summary>
     public sealed class AofBackpressure : IDisposable
     {
         /// <summary>
-        /// Sleep interval while stalled. Also bounds how quickly a stall reacts to a publish,
-        /// so publishers gain nothing from refreshing the lag more often than this.
+        /// Sleep interval, in milliseconds, for a stalled appender re-checking its lag.
         /// </summary>
         public const int PollIntervalMs = 1;
 
         /// <summary>
-        /// Byte-progress interval for republishing lag. A sync task republishes only after
-        /// shipping this many bytes since its last publish, so a caught-up (idle) sublog never
-        /// publishes and a busy one batches many chunks per publish. Derived from the stall
-        /// budget so a stalled appender is released within one interval of shipping past the
-        /// resume threshold (a small fraction of the hysteresis band).
+        /// Byte-progress interval for refreshing the shipped watermark: the shipping side
+        /// republishes only after shipping this many bytes since its last publish, so a caught-up
+        /// sublog does no work and a busy one batches many chunks per publish. This only affects
+        /// watermark freshness (hence throughput), never safety.
         /// </summary>
         public long PublishDeltaBytes { get; }
 
-        readonly long stallLagBytes;
-        readonly long resumeLagBytes;
+        // One padded watermark per physical sublog: the min shipped address across attached
+        // replicas, written by the shipping side, read by appenders. Padded to a cache line so a
+        // publish to one sublog does not invalidate an appender reading another sublog's slot.
+        [StructLayout(LayoutKind.Explicit, Size = 64)]
+        struct PaddedLong
+        {
+            [FieldOffset(0)] public long Value;
+        }
 
-        // Stall decision, owned by the publishers: the threshold comparison and hysteresis run
-        // on the shipping threads, and this flag is rewritten only on state transitions, so the
-        // cache line appenders read stays quiet while the state is steady.
-        bool stalled;
+        readonly long perSublogBudget;
+        readonly PaddedLong[] shippedWatermark;
 
         volatile bool disposed;
 
@@ -61,47 +66,45 @@ namespace Garnet.server
         public AofBackpressure(GarnetServerOptions serverOptions, ILogger logger = null)
         {
             this.logger = logger;
-            stallLagBytes = serverOptions.AofShipMaxLag;
-            resumeLagBytes = stallLagBytes / 2;
-            // ~16 publishes span the full stall budget (~8 the hysteresis band), so the release
-            // lag past resumeLagBytes is bounded by one PublishDeltaBytes of shipping.
-            PublishDeltaBytes = Math.Max(1, stallLagBytes / 32);
-            logger?.LogInformation("AofBackpressure enabled: stall lag {stallLagBytes} bytes, resume lag {resumeLagBytes} bytes, publish delta {PublishDeltaBytes} bytes, summed across sublogs", stallLagBytes, resumeLagBytes, PublishDeltaBytes);
+            var sublogCount = serverOptions.AofPhysicalSublogCount;
+            perSublogBudget = Math.Max(1, serverOptions.AofShipMaxLag / sublogCount);
+            PublishDeltaBytes = Math.Max(1, perSublogBudget / 8);
+            shippedWatermark = new PaddedLong[sublogCount];
+            // No replica attached yet: a max watermark makes the computed lag non-positive, so
+            // nothing stalls until the shipping side publishes real shipped addresses on attach.
+            for (var i = 0; i < sublogCount; i++)
+                shippedWatermark[i].Value = long.MaxValue;
+            logger?.LogInformation("AofBackpressure enabled: per-sublog budget {perSublogBudget} bytes across {sublogCount} sublogs (AofShipMaxLag {total} total), publish delta {PublishDeltaBytes} bytes", perSublogBudget, sublogCount, serverOptions.AofShipMaxLag, PublishDeltaBytes);
         }
 
         /// <summary>
-        /// Stall while the publishers report the replication lag over budget.
-        /// Callers must not hold sublog locks (transaction paths gate before LockSublogs).
+        /// Stall the calling appender while sublog <paramref name="sublogIdx"/>'s lag
+        /// (<paramref name="tailAddress"/> minus the published min-shipped watermark) exceeds the
+        /// per-sublog budget. Callers must not hold sublog locks (transaction paths gate before
+        /// LockSublogs).
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Wait()
+        public void Wait(int sublogIdx, long tailAddress)
         {
-            if (!Volatile.Read(ref stalled)) return;
-            WaitSlow();
+            if (tailAddress - Volatile.Read(ref shippedWatermark[sublogIdx].Value) <= perSublogBudget)
+                return;
+            WaitSlow(sublogIdx, tailAddress);
         }
 
-        void WaitSlow()
+        void WaitSlow(int sublogIdx, long tailAddress)
         {
-            while (!disposed && Volatile.Read(ref stalled))
+            while (!disposed && tailAddress - Volatile.Read(ref shippedWatermark[sublogIdx].Value) > perSublogBudget)
                 Thread.Sleep(PollIntervalMs);
         }
 
         /// <summary>
-        /// Publish the replication lag (slowest replica's tail-minus-shipped diff summed across
-        /// sublogs). Pass 0 when no replica is attached. The threshold comparison and hysteresis
-        /// run here, on the publishing thread; the stall flag is written only when the decision
-        /// changes. Concurrent publishers may race a transition, which is benign: the next
-        /// publish re-derives it from fresher lag within a poll interval.
+        /// Publish sublog <paramref name="sublogIdx"/>'s min shipped address across attached
+        /// replicas (long.MaxValue when none is attached, which releases the sublog). A stale
+        /// value is safe: it only over-estimates the appender's lag.
         /// </summary>
-        /// <param name="totalLag">Replication lag in bytes, summed across all sublogs.</param>
-        public void PublishReplicationLag(long totalLag)
-        {
-            var isStalled = Volatile.Read(ref stalled);
-            if (!isStalled && totalLag > stallLagBytes)
-                Volatile.Write(ref stalled, true);
-            else if (isStalled && totalLag <= resumeLagBytes)
-                Volatile.Write(ref stalled, false);
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void PublishShippedAddress(int sublogIdx, long minShippedAddress)
+            => Volatile.Write(ref shippedWatermark[sublogIdx].Value, minShippedAddress);
 
         /// <summary>
         /// Release all stalled appenders permanently (server shutdown).

@@ -433,9 +433,10 @@ namespace Garnet.server
         public bool UseAofNullDevice = false;
 
         /// <summary>
-        /// Stall primary AOF appends when the replication lag of the logical log (tail minus
-        /// shipped, summed across all sublogs) exceeds this limit. -1: disabled, >=1: max lag
-        /// in bytes. Pair with ReplicationOffsetMaxLag on replicas for end-to-end backpressure.
+        /// Stall primary AOF appends when the replication lag exceeds this budget: a whole-log
+        /// budget divided evenly per sublog (each sublog stalls at tail-minus-shipped over an even
+        /// 1/m share). -1: disabled, >=1: max lag in bytes. Pair with ReplicationOffsetMaxLag on
+        /// replicas for end-to-end backpressure.
         /// </summary>
         public long AofShipMaxLag = -1;
 

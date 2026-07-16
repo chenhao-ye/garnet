@@ -28,11 +28,11 @@ namespace Garnet.cluster
             TsavoriteLogScanSingleIterator iter;
             long previousAddress;
 
-            // Byte-progress gate for backpressure lag publishing: republish only after shipping
-            // publishDeltaBytes since the last publish. previousAddress advances only when a chunk
-            // ships, so a caught-up (idle) sublog never publishes, and a busy one batches many
-            // chunks per publish. Accessed only by this task's consume loop; with backpressure
-            // disabled the publish block is skipped entirely.
+            // Byte-progress gate for refreshing the backpressure shipped watermark: republish only
+            // after shipping publishDeltaBytes since the last publish. previousAddress advances only
+            // when a chunk ships, so a caught-up (idle) sublog never publishes, and a busy one
+            // batches many chunks per publish. Accessed only by this task's consume loop; with
+            // backpressure disabled the publish block is skipped entirely.
             readonly bool backpressureEnabled;
             readonly long publishDeltaBytes;
             long lastPublishedShippedAddress;
@@ -201,16 +201,16 @@ namespace Garnet.cluster
                 garnetClient.CompletePending(false);
                 garnetClient.Throttle();
 
-                // Publish replication lag to the backpressure gate outside epoch protection,
+                // Refresh the shipped watermark in the backpressure gate outside epoch protection,
                 // gated on shipped byte-progress: republish once this task has shipped
-                // publishDeltaBytes since its last publish. previousAddress advances only in
-                // Consume, so a caught-up sublog never republishes (no lock/scan while idle),
-                // while a draining one batches many chunks per publish yet still releases
-                // stalled appenders as it ships.
+                // publishDeltaBytes since its last publish. This is a freshness hint only; a stale
+                // watermark is safe because appenders self-check conservatively. previousAddress
+                // advances only in Consume, so a caught-up sublog does no work while idle, and a
+                // draining one advances the watermark so stalled appenders progress as it ships.
                 if (backpressureEnabled && previousAddress - lastPublishedShippedAddress >= publishDeltaBytes)
                 {
                     lastPublishedShippedAddress = previousAddress;
-                    aofSyncDriverStore.PublishReplicationLag();
+                    aofSyncDriverStore.PublishShippedAddress(physicalSublogIdx);
                 }
 
                 // The consume loop invokes Throttle on every poll, including empty ones, so this
