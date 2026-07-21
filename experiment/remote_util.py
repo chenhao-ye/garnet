@@ -49,6 +49,13 @@ def run_ssh(host: str, shell_cmd: str, timeout: int = 60) -> subprocess.Complete
     )
 
 
+def remote_ssh_hosts(remote: dict[str, RemoteEntry]) -> list[str]:
+    """Unique ssh hosts an experiment's roles launch on (sorted, deduplicated). Empty for a
+    purely local experiment. Shared by preflight and governor pinning so the notion of
+    'the machines this experiment uses' lives in one place."""
+    return sorted({e.ssh for e in remote.values() if e.ssh is not None})
+
+
 def resolve_role_ip(role: str, remote: dict[str, RemoteEntry]) -> str:
     """Data-plane IP peers use to reach a replication role in remote mode: the entry's
     explicit ip, else its ssh name resolved locally, else (entry-less local role) the local
@@ -161,7 +168,7 @@ def remote_preflight(spec, exp_dir: Path) -> dict[str, bool]:
     path, so its roles write into the local result tree directly and need no cleanup or
     copy-back."""
     rel = remote_repo_path()
-    hosts = sorted({e.ssh for e in spec.remote.values() if e.ssh is not None})
+    hosts = remote_ssh_hosts(spec.remote)
     # The primary/replica slots run the server project; the client slot runs the bench.
     host_projects: dict[str, set[str]] = {host: set() for host in hosts}
     for role, entry in spec.remote.items():
@@ -229,3 +236,50 @@ def remote_preflight(spec, exp_dir: Path) -> dict[str, bool]:
                     f"ssh {host}: dotnet build failed:\n{build.stdout[-2000:]}{build.stderr[-2000:]}"
                 )
     return loopback
+
+
+# Pin cores to their maximum frequency. cpupower is the fast path; the sysfs fallback
+# covers machines without cpupower. Both need root, which the cluster grants via
+# passwordless sudo.
+_GOVERNOR_CMD = (
+    "sudo cpupower frequency-set -g performance >/dev/null 2>&1 || "
+    "for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do "
+    "echo performance | sudo tee \"$g\" >/dev/null; done"
+)
+_READ_GOVERNOR = "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null"
+
+
+def force_max_frequency(
+    remote: dict[str, RemoteEntry], loopback: dict[str, bool] | None = None
+) -> None:
+    """Pin the CPU governor to 'performance' on every machine an experiment uses, so results
+    are not confounded by DVFS (a lightly loaded server otherwise idles near its frequency
+    floor and unrelated background load can boost it; see CLAUDE.md). Applies to every
+    experiment type: it always sets the local machine (the orchestrator, any local-only role,
+    and the sole host of a local experiment) and additionally each remote ssh host. A
+    loopback ssh host is the local machine, so it is skipped to avoid a redundant set;
+    `loopback` is the map returned by remote_preflight (absent => treat none as loopback).
+    Best-effort: logs a warning and continues if a host cannot be set."""
+    if dry_run:
+        logger.info("[dry-run] would force performance governor on all experiment hosts")
+        return
+    loopback = loopback or {}
+
+    def _set(label: str, run):
+        try:
+            run(_GOVERNOR_CMD)
+            gov = run(_READ_GOVERNOR).stdout.strip()
+            logger.info(f"CPU governor on {label} -> {gov or 'unknown'}")
+        except Exception as exc:  # noqa: BLE001 - best effort, never abort the run
+            logger.warning(f"Could not set CPU governor on {label}: {exc}")
+
+    def _local(cmd):
+        return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=60)
+
+    # Local machine: local experiments run entirely here, and it is also the orchestrator
+    # and any role whose remote entry has no ssh (runs locally) or is a loopback host.
+    _set("localhost", _local)
+    for host in remote_ssh_hosts(remote):
+        if loopback.get(host):
+            continue  # loopback host == this machine, already set above
+        _set(host, lambda cmd, h=host: run_ssh(h, cmd))

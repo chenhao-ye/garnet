@@ -372,6 +372,29 @@ def wait_for_server(host: str, port: int, proc: subprocess.Popen | None = None) 
     )
 
 
+def wait_port_free(ssh_host: str | None, port: int, timeout: int = 30) -> None:
+    """Block until nothing is listening on `port` (checked with ss on the target machine).
+    A server with many sublogs (large m) can take seconds to exit and release its port after
+    a kill; launching the next combo's server before then makes it bind-fail while
+    wait_for_server connects to the still-dying leftover, which then resets the bootstrap.
+    Best-effort: logs a warning and proceeds if the port is still busy at the timeout."""
+    if dry_run:
+        return
+    probe = f"ss -ltnH 'sport = :{port}' 2>/dev/null | head -1"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if ssh_host:
+            out = remote_util.run_ssh(ssh_host, probe).stdout.strip()
+        else:
+            out = subprocess.run(
+                ["bash", "-c", probe], capture_output=True, text=True
+            ).stdout.strip()
+        if not out:
+            return
+        time.sleep(0.5)
+    logger.warning(f"port {port} still busy on {ssh_host or 'local'} after {timeout}s")
+
+
 def _signal_process_group(proc: subprocess.Popen, sig: int) -> None:
     """Send `sig` to the process's whole group. Servers are launched with
     start_new_session=True, so this reaches `dotnet run` and the app host it spawns
@@ -568,6 +591,12 @@ def execute_run(
         role_dir = run_dir / role
         role_host, role_port = resolve_replication_server_endpoint(params, role)
         ssh_host = role_ssh(role)
+        # Clear the port before launching: kill any leftover server on it (a slow-exiting
+        # previous combo, especially large m) and wait for the OS to release the port, so
+        # this server binds cleanly instead of racing a dying leftover.
+        server_stem = Path(server_project).stem
+        remote_util.kill_remote_role(ssh_host, f"{server_stem}.*--port {params.get('port')}")
+        wait_port_free(ssh_host, int(params.get("port")))
         if ssh_host:
             proc = remote_util.launch_ssh_role(full_cmd, role_dir / "_ssh.log", role, ssh_host)
         else:
@@ -668,6 +697,11 @@ def _run_one(config: str) -> None:
     loopback: dict[str, bool] = {}
     if remote_mode(spec.remote):
         loopback = remote_util.remote_preflight(spec, exp_dir)
+
+    # Prepare step (all experiment types): pin cores to max frequency on every machine this
+    # experiment uses so measurements are not confounded by DVFS (see CLAUDE.md). loopback is
+    # empty for local experiments, so this sets just the local machine there.
+    remote_util.force_max_frequency(spec.remote, loopback)
 
     logger.info(f"Expanded {len(spec.combos)} runs")
 
