@@ -276,11 +276,12 @@ namespace Resp.benchmark
         }
 
         // Writer thread: keeps `itp` SETs to the primary in flight, recording per-batch latency
-        // (per-op when itp = 1). Uniform-random keys over the preloaded keyspace.
+        // (per-op when itp = 1). Keys drawn from the configured write distribution
+        // (--replication-write-dist) over the preloaded keyspace.
         void RunWriter(int threadId, GarnetClientSession client, LongHistogram hist)
         {
             var keyCount = keyStrings.Length;
-            var rng = new Random(0xBEEF + threadId);
+            var keyDist = new KeyDistAdaptor(options.ReplicationWriteDist, keyCount, 0xBEEF + threadId, options.ZipfTheta);
             var parallel = Math.Max(1, options.IntraThreadParallelism);
             var wait = !options.Burst;
             var opsCompleted = 0L;
@@ -296,7 +297,7 @@ namespace Resp.benchmark
                 var start = Stopwatch.GetTimestamp();
                 for (var i = 0; i < parallel; i++)
                 {
-                    cmd[1] = keyStrings[rng.Next(keyCount)];
+                    cmd[1] = keyStrings[keyDist.Next()];
                     client.ExecuteBatch(cmd);
                 }
                 client.CompletePending(wait);
@@ -307,11 +308,12 @@ namespace Resp.benchmark
         }
 
         // Reader thread: keeps `itp` GETs to the replica in flight, recording per-batch latency
-        // (per-op when itp = 1). Uniform-random keys over the preloaded keyspace.
+        // (per-op when itp = 1). Keys drawn from the configured read distribution
+        // (--replication-read-dist) over the preloaded keyspace.
         void RunReader(int threadId, GarnetClientSession client, LongHistogram hist)
         {
             var keyCount = keyStrings.Length;
-            var rng = new Random(0xCAFE + threadId);
+            var keyDist = new KeyDistAdaptor(options.ReplicationReadDist, keyCount, 0xCAFE + threadId, options.ZipfTheta);
             var parallel = Math.Max(1, options.IntraThreadParallelism);
             var wait = !options.Burst;
             var opsCompleted = 0L;
@@ -325,7 +327,7 @@ namespace Resp.benchmark
                 var start = Stopwatch.GetTimestamp();
                 for (var i = 0; i < parallel; i++)
                 {
-                    cmd[1] = keyStrings[rng.Next(keyCount)];
+                    cmd[1] = keyStrings[keyDist.Next()];
                     client.ExecuteBatch(cmd);
                 }
                 client.CompletePending(wait);

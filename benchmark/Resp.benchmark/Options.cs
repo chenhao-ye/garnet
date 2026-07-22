@@ -173,6 +173,12 @@ namespace Resp.benchmark
         [Option("replication-readers", Required = false, Default = 1, HelpText = "ReplicationBench: reader threads issuing GETs to the replica.")]
         public int ReplicationReaders { get; set; }
 
+        [Option("replication-write-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "ReplicationBench: key distribution of writer SETs to the primary: Uniform, Zipf, or ZipfRev (Zipf with the hotness order reversed). Zipf theta from --zipf-theta.")]
+        public KeyDistribution ReplicationWriteDist { get; set; }
+
+        [Option("replication-read-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "ReplicationBench: key distribution of reader GETs to the replica: Uniform, Zipf, or ZipfRev (Zipf with the hotness order reversed). Zipf theta from --zipf-theta.")]
+        public KeyDistribution ReplicationReadDist { get; set; }
+
         /*
          * InProc/AofBench server options
          */
