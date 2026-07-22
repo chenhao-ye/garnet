@@ -62,6 +62,22 @@ namespace Garnet.cluster
                             )
                         {
                             logger?.LogWarning("MainMemoryReplication: Skipping from {ReplicaReplicationOffset} to {currentAddress}", clusterProvider.replicationManager.GetSublogReplicationOffset(physicalSublogIdx), currentAddress);
+
+                            // SafeInitialize rebases the sublog's begin/head to currentAddress and
+                            // discards everything below it. Under asynchronous replay the background
+                            // replay iterator can lag the received tail, so records received but not
+                            // yet applied would be evicted and skipped here (silent lost updates).
+                            // Drain the replay up to the current tail first so only already-applied
+                            // records are discarded. No-op under synchronous replay (offset == tail);
+                            // the receive thread pauses ingest during the drain, which the replay
+                            // task uses to catch up, so this bounded stall runs only on this rare
+                            // skip event and adds no steady-state cost.
+                            var drainUntil = clusterProvider.storeWrapper.appendOnlyFile.Log.GetTailAddress(physicalSublogIdx);
+                            var unappliedBytes = drainUntil - clusterProvider.replicationManager.GetSublogReplicationOffset(physicalSublogIdx);
+                            if (unappliedBytes > 0)
+                                logger?.LogWarning("MainMemoryReplication: draining {unappliedBytes} unapplied bytes on sublog {physicalSublogIdx} before reset to avoid dropping received records", unappliedBytes, physicalSublogIdx);
+                            replicaReplayDriverStore.GetReplayDriver(physicalSublogIdx).DrainReplayTo(drainUntil);
+
                             clusterProvider.storeWrapper.appendOnlyFile.Log.SafeInitialize(physicalSublogIdx, currentAddress, currentAddress);
                             clusterProvider.replicationManager.SetSublogReplicationOffset(physicalSublogIdx, currentAddress);
                         }

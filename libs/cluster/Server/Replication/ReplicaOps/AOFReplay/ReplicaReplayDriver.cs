@@ -449,6 +449,21 @@ namespace Garnet.cluster
             }
         }
 
+        /// <summary>
+        /// Block until the background replay has applied up to <paramref name="untilAddress"/> on
+        /// this sublog. Used before a receive-side log reset (SafeInitialize) so records received
+        /// but not yet applied are not discarded. The caller has paused ingest, so the background
+        /// replay task drains toward the tail and this returns; cancellation aborts it.
+        /// </summary>
+        public void DrainReplayTo(long untilAddress)
+        {
+            while (replicationManager.GetSublogReplicationOffset(physicalSublogIdx) < untilAddress)
+            {
+                cts.Token.ThrowIfCancellationRequested();
+                _ = Thread.Yield();
+            }
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void ThrottlePrimary()
         {
