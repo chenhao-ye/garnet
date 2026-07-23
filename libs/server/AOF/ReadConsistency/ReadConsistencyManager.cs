@@ -46,10 +46,15 @@ namespace Garnet.server
         readonly long replayDriftThreshold = serverOptions.AofReplayDriftThreshold;
 
         /// <summary>
-        /// Whether replay drift is bounded at all: false when the barrier is disabled
-        /// (threshold -1) or there is a single virtual sublog (no cross-sublog drift to bound).
+        /// Whether replay drift is bounded at all. Drift bounding exists only to keep the
+        /// timestamp read frontier well-defined, so it is off under the snapshot read protocol
+        /// (AofReadWithTimestamp == false), which reads from a periodic snapshot rather than
+        /// per-sublog frontiers. It is also off when the barrier is disabled (threshold -1) or
+        /// there is a single virtual sublog (no cross-sublog drift to bound). Leaving it on under
+        /// the snapshot protocol would engage the replay barrier for no reader benefit and stall
+        /// the batch drain at high replay-task counts.
         /// </summary>
-        readonly bool driftBoundingEnabled = serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1;
+        readonly bool driftBoundingEnabled = serverOptions.AofReadWithTimestamp && serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1;
 
         /// <summary>
         /// Interval, in sequence-number units, between two consecutive drift scans by the same

@@ -121,8 +121,10 @@ namespace Garnet.cluster
                         if (pulseSequenceNumber > 0)
                             appendOnlyFile.readConsistencyManager.AdvanceVirtualSublogTime(virtualSublogIdx, pulseSequenceNumber);
 
-                        // Update max sequence number for this virtual sublog which is mapped
-                        appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, maxSequenceNumber);
+                        // Update max sequence number for this virtual sublog. Only the timestamp
+                        // read protocol consults it; the snapshot protocol skips this maintenance.
+                        if (clusterProvider.serverOptions.AofReadWithTimestamp)
+                            appendOnlyFile.readConsistencyManager.UpdateVirtualSublogMaxSequenceNumber(virtualSublogIdx, maxSequenceNumber);
                     }
                     catch (Exception ex)
                     {

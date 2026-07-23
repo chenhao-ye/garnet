@@ -30,6 +30,8 @@ namespace Resp.benchmark
                 CommitFrequencyMs = options.CommitFrequencyMs,
                 AofPhysicalSublogCount = options.AofPhysicalSublogCount,
                 AofReplayTaskCount = options.AofReplayTaskCount,
+                AofReadWithTimestamp = string.IsNullOrEmpty(options.AofReadProtocol) || options.AofReadProtocol.Equals("timestamp", StringComparison.OrdinalIgnoreCase),
+                AofSnapshotFreq = options.AofSnapshotFreq > 0 ? options.AofSnapshotFreq : 5,
                 AofReplayDriftThreshold = options.AofReplayDriftThreshold,
                 AofReplayDriftCheckFreq = options.AofReplayDriftCheckFreq,
                 AofBarrierSpinUs = options.AofBarrierSpinUs,

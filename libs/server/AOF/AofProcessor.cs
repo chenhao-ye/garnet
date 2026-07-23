@@ -385,8 +385,14 @@ namespace Garnet.server
                 key = SpanByte.FromLengthPrefixedPinnedPointer(keyPtr);
                 postKeyPtr = keyPtr + key.TotalSize();
                 var hash = GarnetLog.HASH(key);
-                var seqNum = ((AofShardedHeader*)entryPtr)->sequenceNumber;
-                storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogKeySequenceNumber(sublogIdx, hash, seqNum);
+                // Per-key read-consistency tracking exists only for the timestamp read protocol.
+                // The snapshot protocol (AofReadWithTimestamp == false) reads from a periodic
+                // snapshot and never consults the sketch, so skip the per-record update entirely.
+                if (storeWrapper.serverOptions.AofReadWithTimestamp)
+                {
+                    var seqNum = ((AofShardedHeader*)entryPtr)->sequenceNumber;
+                    storeWrapper.appendOnlyFile.readConsistencyManager.UpdateVirtualSublogKeySequenceNumber(sublogIdx, hash, seqNum);
+                }
                 keyHash = hash;
             }
             else

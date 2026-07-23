@@ -146,6 +146,12 @@ namespace Resp.benchmark
         [Option("zipf-theta", Required = false, Default = 0.99, HelpText = "Theta of the Zipf key distributions used by --aof-replay-dist and --aof-read-dist.")]
         public double ZipfTheta { get; set; }
 
+        [Option("aof-read-protocol", Required = false, Default = "timestamp", HelpText = "AofBench replica read protocol: 'timestamp' (prefix-consistent, MultiLog) or 'snapshot' (C5: periodic snapshot, stale reads). Maps to server AofReadWithTimestamp.")]
+        public string AofReadProtocol { get; set; }
+
+        [Option("aof-snapshot-freq", Required = false, Default = 5, HelpText = "Snapshot interval in ms for the snapshot read protocol (aof-read-protocol=snapshot). Only used when the read protocol is snapshot.")]
+        public int AofSnapshotFreq { get; set; }
+
         [Option("pseudo-timestamp-pace", Required = false, Default = 2000, HelpText = "Average pseudo-timestamp ticks between consecutive generated AOF records of the same sublog. Generated records emulate one global stream advancing pace/#sublogs ticks per record, dealt across sublogs. Emulates a wall-clock sequence generator (at ~2 GHz, 2000 is ~1us per record).")]
         public int PseudoTimestampPace { get; set; }
 
