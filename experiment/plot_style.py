@@ -100,7 +100,7 @@ linestyle_map = {
 
 marker_map = {
     "single_log": ".",
-    "multilog_virtual": "v",
+    "multilog_virtual": "s",
     "multilog_physical": "o",
     "multilog_hybrid": "v",
     "multilog_direct": "o",
@@ -126,7 +126,7 @@ labels_map = {
     "multilog_direct": "Direct mode (m)",
     "noprefix": "NoPrefix",
     "noprefix_m64": "NoPrefix(64)",
-    "noprefix_physical": "NoPrefix(x)",
+    "noprefix_physical": "NoPrefix",
     "no_aof": "Garnet without log",
     "aof_single": "Garnet with log",
     "aof_multilog": "Garnet with MultiLog(64)",
@@ -159,6 +159,18 @@ _dist_style = {
     "dist_zipf": ("#fdae61", "^", "Zipf (same r/w hotspot)", 12),
 }
 for _key, (_color, _marker, _label, _z) in _dist_style.items():
+    color_map[_key] = _color
+    marker_map[_key] = _marker
+    linestyle_map[_key] = "-"
+    labels_map[_key] = _label
+    zorder_map[_key] = _z
+
+# C5 (virtual replay-task) curves, optionally split by snapshot frequency.
+_c5_style = {
+    "c5_5ms": ("#abdda4", "v", "C5-5ms", 2),
+    "c5_1s": ("#66c2a5", "^", "C5-1s", 2),
+}
+for _key, (_color, _marker, _label, _z) in _c5_style.items():
     color_map[_key] = _color
     marker_map[_key] = _marker
     linestyle_map[_key] = "-"

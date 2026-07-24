@@ -28,6 +28,11 @@ Each plot config carries a `template` field that selects a renderer:
                      per series, five bar figures (replay tput, reader tput,
                      p50/p99/p99.9 latency) with one bar per sublog count
                      dependencies: [<reader sweep>]
+  - replay_reader_scaling:
+                     curve version of replay_reader_bar: five figures per
+                     series vs. sublog count (log2 x), SingleLog dot + MultiLog
+                     curve
+                     dependencies: [<reader sweep(s)>]
   - replay_reader_sketch:
                      per dbsize, five figures (replay tput, reader tput,
                      p50/p99/p99.9 latency) vs. sketch size (log x, k/m tick
@@ -84,6 +89,11 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     # dependencies[0] = physical sweep, dependencies[1] = virtual sweep,
     # dependencies[2] (optional) = physical NoPrefix sweep, used to draw the
     # NoPrefix upper-bound curve along the physical axis only.
+    #
+    # Optionally add extra "C5" curves (a second virtual replay-task sweep,
+    # e.g. split by snapshot frequency): set `c5_dependency` and `c5_x_param`
+    # (default client.aof_replay_task_count), with `c5_curves` a list of
+    # {style, filter} -- `style` names a plot_style key.
     if len(deps) not in (2, 3):
         raise ValueError(
             f"replay template expects 2 or 3 dependencies "
@@ -107,6 +117,20 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
             nop, x_param="client.aof_physical_sublog_count"
         )
 
+    # Optional C5 curves (each a (style, xs, ys) tuple).
+    c5_dependency = plot_cfg.get("c5_dependency")
+    c5_x_param = plot_cfg.get("c5_x_param", "client.aof_replay_task_count")
+    c5_curves = plot_cfg.get("c5_curves") or []
+    c5_series: list[tuple[str, list[float], list[float]]] = []
+    if c5_dependency and c5_curves:
+        c5_result = load_result(c5_dependency)
+        for cc in c5_curves:
+            cxs, cys, _ = extract_series(
+                c5_result, x_param=c5_x_param, filter_params=cc.get("filter") or {}
+            )
+            if cxs:
+                c5_series.append((cc["style"], cxs, cys))
+
     single_log_y = None
     for x, y in zip(xs_phys, ys_phys):
         if x == 1:
@@ -121,7 +145,12 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     scale = float(plot_cfg.get("scale", 1.0))
     fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
 
-    all_x = sorted(set(xs_virt) | set(xs_phys) | set(xs_nop))
+    all_x = sorted(
+        set(xs_virt)
+        | set(xs_phys)
+        | set(xs_nop)
+        | {x for _, cxs, _ in c5_series for x in cxs}
+    )
     if not all_x:
         raise RuntimeError("Empty replay datasets; nothing to plot.")
 
@@ -148,6 +177,21 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
             label=labels_map["noprefix_physical"],
             zorder=zorder_map.get("noprefix_physical", 12),
         )
+    # C5 curves are drawn before MultiLog so MultiLog renders on top, and the
+    # legend reads SingleLog/NoPrefix, then C5..., then MultiLog... (MultiLog
+    # in the last row).
+    for style, cxs, cys in c5_series:
+        ax.plot(
+            cxs,
+            cys,
+            color=color_map[style],
+            linestyle=linestyle_map[style],
+            marker=marker_map[style],
+            markersize=MARKER_SIZE,
+            linewidth=LINEWIDTH,
+            label=labels_map[style],
+            zorder=zorder_map.get(style, 2),
+        )
     ax.plot(
         xs_virt,
         ys_virt,
@@ -169,7 +213,13 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
         label=labels_map["multilog_physical"],
     )
 
-    all_y = list(ys_virt) + list(ys_phys) + list(ys_nop) + [single_log_y]
+    all_y = (
+        list(ys_virt)
+        + list(ys_phys)
+        + list(ys_nop)
+        + [single_log_y]
+        + [y for _, _, cys in c5_series for y in cys]
+    )
     y_log = plot_cfg.get("yscale") == "log"
     default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
     apply_axis_cfg(
@@ -181,7 +231,11 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
         default_ymax=default_ymax,
     )
 
-    ncol, legend_width = resolve_legend_geom(plot_cfg, 4 if xs_nop else 3)
+    base_ncol = (4 if xs_nop else 3) + len(c5_series)
+    ncol, legend_width = resolve_legend_geom(plot_cfg, base_ncol)
+    # `legend_ncol` overrides the column count independently of the host width
+    # (useful when many long labels need several rows at full column width).
+    ncol = int(plot_cfg.get("legend_ncol", ncol))
     legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
     if plot_cfg.get("legend_separate"):
         save_legend(ax, out_path, width=legend_width, **legend_kwargs)
@@ -400,10 +454,10 @@ def render_replay_reader(plot_cfg: dict, deps: list[str], out_path: Path) -> Non
     # (figure file suffix, y metric in result.yaml, default y-axis label,
     # y unit scale). parse.py records reader latencies in us.
     metric_figures = [
-        ("tput", "reader_throughput", "Reader\nthroughput (Mop/s)", 1.0),
-        ("p50", "reader_lat_p50", f"Reader\np50 latency ({unit})", lat_scale),
-        ("p99", "reader_lat_p99", f"Reader\np99 latency ({unit})", lat_scale),
-        ("p999", "reader_lat_p99_9", f"Reader\np99.9 latency ({unit})", lat_scale),
+        ("tput", "reader_throughput", "Read\nthroughput (Mop/s)", 1.0),
+        ("p50", "reader_lat_p50", f"Read\np50 latency ({unit})", lat_scale),
+        ("p99", "reader_lat_p99", f"Read\np99 latency ({unit})", lat_scale),
+        ("p999", "reader_lat_p99_9", f"Read\np99.9 latency ({unit})", lat_scale),
     ]
 
     series = plot_cfg.get("series") or [{}]
@@ -575,10 +629,10 @@ def render_replay_reader_threshold(
     # Single-line labels (short forms) so they fit the narrow figure height.
     metric_figures = [
         ("replay", "throughput", "Replay tput (Mop/s)", 1.0),
-        ("reader", "reader_throughput", "Reader tput (Mop/s)", 1.0),
-        ("p50", "reader_lat_p50", f"Reader p50 ({unit})", lat_scale),
-        ("p99", "reader_lat_p99", f"Reader p99 ({unit})", lat_scale),
-        ("p999", "reader_lat_p99_9", f"Reader p99.9 ({unit})", lat_scale),
+        ("reader", "reader_throughput", "Read tput (Mop/s)", 1.0),
+        ("p50", "reader_lat_p50", f"Read p50 ({unit})", lat_scale),
+        ("p99", "reader_lat_p99", f"Read p99 ({unit})", lat_scale),
+        ("p999", "reader_lat_p99_9", f"Read p99.9 ({unit})", lat_scale),
     ]
 
     curves = plot_cfg.get("curves") or [
@@ -716,10 +770,10 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
     # Single-line labels (short forms) so they fit the narrow figure height.
     metric_figures = [
         ("replay", "throughput", "Replay tput (Mop/s)", 1.0),
-        ("reader", "reader_throughput", "Reader tput (Mop/s)", 1.0),
-        ("p50", "reader_lat_p50", f"Reader p50 ({unit})", lat_scale),
-        ("p99", "reader_lat_p99", f"Reader p99 ({unit})", lat_scale),
-        ("p999", "reader_lat_p99_9", f"Reader p99.9 ({unit})", lat_scale),
+        ("reader", "reader_throughput", "Read tput (Mop/s)", 1.0),
+        ("p50", "reader_lat_p50", f"Read p50 ({unit})", lat_scale),
+        ("p99", "reader_lat_p99", f"Read p99 ({unit})", lat_scale),
+        ("p999", "reader_lat_p99_9", f"Read p99.9 ({unit})", lat_scale),
     ]
 
     series = plot_cfg.get("series") or [{}]
@@ -812,6 +866,179 @@ def render_replay_reader_bar(plot_cfg: dict, deps: list[str], out_path: Path) ->
             save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
 
 
+def render_replay_reader_scaling(
+    plot_cfg: dict, deps: list[str], out_path: Path
+) -> None:
+    # Curve version of replay_reader (cf. render_replay). Per `series` (each a
+    # replay distribution, typically its own experiment) five figures (replay
+    # tput, reader tput, p50/p99/p99.9) plot the metric vs. sublog count on a
+    # log2 x-axis: SingleLog is a lone point at x=1, MultiLog a curve over x>=2.
+    # Colors follow replay_scaling (SingleLog slate blue, MultiLog red).
+    #
+    # Config keys mirror render_replay_reader_bar, with `x_param` (the sublog
+    # count on the x-axis, default client.aof_physical_sublog_count) replacing
+    # `sublog_param`. Set a positive `xmin` (a log axis cannot start at 0).
+    #
+    # Optionally add extra "C5" curves (the virtual replay-task sweep) from a
+    # separate experiment: set `c5_dependency` (the experiment name) and
+    # `c5_x_param` (default client.aof_replay_task_count). Each series carries a
+    # `c5_filter` to select its distribution. `c5_curves` is a list of
+    # {style, filter} -- one curve each; `style` names a plot_style key (color,
+    # marker, label) and `filter` is merged over the series c5_filter (e.g. to
+    # select a snapshot frequency). No C5 curves are drawn when omitted.
+    if not deps:
+        raise ValueError("replay_reader_scaling template expects >= 1 dependency")
+    x_param = plot_cfg.get("x_param", "client.aof_physical_sublog_count")
+    base_filter = dict(plot_cfg.get("filter") or {})
+    c5_dependency = plot_cfg.get("c5_dependency")
+    c5_x_param = plot_cfg.get("c5_x_param", "client.aof_replay_task_count")
+    c5_curves = plot_cfg.get("c5_curves") or []
+    c5_result = load_result(c5_dependency) if (c5_dependency and c5_curves) else None
+
+    unit = str(plot_cfg.get("latency_unit", "us")).lower()
+    if unit not in _LATENCY_UNIT_SCALE:
+        raise ValueError(
+            f"latency_unit must be one of {sorted(_LATENCY_UNIT_SCALE)}; got {unit!r}"
+        )
+    lat_scale = _LATENCY_UNIT_SCALE[unit]
+
+    metric_figures = [
+        ("replay", "throughput", "Replay tput (Mop/s)", 1.0),
+        ("reader", "reader_throughput", "Read tput (Mop/s)", 1.0),
+        ("p50", "reader_lat_p50", f"Read p50 ({unit})", lat_scale),
+        ("p99", "reader_lat_p99", f"Read p99 ({unit})", lat_scale),
+        ("p999", "reader_lat_p99_9", f"Read p99.9 ({unit})", lat_scale),
+    ]
+
+    series = plot_cfg.get("series") or [{}]
+    ncol, legend_width = resolve_legend_geom(plot_cfg, 2 + len(c5_curves))
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
+
+    legend_saved = False
+    for s in series:
+        s_suffix = s.get("suffix", "")
+        s_filter = {**base_filter, **(s.get("filter") or {})}
+        result = load_result(s.get("dependency", deps[0]))
+        for suffix, y_metric, default_ylabel, y_scale in metric_figures:
+            fig_cfg = dict(plot_cfg)
+            override_tags = [f"_{suffix}"]
+            if s_suffix:
+                override_tags.append(f"_{s_suffix}_{suffix}")
+            for tag in override_tags:
+                for cfg_key, value in plot_cfg.items():
+                    if cfg_key.endswith(tag):
+                        fig_cfg[cfg_key[: -len(tag)]] = value
+            fig, ax = _build_metric_fig(plot_cfg)
+
+            xs, ys, _ = extract_series(
+                result,
+                x_param=x_param,
+                y_metric=y_metric,
+                y_field="median",
+                filter_params=s_filter,
+            )
+            ys = [y * y_scale for y in ys]
+            single = [(x, y) for x, y in zip(xs, ys) if x == 1]
+            multi = [(x, y) for x, y in zip(xs, ys) if x >= 2]
+            if not xs:
+                print(f"WARN: no data under filter {s_filter}", file=sys.stderr)
+
+            # SingleLog first so the legend reads SingleLog -> MultiLog.
+            if single:
+                ax.plot(
+                    [x for x, _ in single],
+                    [y for _, y in single],
+                    color=color_map["single_log"],
+                    linestyle="none",
+                    marker="o",
+                    markersize=MARKER_SIZE,
+                    label="SingleLog",
+                    zorder=zorder_map.get("single_log", 11),
+                )
+            if multi:
+                ax.plot(
+                    [x for x, _ in multi],
+                    [y for _, y in multi],
+                    color=color_map["multilog_physical"],
+                    linestyle=linestyle_map["multilog_physical"],
+                    marker=marker_map["multilog_physical"],
+                    markersize=MARKER_SIZE,
+                    linewidth=LINEWIDTH,
+                    label="MultiLog",
+                    zorder=zorder_map.get("multilog_physical", 2),
+                )
+
+            # C5 curves: the virtual replay-task sweep, from a separate
+            # experiment, plotted over its own x_param (aof_replay_task_count).
+            # Each c5_curve merges its filter over the series distribution
+            # filter (e.g. to pick a snapshot frequency).
+            c5_all_y: list[float] = []
+            if c5_result is not None:
+                for cc in c5_curves:
+                    style = cc["style"]
+                    cfilt = {
+                        **base_filter,
+                        **(s.get("c5_filter") or {}),
+                        **(cc.get("filter") or {}),
+                    }
+                    cxs, cys, _ = extract_series(
+                        c5_result,
+                        x_param=c5_x_param,
+                        y_metric=y_metric,
+                        y_field="median",
+                        filter_params=cfilt,
+                    )
+                    # Start C5 at x=2, matching MultiLog (x=1 is the base).
+                    pts = [(x, y * y_scale) for x, y in zip(cxs, cys) if x >= 2]
+                    if not pts:
+                        continue
+                    c5_all_y.extend(y for _, y in pts)
+                    ax.plot(
+                        [x for x, _ in pts],
+                        [y for _, y in pts],
+                        color=color_map[style],
+                        linestyle=linestyle_map[style],
+                        marker=marker_map[style],
+                        markersize=MARKER_SIZE,
+                        linewidth=LINEWIDTH,
+                        label=labels_map[style],
+                        zorder=zorder_map.get(style, 2),
+                    )
+
+            y_log = fig_cfg.get("yscale") == "log"
+            all_y = [y for _, y in single] + [y for _, y in multi] + c5_all_y
+            default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+            apply_axis_cfg(
+                ax,
+                fig_cfg,
+                default_xlabel="Number of threads",
+                default_ylabel=default_ylabel,
+                default_ymax=default_ymax,
+            )
+            # Nudge the x-label left so it is not cut off at the right edge,
+            # and the y-label down so it is not cut off at the top.
+            ax.xaxis.label.set_x(0.42)
+            ax.yaxis.label.set_y(0.42)
+
+            if plot_cfg.get("legend_separate"):
+                if not legend_saved:
+                    save_legend(ax, out_path, width=legend_width, **legend_kwargs)
+                    legend_saved = True
+            else:
+                handles, labels = row_major_handles(ax, ncol)
+                ax.legend(
+                    handles,
+                    labels,
+                    loc="upper left",
+                    bbox_to_anchor=(0.0, 1.0),
+                    **legend_kwargs,
+                )
+
+            # Filename: <stem>[_<series suffix>]_<metric>.<ext>
+            tags = [out_path.stem] + ([s_suffix] if s_suffix else []) + [suffix]
+            save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
+
+
 def render_replay_reader_sketch(
     plot_cfg: dict, deps: list[str], out_path: Path
 ) -> None:
@@ -856,10 +1083,10 @@ def render_replay_reader_sketch(
     # Single-line labels (short forms) so they fit the narrow figure height.
     metric_figures = [
         ("replay", "throughput", "Replay tput (Mop/s)", 1.0),
-        ("reader", "reader_throughput", "Reader tput (Mop/s)", 1.0),
-        ("p50", "reader_lat_p50", f"Reader p50 ({unit})", lat_scale),
-        ("p99", "reader_lat_p99", f"Reader p99 ({unit})", lat_scale),
-        ("p999", "reader_lat_p99_9", f"Reader p99.9 ({unit})", lat_scale),
+        ("reader", "reader_throughput", "Read tput (Mop/s)", 1.0),
+        ("p50", "reader_lat_p50", f"Read p50 ({unit})", lat_scale),
+        ("p99", "reader_lat_p99", f"Read p99 ({unit})", lat_scale),
+        ("p999", "reader_lat_p99_9", f"Read p99.9 ({unit})", lat_scale),
     ]
 
     ncol, legend_width = resolve_legend_geom(plot_cfg, 3)
@@ -1122,6 +1349,7 @@ TEMPLATES = {
     "replay_reader": render_replay_reader,
     "replay_reader_threshold": render_replay_reader_threshold,
     "replay_reader_bar": render_replay_reader_bar,
+    "replay_reader_scaling": render_replay_reader_scaling,
     "replay_reader_sketch": render_replay_reader_sketch,
     "append": render_append,
     "set": render_set,
