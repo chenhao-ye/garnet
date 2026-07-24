@@ -146,8 +146,44 @@ namespace Resp.benchmark
         [Option("zipf-theta", Required = false, Default = 0.99, HelpText = "Theta of the Zipf key distributions used by --aof-replay-dist and --aof-read-dist.")]
         public double ZipfTheta { get; set; }
 
+        [Option("aof-read-protocol", Required = false, Default = "timestamp", HelpText = "AofBench replica read protocol: 'timestamp' (prefix-consistent, MultiLog) or 'snapshot' (C5: periodic snapshot, stale reads). Maps to server AofReadWithTimestamp.")]
+        public string AofReadProtocol { get; set; }
+
+        [Option("aof-snapshot-freq", Required = false, Default = 5, HelpText = "Snapshot interval in ms for the snapshot read protocol (aof-read-protocol=snapshot). Only used when the read protocol is snapshot.")]
+        public int AofSnapshotFreq { get; set; }
+
         [Option("pseudo-timestamp-pace", Required = false, Default = 2000, HelpText = "Average pseudo-timestamp ticks between consecutive generated AOF records of the same sublog. Generated records emulate one global stream advancing pace/#sublogs ticks per record, dealt across sublogs. Emulates a wall-clock sequence generator (at ~2 GHz, 2000 is ~1us per record).")]
         public int PseudoTimestampPace { get; set; }
+
+        /*
+         * ReplicationBench options
+         */
+        [Option("replication-bench", Required = false, Default = false, HelpText = "Run the replication bench client: writer threads issuing SETs to the primary plus reader threads issuing GETs to the replica. The primary/replica servers and their cluster setup are managed externally (e.g. by the experiment harness).")]
+        public bool ReplicationBench { get; set; }
+
+        [Option("primary-host", Required = false, Default = "127.0.0.1", HelpText = "Host of the primary node the writer threads target.")]
+        public string PrimaryHost { get; set; }
+
+        [Option("primary-port", Required = false, Default = 0, HelpText = "Port of the primary node the writer threads target.")]
+        public int PrimaryPort { get; set; }
+
+        [Option("replica-host", Required = false, Default = "127.0.0.1", HelpText = "Host of the replica node the reader threads target.")]
+        public string ReplicaHost { get; set; }
+
+        [Option("replica-port", Required = false, Default = 0, HelpText = "Port of the replica node the reader threads target.")]
+        public int ReplicaPort { get; set; }
+
+        [Option("replication-writers", Required = false, Default = 1, HelpText = "ReplicationBench: writer threads issuing SETs to the primary.")]
+        public int ReplicationWriters { get; set; }
+
+        [Option("replication-readers", Required = false, Default = 1, HelpText = "ReplicationBench: reader threads issuing GETs to the replica.")]
+        public int ReplicationReaders { get; set; }
+
+        [Option("replication-write-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "ReplicationBench: key distribution of writer SETs to the primary: Uniform, Zipf, or ZipfRev (Zipf with the hotness order reversed). Zipf theta from --zipf-theta.")]
+        public KeyDistribution ReplicationWriteDist { get; set; }
+
+        [Option("replication-read-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "ReplicationBench: key distribution of reader GETs to the replica: Uniform, Zipf, or ZipfRev (Zipf with the hotness order reversed). Zipf theta from --zipf-theta.")]
+        public KeyDistribution ReplicationReadDist { get; set; }
 
         /*
          * InProc/AofBench server options
@@ -184,6 +220,9 @@ namespace Resp.benchmark
 
         [Option("aof-reader-spin-us", Required = false, Default = 0, HelpText = "How long a replica reader session spins polling the sublog frontier before parking on the consistent-read wait: <0 = spin forever (never park), 0 = never spin (park immediately), >0 = spin up to N microseconds then park.")]
         public int AofReaderSpinUs { get; set; }
+
+        [Option("aof-sketch-size", Required = false, Default = 262144, HelpText = "Total number of slots (must be a power of two) across all virtual sublogs' per-key sequence-number sketches (the read-consistency KRT table) on a replica, divided evenly among them. Collision pressure is keyspace / total-slots, independent of the sublog count. A larger total reduces hash collisions at a higher memory and CPU-cache cost.")]
+        public int AofSketchSize { get; set; }
 
         [Option("aof-memory-size", Required = false, Default = "64m", HelpText = "Total AOF memory buffer used in bytes (rounds down to power of 2) - spills to disk after this limit.")]
         public string AofMemorySize { get; set; }

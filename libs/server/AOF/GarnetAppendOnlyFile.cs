@@ -35,6 +35,13 @@ namespace Garnet.server
         /// </summary>
         public GarnetLog Log { get; private set; }
 
+        /// <summary>
+        /// Primary-side replication backpressure gate. The cluster layer publishes the
+        /// replication lag (summed across physical sublogs) into it; the append paths in
+        /// <see cref="GarnetLog"/> stall on it. Null unless AofShipMaxLag is set.
+        /// </summary>
+        public readonly AofBackpressure backpressure;
+
         public readonly GarnetServerOptions serverOptions;
 
         public long HeaderSize => Log.HeaderSize;
@@ -46,13 +53,14 @@ namespace Garnet.server
         public readonly ILogger logger;
 
         /// <summary>
-        /// Calculate virtual sublog index provided physical sublog index and replay task index
+        /// Calculate virtual sublog index provided physical sublog index and replay task index.
+        /// The virtual-sublog layout is owned by <see cref="GarnetLog"/>.
         /// </summary>
         /// <param name="sublogIdx"></param>
         /// <param name="replayIdx"></param>
         /// <returns></returns>
         public int GetVirtualSublogIdx(int sublogIdx, int replayIdx)
-            => (sublogIdx * serverOptions.AofReplayTaskCount) + replayIdx;
+            => Log.GetVirtualSublogIdx(sublogIdx, replayIdx);
 
         /// <summary>
         /// Garnet append only file constructor
@@ -68,6 +76,8 @@ namespace Garnet.server
             if (serverOptions.MultiLogEnabled)
                 seqNumGen = new SequenceNumberGenerator(0);
             this.logger = logger;
+            // must be before Log is constructed, which caches it for the append paths
+            backpressure = serverOptions.AofShipMaxLag > 0 ? new AofBackpressure(serverOptions, logger) : null;
             Log = new(this, serverOptions, logSettings, logger);
             // must be after Log is constructed
             CreateOrUpdateKeySequenceManager();
@@ -76,22 +86,11 @@ namespace Garnet.server
         /// <summary>
         /// Dispose append only file
         /// </summary>
-        public void Dispose() => Log.Dispose();
-
-        /// <summary>
-        /// Get a sequence number that is strictly greater than any sequence number assigned to records
-        /// at or below the currently observed TailAddress.
-        /// </summary>
-        /// <remarks>
-        /// Correctness relies on ordering: the caller must read TailAddress BEFORE calling this method.
-        /// On the enqueue path, the sequence number is captured BEFORE the Enqueue (which advances TailAddress).
-        /// Therefore, any fresh <see cref="SequenceNumberGenerator.GetSequenceNumber"/> call made after
-        /// observing a TailAddress is guaranteed to return a value strictly greater than the sequence
-        /// numbers of all records at or below that TailAddress.
-        /// </remarks>
-        /// <returns>A sequence number strictly greater than those of all records up to the last observed tail.</returns>
-        public long GetLargerThanMaximumSequenceNumber()
-            => seqNumGen.GetSequenceNumber() + 1;
+        public void Dispose()
+        {
+            backpressure?.Dispose();
+            Log.Dispose();
+        }
 
         /// <summary>
         /// Create or update existing timestamp manager

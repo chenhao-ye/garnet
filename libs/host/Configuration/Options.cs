@@ -229,16 +229,24 @@ namespace Garnet
         [Option("aof-reader-spin-us", Required = false, HelpText = "How long a replica reader session spins polling the sublog frontier before parking on the consistent-read wait: -1 = spin forever (never park), 0 = never spin (park immediately), >0 = spin up to that many microseconds then park.")]
         public int AofReaderSpinUs { get; set; }
 
+        [IntRangeValidation(1, int.MaxValue, isRequired: false)]
+        [Option("aof-replication-chunk-size", Required = false, HelpText = "Max bytes coalesced into one AOF replication chunk (ship and replay). Default 1048576 (1 MB).")]
+        public int AofReplicationChunkSize { get; set; }
+
         [IntRangeValidation(64, 1 << 20, isRequired: false)]
         [Option("aof-replay-ring-size", Required = false, HelpText = "Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.")]
         public int AofReplayRingSize { get; set; }
+
+        [IntRangeValidation(1, 1 << 30, isRequired: false)]
+        [Option("aof-sketch-size", Required = false, HelpText = "Total number of slots (must be a power of two) across all virtual sublogs' per-key sequence-number sketches (the read-consistency KRT table) on a replica, divided evenly among them. Collision pressure is keyspace / total-slots, independent of the sublog count. A larger total reduces hash collisions at a higher memory and CPU-cache cost.")]
+        public int AofSketchSize { get; set; }
 
         [IntRangeValidation(1, 1024, isRequired: false)]
         [Option("aof-replay-ring-batch", Required = false, HelpText = "Number of records the producer batches into the replay ring buffer before publishing the tail to the consumer.")]
         public int AofReplayRingBatch { get; set; }
 
         [IntRangeValidation(0, int.MaxValue)]
-        [Option("aof-tail-witness-freq", Required = false, HelpText = "Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).")]
+        [Option("aof-tail-witness-freq", Required = false, HelpText = "Idle time in milliseconds after which a physical sublog's AOF sync task sends an in-band time pulse (CLUSTER ADVANCE_TIME) to the replica, keeping logical time flowing on idle sublogs (used only with multi-log in timestamp read mode).")]
         public int AofTailWitnessFreq { get; set; }
 
         [Option("aof-read-protocol", Required = false, HelpText = "Read protocol to use on replicas: 'timestamp' (default, prefix-consistent) or 'snapshot'.")]
@@ -438,7 +446,7 @@ namespace Garnet
         public int ReplicaSyncDelayMs { get; set; }
 
         [IntRangeValidation(-1, int.MaxValue)]
-        [Option("replica-offset-max-lag", Required = false, HelpText = "Throttle ClusterAppendLog when replica.AOFTailAddress - ReplicationOffset > ReplicationOffsetMaxLag. 0: Synchronous replay,  >=1: background replay with specified lag, -1: infinite lag")]
+        [Option("replica-offset-max-lag", Required = false, HelpText = "Throttle ClusterAppendLog when the replica's replication lag exceeds this budget, summed across all physical sublogs (each sublog throttles at an even 1/m share). 0: Synchronous replay,  >=1: background replay with the specified total lag, -1: infinite lag")]
         public int ReplicationOffsetMaxLag { get; set; }
 
         [OptionValidation]
@@ -476,6 +484,9 @@ namespace Garnet
         [OptionValidation]
         [Option("aof-null-device", Required = false, HelpText = "With fast-aof-truncate replication, use null device for AOF. Ensures no disk IO, but can cause data loss during replication.")]
         public bool? UseAofNullDevice { get; set; }
+
+        [Option("aof-ship-max-lag", Required = false, HelpText = "Stall primary AOF appends when the replication lag exceeds this budget, divided evenly per sublog (each sublog stalls at an even 1/m share). -1: disabled, >=1: max lag in bytes.")]
+        public long AofShipMaxLag { get; set; }
 
         [System.Text.Json.Serialization.JsonIgnore]
         [FilePathValidation(true, false, false)]
@@ -884,7 +895,9 @@ namespace Garnet
                 AofReplayDriftCheckFreq = AofReplayDriftCheckFreq,
                 AofBarrierSpinUs = AofBarrierSpinUs,
                 AofReaderSpinUs = AofReaderSpinUs,
+                AofReplicationChunkSize = AofReplicationChunkSize,
                 AofReplayRingSize = AofReplayRingSize,
+                AofSketchSize = AofSketchSize,
                 AofReplayRingBatch = AofReplayRingBatch,
                 AofTailWitnessFreq = AofTailWitnessFreq,
                 AofReadWithTimestamp = string.IsNullOrEmpty(AofReadProtocol) || AofReadProtocol.Equals("timestamp", StringComparison.OrdinalIgnoreCase),
@@ -942,6 +955,7 @@ namespace Garnet
                 ReplicaAttachTimeout = ReplicaAttachTimeout <= 0 ? Timeout.InfiniteTimeSpan : TimeSpan.FromSeconds(ReplicaAttachTimeout),
                 ReplicaDisklessSyncFullSyncAofThreshold = ReplicaDisklessSyncFullSyncAofThreshold,
                 UseAofNullDevice = UseAofNullDevice.GetValueOrDefault(),
+                AofShipMaxLag = AofShipMaxLag,
                 ClusterUsername = ClusterUsername,
                 ClusterPassword = ClusterPassword,
                 DeviceType = deviceType,

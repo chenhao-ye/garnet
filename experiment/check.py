@@ -17,14 +17,22 @@ import argparse
 import itertools
 import os
 import re
+import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from config import REPO_ROOT, config_path_for, load_experiment_spec
+from config import (
+    REPO_ROOT,
+    config_path_for,
+    load_experiment_spec,
+    remote_mode,
+    resolve_run_spec,
+)
 
 OPTIONS_CS_PATH = REPO_ROOT / "benchmark/Resp.benchmark/Options.cs"
+GARNET_OPTIONS_CS_PATH = REPO_ROOT / "libs/host/Configuration/Options.cs"
 SUPPORTED_SERVER_PARAMS = {
     "bind",
     "port",
@@ -63,6 +71,7 @@ SUPPORTED_SERVER_OPTION_NAMES = {
 CLIENT_DEFAULTS = {
     "online": False,
     "aof_bench": False,
+    "replication_bench": False,
     "skipload": False,
     "op": "GET",
     "batchsize": [4096],
@@ -116,6 +125,8 @@ def infer_main_mode(client_params: dict[str, Any]) -> str:
         return "online"
     if client_params.get("aof_bench"):
         return "aof"
+    if client_params.get("replication_bench"):
+        return "replication"
     return "throughput"
 
 
@@ -441,6 +452,42 @@ def validate_offline_mode(
         )
 
 
+def validate_replication_mode(
+    issues: list[Issue],
+    scope: str,
+    base_params: dict[str, Any],
+    sweep_client_params: dict[str, Any],
+    specified_keys: set[str],
+) -> None:
+    common_ignored_keys = {
+        "op",
+        "totalops",
+        "batchsize",
+        "skipload",
+        "pool",
+        "sync",
+        "op_workload",
+        "op_percent",
+        "sscardinality",
+        "ttl",
+        "client_hist",
+        "txn",
+        "threads",
+        "aof_bench_type",
+        "aof_gen_pages",
+        "aof_replay_reader",
+        "aof_reader_skip",
+    }
+    common_ignored = sorted(common_ignored_keys & specified_keys)
+    if common_ignored:
+        add_issue(
+            issues,
+            "WARNING",
+            scope,
+            f"replication bench ignores parameter(s): {format_values(common_ignored)}",
+        )
+
+
 def validate_main_config(
     issues: list[Issue],
     *,
@@ -451,7 +498,9 @@ def validate_main_config(
 ) -> None:
     scope = "benchmark.client_params"
     mode_contexts = list(
-        iter_param_contexts(base_params, sweep_client_params, ["online", "aof_bench"])
+        iter_param_contexts(
+            base_params, sweep_client_params, ["online", "aof_bench", "replication_bench"]
+        )
     )
     possible_modes = {infer_main_mode(context) for context in mode_contexts}
 
@@ -476,6 +525,13 @@ def validate_main_config(
             scope,
             "experiment benchmark is 'aof' but client_params does not enable aof_bench mode",
         )
+    if benchmark_label == "replication" and "replication" not in possible_modes:
+        add_issue(
+            issues,
+            "ERROR",
+            scope,
+            "experiment benchmark is 'replication' but client_params does not enable replication_bench mode",
+        )
 
     if len(possible_modes) > 1:
         add_issue(
@@ -495,6 +551,10 @@ def validate_main_config(
         )
     if "aof" in possible_modes:
         validate_aof_mode(
+            issues, scope, base_params, sweep_client_params, specified_keys
+        )
+    if "replication" in possible_modes:
+        validate_replication_mode(
             issues, scope, base_params, sweep_client_params, specified_keys
         )
 
@@ -642,6 +702,167 @@ def validate_split_roles(
             )
 
 
+def validate_replication_roles(issues: list[Issue], *, spec: Any) -> None:
+    """Cross-checks for replication-bench runs: GarnetServer primary/replica slots plus
+    the bench client, with consistent endpoints and sublog counts. There is no runtime
+    parameter handshake -- this static consistency check is the sole guard."""
+    has_primary = bool(spec.base_primary_params) or any(
+        combo.get("primary_params") for combo in spec.combos
+    )
+    has_replica = bool(spec.base_replica_params) or any(
+        combo.get("replica_params") for combo in spec.combos
+    )
+    if not has_primary and not has_replica:
+        return
+
+    scope = "replication"
+    if has_primary != has_replica:
+        add_issue(
+            issues,
+            "ERROR",
+            scope,
+            "primary_params and replica_params must be configured together",
+        )
+        return
+    if not spec.no_server:
+        add_issue(
+            issues,
+            "ERROR",
+            scope,
+            "primary_params/replica_params require no_server: true "
+            "(the generic server slot stays off; the harness launches the primary and "
+            "replica GarnetServers itself)",
+        )
+    if spec.benchmark != "replication":
+        add_issue(
+            issues,
+            "ERROR",
+            scope,
+            f"primary_params/replica_params require benchmark: replication, got '{spec.benchmark}'",
+        )
+
+    # Validate every expanded run so swept values stay paired; identical messages across
+    # combos are reported once.
+    seen: set[tuple[str, str]] = set()
+
+    def once(issue_scope: str, message: str) -> None:
+        if (issue_scope, message) not in seen:
+            seen.add((issue_scope, message))
+            add_issue(issues, "ERROR", issue_scope, message)
+
+    for combo in spec.combos:
+        run = resolve_run_spec(spec, combo)
+        p, r, c = run.primary_params, run.replica_params, run.client_params
+
+        if not c.get("replication_bench"):
+            once("client_params", "replication_bench: true is required in client_params")
+        if str(c.get("client")) != "GarnetClientSession":
+            once(
+                "client_params",
+                "the replication client requires client: GarnetClientSession",
+            )
+
+        # The harness bootstraps a cluster-replicated pair; both servers must run with the
+        # cluster layer and the AOF enabled.
+        for scope_name, params in (("primary_params", p), ("replica_params", r)):
+            for key in ("cluster", "aof"):
+                if not params.get(key):
+                    once(scope_name, f"'{key}: true' is required for the replication pair")
+
+        # The AOF stream is sharded per physical sublog; primary and replica must agree
+        # on the sublog count.
+        p_m = p.get("aof_physical_sublog_count", 1)
+        r_m = r.get("aof_physical_sublog_count", 1)
+        if p_m != r_m:
+            once(
+                scope,
+                f"aof_physical_sublog_count differs between primary_params ({p_m}) and "
+                f"replica_params ({r_m}); pair the values via sweep_combo",
+            )
+
+        # Endpoint cross-references: the client writes to the primary's port and reads
+        # from the replica's port (the replica's attach target comes from the harness
+        # bootstrap, not from params).
+        if c.get("primary_port") != p.get("port"):
+            once(
+                scope,
+                f"client_params.primary_port ({c.get('primary_port')}) must equal the "
+                f"primary's port ({p.get('port')})",
+            )
+        if c.get("replica_port") != r.get("port"):
+            once(
+                scope,
+                f"client_params.replica_port ({c.get('replica_port')}) must equal the "
+                f"replica's port ({r.get('port')})",
+            )
+
+
+def validate_remote(issues: list[Issue], *, spec: Any) -> None:
+    """Cross-checks for the 'remote' section (replication roles mapped to ssh hosts).
+    Schema shape is validated while loading the config; this validates the semantics."""
+    if not spec.remote:
+        return
+    if spec.benchmark != "replication":
+        add_issue(
+            issues,
+            "ERROR",
+            "remote",
+            f"the remote section applies to benchmark: replication only, got '{spec.benchmark}'",
+        )
+        return
+    if not remote_mode(spec.remote):
+        return  # ip-only entries: nothing launches over ssh
+
+    # run.py injects the resolved data-plane IPs; mirroring its resolution here fails fast
+    # before any machine time is spent.
+    for role in ("primary", "replica"):
+        entry = spec.remote.get(role)
+        if entry is not None and entry.ip is not None:
+            continue
+        name = (
+            entry.ssh
+            if entry is not None and entry.ssh is not None
+            else socket.gethostname().split(".")[0]
+        )
+        try:
+            socket.gethostbyname(name)
+        except OSError:
+            add_issue(
+                issues,
+                "ERROR",
+                "remote",
+                f"cannot resolve an IP for the {role} role from '{name}'; "
+                f"set remote.{role}.ip explicitly",
+            )
+
+    # Manually set addresses would be silently overridden by the injection.
+    sweep = spec.config.get("sweep", {}) or {}
+    injected = (
+        ("primary_params", spec.base_primary_params, ("bind",)),
+        ("replica_params", spec.base_replica_params, ("bind",)),
+        ("client_params", spec.base_client_params, ("primary_host", "replica_host")),
+    )
+    for scope, base, keys in injected:
+        present = (set(base) | set(sweep.get(scope, {}) or {})) & set(keys)
+        for key in sorted(present):
+            add_issue(
+                issues,
+                "ERROR",
+                scope,
+                f"'{key}' is overridden by the remote-mode address injection; remove it "
+                f"(use remote.<role>.ip to control the address)",
+            )
+
+    client_entry = spec.remote.get("client")
+    if client_entry is not None and client_entry.ssh and spec.check.get("num_cores"):
+        add_issue(
+            issues,
+            "WARNING",
+            "check",
+            "num_cores is validated against the local machine, but the client launches remotely",
+        )
+
+
 def _available_cores(client: Any) -> tuple[int | None, str]:
     """Logical CPUs the experiment may use, with a human description. Uses the client
     affinity binding when set (the role that runs the workload), else the whole machine."""
@@ -733,15 +954,31 @@ def _check_one(config: str, supported_client_params: set[str]) -> bool:
         supported=server_supported,
         kind=server_kind,
     )
+    # The replication primary/replica slots run real GarnetServers; their params are
+    # GarnetServer flags, validated against the host option set.
+    supported_garnet_params = option_names_from_options_cs(GARNET_OPTIONS_CS_PATH)
+    for scope_name, params in (
+        ("base.primary_params", spec.base_primary_params),
+        ("base.replica_params", spec.base_replica_params),
+    ):
+        validate_param_keys(
+            issues,
+            params,
+            scope=scope_name,
+            supported=supported_garnet_params,
+            kind="server",
+        )
 
     sweep = spec.config.get("sweep", {}) or {}
     sweep_client_params = dict((sweep.get("client_params", {}) or {}))
     for scope, param_map in sweep.items():
         param_map = param_map or {}
-        supported = (
-            supported_client_params if scope == "client_params" else server_supported
-        )
-        kind = "client" if scope == "client_params" else server_kind
+        if scope == "client_params":
+            supported, kind = supported_client_params, "client"
+        elif scope in ("primary_params", "replica_params"):
+            supported, kind = supported_garnet_params, "server"
+        else:
+            supported, kind = server_supported, server_kind
         validate_param_keys(
             issues,
             param_map,
@@ -784,6 +1021,8 @@ def _check_one(config: str, supported_client_params: set[str]) -> bool:
         sweep_server_params=dict(sweep.get("server_params", {}) or {}),
         sweep_client_params=sweep_client_params,
     )
+    validate_replication_roles(issues, spec=spec)
+    validate_remote(issues, spec=spec)
 
     print_issues(issues, spec.config_path)
     return any(issue.level == "ERROR" for issue in issues)

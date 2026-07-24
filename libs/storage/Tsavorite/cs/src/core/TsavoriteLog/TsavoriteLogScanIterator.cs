@@ -122,7 +122,21 @@ namespace Tsavorite.core
                 // TryConsumeNext returns false if we have to wait for the next record.
                 while (!TryBulkConsumeNext(consumer, maxChunkSize))
                 {
-                    await Task.Delay(throttleMs, token).ConfigureAwait(false);
+                    // throttleMs == 0 means poll as fast as possible. Task.Delay(0) returns an
+                    // already-completed task, so awaiting it continues synchronously without ever
+                    // yielding; the loop then busy-spins and never returns control to its caller.
+                    // Callers that launch several of these tasks by synchronous invocation (e.g.
+                    // AofSyncDriver.Run) rely on the first await yielding so the remaining tasks get
+                    // started, so yield explicitly here while still honoring cancellation.
+                    if (throttleMs == 0)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        await Task.Yield();
+                    }
+                    else
+                    {
+                        await Task.Delay(throttleMs, token).ConfigureAwait(false);
+                    }
                 }
             }
         }

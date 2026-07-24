@@ -46,10 +46,15 @@ namespace Garnet.server
         readonly long replayDriftThreshold = serverOptions.AofReplayDriftThreshold;
 
         /// <summary>
-        /// Whether replay drift is bounded at all: false when the barrier is disabled
-        /// (threshold -1) or there is a single virtual sublog (no cross-sublog drift to bound).
+        /// Whether replay drift is bounded at all. Drift bounding exists only to keep the
+        /// timestamp read frontier well-defined, so it is off under the snapshot read protocol
+        /// (AofReadWithTimestamp == false), which reads from a periodic snapshot rather than
+        /// per-sublog frontiers. It is also off when the barrier is disabled (threshold -1) or
+        /// there is a single virtual sublog (no cross-sublog drift to bound). Leaving it on under
+        /// the snapshot protocol would engage the replay barrier for no reader benefit and stall
+        /// the batch drain at high replay-task counts.
         /// </summary>
-        readonly bool driftBoundingEnabled = serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1;
+        readonly bool driftBoundingEnabled = serverOptions.AofReadWithTimestamp && serverOptions.AofReplayDriftThreshold >= 0 && serverOptions.AofVirtualSublogCount > 1;
 
         /// <summary>
         /// Interval, in sequence-number units, between two consecutive drift scans by the same
@@ -73,8 +78,8 @@ namespace Garnet.server
         public readonly ReplayAlignBarrier replayBarrier = new(serverOptions.AofVirtualSublogCount, serverOptions.AofBarrierSpinUs);
 
         /// <summary>
-        /// Get sequence number for provided key: the key's sketch entry (its KRT), or with
-        /// <paramref name="frontier"/> the published max of the key's sublog (its LRT).
+        /// Get sequence number for provided key: the key's sketch entry, or with
+        /// <paramref name="frontier"/> the published max sequence number of the key's sublog.
         /// </summary>
         /// <param name="key"></param>
         /// <param name="frontier"></param>
@@ -103,7 +108,7 @@ namespace Garnet.server
         }
 
         /// <summary>
-        /// Get the published max sequence number (the LRT) of the sublog the hash maps to.
+        /// Get the published max sequence number of the sublog the hash maps to.
         /// </summary>
         /// <param name="keyHash"></param>
         /// <returns></returns>
@@ -121,7 +126,12 @@ namespace Garnet.server
             => vsrs[appendOnlyFile.Log.GetVirtualSublogIdx(keyHash)].GetKeySequenceNumber(keyHash);
 
         /// <summary>
-        /// Update physical sublog max sequence number
+        /// Update physical sublog max sequence number across all of its virtual sublogs from a
+        /// thread that does not own their replay. The update is a plain monotonic store, so the
+        /// caller must be the sole writer of the affected virtual sublogs for the duration of the
+        /// call: the owning replay threads quiescent and no concurrent caller of this method
+        /// targeting the same physical sublog (e.g. the AOF benchmark raising a sublog's frontier
+        /// after its replay pass).
         /// </summary>
         /// <param name="physicalSublogIdx"></param>
         /// <param name="sequenceNumber"></param>
@@ -131,6 +141,24 @@ namespace Garnet.server
             // Update virtual sublog maximum value for all virtual sublogs
             for (var rt = 0; rt < replayTaskCount; rt++)
                 vsrs[appendOnlyFile.GetVirtualSublogIdx(physicalSublogIdx, rt)].UpdateMaxSequenceNumber(sequenceNumber);
+        }
+
+        /// <summary>
+        /// Advance a virtual sublog's published max from a primary time pulse, i.e. with no record
+        /// replayed. Must run on the thread that owns replay for the virtual sublog, like every
+        /// other per-sublog update; the pulse then also counts as replay progress toward an active
+        /// replay-align round, so an idle sublog cannot strand a round (the next pulse's sequence
+        /// number always reaches the round target, which is some sublog's previously published max).
+        /// The arrival is non-blocking (see <see cref="ReplayAlignBarrier.CheckAndArrive"/>): an
+        /// idle sublog has nothing to pause, and the pulse-delivering thread must never park on
+        /// round completion.
+        /// </summary>
+        /// <param name="virtualSublogIdx"></param>
+        /// <param name="sequenceNumber"></param>
+        public void AdvanceVirtualSublogTime(int virtualSublogIdx, long sequenceNumber)
+        {
+            vsrs[virtualSublogIdx].UpdateMaxSequenceNumber(sequenceNumber);
+            replayBarrier.CheckAndArrive(virtualSublogIdx, vsrs[virtualSublogIdx].Max);
         }
 
         /// <summary>
@@ -147,14 +175,14 @@ namespace Garnet.server
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void UpdateVirtualSublogKeySequenceNumber(int virtualSublogIdx, long keyHash, long sequenceNumber)
         {
-            // Pause this replay thread when it has run ahead of an active round's target, bounding
-            // drift from the lagging sublogs. Fast path is a single Volatile.Read + compare when no
-            // round is active.
-            replayBarrier.CheckAndWait(vsrs[virtualSublogIdx].Max);
-            vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
-            // Replay-driven drift bounding: scan when this sublog's replay enters a timeline
-            // window it owns (see replayDriftCheckInterval). A record-idle sublog skips its
-            // windows; readers about to wait remain the fallback round source.
+            // Step 1: publish this sublog's frontier (LRT) eagerly -- before parking and before the
+            // key entry. A far-ahead LRT only makes a reader's prepare gate pass more easily; it never
+            // feeds a session clock, so it cannot poison readers (see DEFERRED_KRT.md).
+            vsrs[virtualSublogIdx].UpdateMaxSequenceNumber(sequenceNumber);
+
+            // Step 2: replay-driven drift bounding -- scan when this sublog's replay enters a timeline
+            // window it owns (see replayDriftCheckInterval) and arm a barrier round at the leading
+            // frontier when the drift exceeds the threshold.
             if (sequenceNumber >= vsrs[virtualSublogIdx].NextDriftCheckSequenceNumber)
             {
                 // Whole-interval advances keep the boundary on this sublog's owned windows.
@@ -168,6 +196,19 @@ namespace Garnet.server
                 vsrs[virtualSublogIdx].NextDriftCheckSequenceNumber = next;
                 BoundReplayDrift();
             }
+
+            // Park this replay thread while it leads an active round, bounding drift from the lagging
+            // sublogs. This runs BEFORE the sketch entry is published below: while parked, the key's
+            // sketch entry still holds its previous value, so a reader that touches this key advances
+            // its session sequence number only to that previous value, never to the just-published
+            // frontier. The advance is thereby deferred until the lagging sublogs converge toward the
+            // frontier, at which point it no longer forces cross-sublog reads to wait. Fast path is a
+            // single Volatile.Read + compare when no round is active.
+            replayBarrier.CheckAndWait(virtualSublogIdx, vsrs[virtualSublogIdx].Max);
+
+            // Publish the key's sketch entry. The caller applies the store mutation after this
+            // returns, so the new value never becomes visible before its sketch entry.
+            vsrs[virtualSublogIdx].UpdateKeySequenceNumber(keyHash, sequenceNumber);
         }
 
         /// <summary>

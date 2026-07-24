@@ -113,7 +113,12 @@ namespace Garnet.server
         /// enqueues no waiter, so the replay thread's per-record waiter-signal pass stays on its
         /// lock-free empty fast path instead of paying the wake train under frequent reader waits.
         /// </summary>
-        public int AofReaderSpinUs = 0;
+        public int AofReaderSpinUs = -1;
+
+        /// <summary>
+        /// Max bytes coalesced into one AOF replication chunk (ship and replay).
+        /// </summary>
+        public int AofReplicationChunkSize = 1 << 20;
 
         /// <summary>
         /// Capacity (entries, must be a power of two) of the ring buffer between ReplicaReplayDriver and each ReplicaReplayTask. Each entry is an 8-byte pointer.
@@ -124,6 +129,17 @@ namespace Garnet.server
         /// Number of records the producer batches into the replay ring buffer before publishing the tail to the consumer.
         /// </summary>
         public int AofReplayRingBatch = 8;
+
+        /// <summary>
+        /// Total number of slots (must be a power of two) across all virtual sublogs' per-key
+        /// sequence-number sketches (the read-consistency KRT table) on a replica, divided evenly
+        /// among the virtual sublogs. Because the keyspace is sharded across sublogs, the collision
+        /// pressure that governs read blocking is keyspace / total-slots, independent of the sublog
+        /// count. A larger total reduces hash collisions -- which would otherwise inflate keys'
+        /// tracked sequence numbers and block reads more often -- at a higher memory and CPU-cache
+        /// cost. Default 262144 keeps collisions negligible up to a ~10M-key working set.
+        /// </summary>
+        public int AofSketchSize = 262144;
 
         /// <summary>
         /// When true, use the Timestamp (prefix-consistent) read protocol on replicas.
@@ -138,7 +154,10 @@ namespace Garnet.server
         public int AofSnapshotFreq = 5;
 
         /// <summary>
-        /// Polling frequency of the background task responsible for moving time ahead for all physical sublogs (Used only with physical sublog value >1).
+        /// Idle time in milliseconds after which a physical sublog's AOF sync task sends an in-band
+        /// time pulse (CLUSTER ADVANCE_TIME) to the replica, keeping logical time flowing on idle
+        /// sublogs so prefix-consistent reads do not block. Used only with multi-log in timestamp
+        /// read mode; a sublog that keeps shipping records never pulses.
         /// </summary>
         public int AofTailWitnessFreq = 100;
 
@@ -369,7 +388,7 @@ namespace Garnet.server
         public int ReplicaSyncDelayMs = 5;
 
         /// <summary>
-        /// Throttle ClusterAppendLog when replica.AOFTailAddress - ReplicationOffset > ReplicationOffsetMaxLag. 0: Synchronous replay,  >=1: background replay with specified lag, -1: infinite lag
+        /// Throttle ClusterAppendLog when the replica's replication lag exceeds this budget, summed across all physical sublogs (each sublog throttles at an even 1/m share). 0: Synchronous replay,  >=1: background replay with the specified total lag, -1: infinite lag
         /// </summary>
         public int ReplicationOffsetMaxLag = -1;
 
@@ -412,6 +431,14 @@ namespace Garnet.server
         /// With main-memory replication, whether we use null device for AOF. Ensures no disk IO, but can cause data loss during replication.
         /// </summary>
         public bool UseAofNullDevice = false;
+
+        /// <summary>
+        /// Stall primary AOF appends when the replication lag exceeds this budget: a whole-log
+        /// budget divided evenly per sublog (each sublog stalls at tail-minus-shipped over an even
+        /// 1/m share). -1: disabled, >=1: max lag in bytes. Pair with ReplicationOffsetMaxLag on
+        /// replicas for end-to-end backpressure.
+        /// </summary>
+        public long AofShipMaxLag = -1;
 
         /// <summary>
         /// Use specified device type

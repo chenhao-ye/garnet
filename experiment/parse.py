@@ -48,7 +48,7 @@ AOF_METRIC_NAME_MAP = {
 
 HEADER_RE = re.compile(r"min\s*\(us\)")
 AOF_METRIC_RE = re.compile(r"^\[(?P<name>[^\]]+)\]:\s*(?P<value>.+)$")
-AOF_LATENCY_LINE_RE = re.compile(r"^\[Reader latency us\]\s+(?P<value>.+)$")
+AOF_LATENCY_LINE_RE = re.compile(r"^\[(?P<who>Reader|Writer|Freshness) latency us\]\s+(?P<value>.+)$")
 AOF_LATENCY_FIELD_RE = re.compile(r"(?P<key>p\d+(?:\.\d+)?|max|mean)=(?P<value>[-+]?\d[\d,]*(?:\.\d+)?)")
 AOF_NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
 OFFLINE_OPERATION_RE = re.compile(r"^Operation type:\s*(?P<value>.+)$")
@@ -173,10 +173,16 @@ def _parse_online_output(
 
 
 def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
-    """Parse the labeled summary format emitted by AofBench."""
+    """Parse the labeled summary format emitted by AofBench and ReplicationBench."""
     samples = []
     columns: list[str] = [*AOF_BASE_COLUMNS]
     current = None
+
+    def keep(sample: dict | None) -> bool:
+        return bool(sample) and any(
+            sample.get(key) is not None
+            for key in ("throughput", "reader_throughput", "writer_throughput")
+        )
 
     with open(path) as f:
         for raw_line in f:
@@ -184,8 +190,9 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
 
             lat_match = AOF_LATENCY_LINE_RE.match(line)
             if lat_match and current is not None:
+                prefix = lat_match.group("who").lower() + "_lat_"
                 for field in AOF_LATENCY_FIELD_RE.finditer(lat_match.group("value")):
-                    key = "reader_lat_" + field.group("key").replace(".", "_")
+                    key = prefix + field.group("key").replace(".", "_")
                     current[key] = _parse_number(field.group("value"))
                 for key in current:
                     if key not in columns:
@@ -200,10 +207,7 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
             value = match.group("value")
 
             if name == "Total time":
-                if current and (
-                    current.get("throughput") is not None
-                    or current.get("reader_throughput") is not None
-                ):
+                if keep(current):
                     samples.append(current)
                 current = {}
                 current["time_ms"] = _parse_number(value)
@@ -219,7 +223,7 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
             elif current is not None:
                 metric_key = AOF_METRIC_NAME_MAP.get(name, _snake_case(name))
                 metric_value = _parse_number(value)
-                if metric_key in ("throughput", "reader_throughput"):
+                if metric_key in ("throughput", "reader_throughput", "writer_throughput"):
                     current[metric_key] = (
                         None if metric_value is None else metric_value / 1_000_000.0
                     )
@@ -231,12 +235,8 @@ def _parse_aof_output(path: Path) -> tuple[list[dict], list[str]]:
                     if key not in columns:
                         columns.append(key)
 
-    if current:
-        if (
-            current.get("throughput") is not None
-            or current.get("reader_throughput") is not None
-        ):
-            samples.append(current)
+    if keep(current):
+        samples.append(current)
     return samples, columns
 
 
@@ -305,7 +305,7 @@ def parse_output(
     expected_op: str | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Return parsed samples and the benchmark-specific metric columns."""
-    if benchmark == "aof":
+    if benchmark in ("aof", "replication"):
         return _parse_aof_output(path)
     if benchmark == "online":
         return _parse_online_output(path, warmup_rows=warmup_rows)
@@ -317,6 +317,22 @@ def parse_output(
 def _format_summary(
     benchmark: str, stats: dict, num_samples: int, run_name: str
 ) -> str:
+    def fmt_mops(key: str) -> str:
+        median = (stats.get(key) or {}).get("median")
+        return "None" if median is None else f"{median:.3f} M"
+
+    if benchmark == "replication":
+        fresh = (stats.get("freshness_lat_p99_9") or {}).get("median")
+        fresh_str = "None" if fresh is None else f"{fresh:.1f} us"
+        return ", ".join(
+            [
+                f"  Parsed {run_name}: {num_samples} samples",
+                f"median writer={fmt_mops('writer_throughput')} ops/s",
+                f"median reader={fmt_mops('reader_throughput')} ops/s",
+                f"freshness p99.9={fresh_str}",
+            ]
+        )
+
     thr_key = "tpt_mops" if benchmark == "online" else "throughput"
     thr = stats[thr_key]["median"]
     thr_str = "None" if thr is None else f"{thr:.3f} M"
@@ -376,6 +392,16 @@ def _build_summary_rows(runs: dict[str, dict]) -> dict[str, list[dict[str, str]]
                         row[f"{key}_us"] = fmt(key)
             row["time_ms"] = fmt("time_ms")
             row["bytes"] = fmt("bytes", decimals=0)
+        elif benchmark == "replication":
+            row["writer_tpt_mops_s"] = fmt("writer_throughput")
+            row["reader_tpt_mops_s"] = fmt("reader_throughput")
+            for who in ("writer", "reader", "freshness"):
+                for pct in ("p50", "p99", "p99_9"):
+                    key = f"{who}_lat_{pct}"
+                    if (stats.get(key) or {}).get("median") is not None:
+                        row[f"{key}_us"] = fmt(key)
+            row["replication_lag_bytes"] = fmt("replication_lag_bytes", decimals=0)
+            row["time_ms"] = fmt("time_ms")
         elif benchmark == "offline":
             row["throughput_mops_s"] = fmt("throughput")
             row["total_ops"] = fmt("total_ops", decimals=0)
@@ -443,6 +469,17 @@ def _write_summary_file(
             "time_ms",
             "bytes",
         ],
+        "replication": [
+            "run",
+            "samples",
+            "writer_tpt_mops_s",
+            "reader_tpt_mops_s",
+            "freshness_lat_p50_us",
+            "freshness_lat_p99_us",
+            "freshness_lat_p99_9_us",
+            "replication_lag_bytes",
+            "time_ms",
+        ],
         "offline": ["run", "samples", "throughput_mops_s", "total_ops", "time_ms"],
         "online": [
             "run",
@@ -486,12 +523,15 @@ def _write_summary_file(
 
 def _parse_run_dir(run_dir: Path, warmup: int) -> dict | None:
     """Parse a single run directory. Returns None if output.txt is missing."""
+    # The client's output: benchmark/ for the classic single-client layout, client/ for
+    # replication runs (each role keeps its own subdir), bare output.txt for legacy runs.
     output_path = run_dir / "benchmark" / "output.txt"
-    legacy_output_path = run_dir / "output.txt"
     config_path = run_dir / "config.yaml"
-
-    if not output_path.exists() and legacy_output_path.exists():
-        output_path = legacy_output_path
+    if not output_path.exists():
+        for candidate in (run_dir / "client" / "output.txt", run_dir / "output.txt"):
+            if candidate.exists():
+                output_path = candidate
+                break
 
     if not output_path.exists():
         print(f"  [skip] {run_dir.name}: no output.txt")

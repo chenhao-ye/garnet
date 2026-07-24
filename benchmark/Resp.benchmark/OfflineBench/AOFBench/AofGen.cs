@@ -82,14 +82,17 @@ namespace Resp.benchmark
         public int KeyLen => keyLen;
 
         /// <summary>
-        /// Effective key length for the given options: --keylength widened to fit dbsize digits.
+        /// Effective key length for the given options: the configured --keylength, or (when it is
+        /// 0) the decimal-digit count of dbsize. The configured length is honored as-is, not
+        /// widened to the keyspace, so a small keylength with a large dbsize produces birthday
+        /// collisions in the keyset (the constructor logs the expected duplicate fraction).
         /// Static so a Client-role process derives the identical value without an AofGen.
         /// </summary>
         public static int DeriveKeyLen(Options options)
-            => Math.Max(options.KeyLength, NumUtils.NumDigits(options.DbSize));
+            => options.KeyLength > 0 ? options.KeyLength : NumUtils.NumDigits(options.DbSize);
 
         /// <summary>
-        /// Builds the global keyset: key i = hex MurmurHash3 of i, zero-padded to keyLen.
+        /// Builds the global keyset: key i = hex MurmurHash2x64A of i, zero-padded to keyLen.
         /// Deterministic from (dbsize, keyLen) alone, so a Client-role process regenerates the
         /// exact keys the replica generated, with no AOF page generation.
         /// </summary>
@@ -106,8 +109,13 @@ namespace Resp.benchmark
             this.options = options;
             this.keyLen = DeriveKeyLen(options);
             this.globalStreamTick = Math.Max(1, options.PseudoTimestampPace / Math.Max(1, options.AofPhysicalSublogCount));
-            if (options.KeyLength > 0 && this.keyLen != options.KeyLength)
-                Console.WriteLine($"[Warning] --keylength {options.KeyLength} is too small for --dbsize {options.DbSize}; expanding to {this.keyLen}.");
+            // Keys are keyLen hex chars of a 64-bit hash, so the keyset is drawn from
+            // 16^min(keyLen,16) values; warn when dbsize is large enough relative to that space
+            // for birthday collisions (duplicate keys) to be non-trivial.
+            var hexSpace = Math.Pow(16, Math.Min(this.keyLen, 16));
+            var dupFraction = 1.0 - hexSpace / options.DbSize * (1.0 - Math.Exp(-options.DbSize / hexSpace));
+            if (dupFraction > 0.001)
+                Console.WriteLine($"[Warning] keyLen={this.keyLen} gives {hexSpace:N0} distinct hex keys; with --dbsize {options.DbSize:N0}, ~{dupFraction * 100:N1}% of keys collide (birthday paradox), so the effective unique keyspace is smaller.");
             this.aofServerOptions = new GarnetServerOptions()
             {
                 EnableAOF = true,

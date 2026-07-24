@@ -560,7 +560,13 @@ namespace Garnet.cluster
         }
 
         /// <summary>
-        /// Implements CLUSTER_ADVANCE_TIME
+        /// Implements CLUSTER ADVANCE_TIME: an in-band time pulse for one physical sublog, sent by
+        /// the primary's AofSyncTask on the same connection as the sublog's APPENDLOG stream when
+        /// the sublog has been idle. Fire-and-forget like APPENDLOG: no response is written. The
+        /// pulse is recorded on the sublog's replay driver and applied on the replay path once the
+        /// sublog is fully caught up, so it can never overtake records received before it. A pulse
+        /// is droppable by design (the primary keeps pulsing while the condition that produced it
+        /// persists), so this bails out quietly whenever the replay plumbing is not up.
         /// </summary>
         /// <param name="invalidParameters"></param>
         /// <returns></returns>
@@ -576,11 +582,23 @@ namespace Garnet.cluster
                 return true;
             }
 
-            var sequenceNumber = parseState.GetLong(0);
-            var tailAddressSpan = parseState.GetArgSliceByRef(1).Span;
-            clusterProvider.replicationManager.SignalAdvanceTime(sequenceNumber, AofAddress.FromSpan(tailAddressSpan));
-            while (!RespWriteUtils.TryWriteDirect(CmdStrings.RESP_OK, ref dcurr, dend))
-                SendAndReset();
+            if (!parseState.TryGetInt(0, out var physicalSublogIdx) ||
+                !parseState.TryGetLong(1, out var sequenceNumber))
+            {
+                logger?.LogError("{str}", Encoding.ASCII.GetString(CmdStrings.RESP_ERR_GENERIC_VALUE_IS_NOT_INTEGER));
+                return true;
+            }
+
+            if (physicalSublogIdx < 0 || physicalSublogIdx >= clusterProvider.serverOptions.AofPhysicalSublogCount)
+                return true;
+            if (clusterProvider.replicationManager.CannotStreamAOF)
+                return true;
+
+            // Pulses arrive on the same session as this sublog's APPENDLOG stream, strictly after
+            // the initialization message that cached the driver store on this session. The pulse's
+            // ordering guarantee only holds relative to this connection's stream, so a pulse that
+            // precedes initialization is dropped rather than routed elsewhere.
+            replicaReplayDriverStore?.GetReplayDriver(physicalSublogIdx)?.SignalTimeAdvance(sequenceNumber);
             return true;
         }
 
