@@ -1,32 +1,37 @@
 name: replay_reader
 description: "In-proc replay/reader throughput and reader latency vs. sublog count (curve); one set per replay distribution."
 template: replay_reader_scaling
-dependencies: [aof_reader_uniform, aof_reader_zipfrev, aof_reader_zipf, aof_reader_c5_dist_freq]
+dependencies:
+  - aof_reader_uniform
+  - aof_reader_zipfrev
+  - aof_reader_zipf
+  - aof_reader_c5_uniform
+  - aof_reader_c5_zipfrev
+  - aof_reader_c5_zipf
 # Each replay distribution is its own in-proc experiment (no_server): sublog
 # count is a client param, reader is fixed at 1, latencies are sub-millisecond
 # (reported in us, the default).
 x_param: client.aof_physical_sublog_count
-# C5 curves: the virtual replay-task sweep (x = aof_replay_task_count), all
-# dists in one experiment, selected per series via c5_filter. Split by snapshot
-# frequency (in ms) into two curves; styles (color/marker/label) live in
-# plot_style.py under the c5_5ms / c5_1s keys.
-c5_dependency: aof_reader_c5_dist_freq
+# C5 curves: the virtual replay-task sweep (x = aof_replay_task_count), now a
+# separate experiment per distribution (set per series via c5_dependency).
+# Split by snapshot frequency (in ms) into two curves; styles live in
+# plot_style.py under the c5_5ms / c5_500ms keys.
 c5_x_param: client.aof_replay_task_count
 c5_curves:
   - { style: c5_5ms, filter: { client.aof_snapshot_freq: 5 } }
-  - { style: c5_1s, filter: { client.aof_snapshot_freq: 1000 } }
+  - { style: c5_500ms, filter: { client.aof_snapshot_freq: 500 } }
 # One set of five figures per replay distribution; the reader keys are Zipf,
 # so Uniform = misaligned, ZipfRev = equal-skew disjoint hot set, Zipf = aligned.
 series:
-  - { suffix: uniform, dependency: aof_reader_uniform, c5_filter: { client.aof_replay_dist: Uniform } }
-  - { suffix: zipfrev, dependency: aof_reader_zipfrev, c5_filter: { client.aof_replay_dist: ZipfRev } }
-  - { suffix: zipf, dependency: aof_reader_zipf, c5_filter: { client.aof_replay_dist: Zipf } }
+  - { suffix: uniform, dependency: aof_reader_uniform, c5_dependency: aof_reader_c5_uniform }
+  - { suffix: zipfrev, dependency: aof_reader_zipfrev, c5_dependency: aof_reader_c5_zipfrev }
+  - { suffix: zipf, dependency: aof_reader_zipf, c5_dependency: aof_reader_c5_zipf }
 width_scale: 0.33    # equal width_scale + height_scale => square figure
 height_scale: 0.33
 legend_separate: true  # SingleLog dot + MultiLog curve named by a shared legend
 
 # Sublog count on a linear x-axis: SingleLog at x=1, MultiLog/C5 over x=2..32.
-xlabel: "Number of threads"
+xlabel: "#replay threads"
 xticks: [1, 4, 8, 16, 32]
 xmin: 0
 xmax: 32

@@ -2,20 +2,20 @@ name: replay_scaling
 description: "Replay throughput vs. threads: SingleLog, MultiLog, NoPrefix, and snapshot-frequency C5 curves."
 template: replay
 
-# [physical sweep, virtual sweep, physical NoPrefix].
-dependencies: [aof_replay_physical, aof_replay_virtual, aof_replay_physical_noprefix]
+# [physical sweep, virtual sweep, physical NoPrefix, C5].
+dependencies: [aof_replay_physical, aof_replay_virtual, aof_replay_physical_noprefix, aof_replay_c5]
 
-# Extra C5 curves: the virtual replay-task sweep split by snapshot frequency
-# (in ms); styles (color/marker/label) live in plot_style.py (c5_5ms / c5_1s).
-c5_dependency: aof_replay_virtual_c5_freq
+# Extra C5 curves: the virtual replay-task sweep, split by snapshot frequency
+# (in ms); styles live in plot_style.py (c5_5ms / c5_500ms).
 c5_x_param: client.aof_replay_task_count
 c5_curves:
   - { style: c5_5ms, filter: { client.aof_snapshot_freq: 5 } }
-  - { style: c5_1s, filter: { client.aof_snapshot_freq: 1000 } }
+  - { style: c5_500ms, filter: { client.aof_snapshot_freq: 500 } }
 
 scale: 0.5
+xlabel: "#replay threads"
 xticks: [1, 8, 16, 32, 64]
 yticks: [0, 20, 40, 60, 80, 100]
 legend_separate: true
 legend_scale: 0.5   # half-column-width legend host (matches the scale=0.5 figure)
-legend_ncol: 2      # 2 columns: SingleLog/NoPrefix, then C5 row, MultiLog last
+legend_ncol: 2      # 2 columns

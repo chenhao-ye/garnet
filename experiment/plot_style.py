@@ -168,7 +168,7 @@ for _key, (_color, _marker, _label, _z) in _dist_style.items():
 # C5 (virtual replay-task) curves, optionally split by snapshot frequency.
 _c5_style = {
     "c5_5ms": ("#abdda4", "v", "C5-5ms", 2),
-    "c5_1s": ("#66c2a5", "^", "C5-1s", 2),
+    "c5_500ms": ("#66c2a5", "^", "C5-500ms", 2),
 }
 for _key, (_color, _marker, _label, _z) in _c5_style.items():
     color_map[_key] = _color

@@ -95,21 +95,21 @@ from plot_util import (
 
 
 def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
-    # dependencies[0] = physical sweep, dependencies[1] = virtual sweep,
-    # dependencies[2] (optional) = physical NoPrefix sweep, used to draw the
-    # NoPrefix upper-bound curve along the physical axis only.
-    #
-    # Optionally add extra "C5" curves (a second virtual replay-task sweep,
-    # e.g. split by snapshot frequency): set `c5_dependency` and `c5_x_param`
-    # (default client.aof_replay_task_count), with `c5_curves` a list of
-    # {style, filter} -- `style` names a plot_style key.
-    if len(deps) not in (2, 3):
+    # Positional dependencies: [physical, virtual, (physical_noprefix), (c5)].
+    #   [0] physical sweep, [1] virtual sweep (required).
+    #   [2] physical NoPrefix sweep (optional) -- NoPrefix upper-bound curve.
+    #   [3] C5 experiment (optional, requires the NoPrefix slot) -- draws the
+    #       extra "C5" curves listed in `c5_curves` (a list of {style, filter};
+    #       `style` names a plot_style key) over `c5_x_param` (default
+    #       client.aof_replay_task_count).
+    if len(deps) not in (2, 3, 4):
         raise ValueError(
-            f"replay template expects 2 or 3 dependencies "
-            f"[physical, virtual, (physical_noprefix)]; got {deps}"
+            f"replay template expects 2-4 dependencies "
+            f"[physical, virtual, (physical_noprefix), (c5)]; got {deps}"
         )
     physical_name, virtual_name = deps[0], deps[1]
-    noprefix_name = deps[2] if len(deps) == 3 else None
+    noprefix_name = deps[2] if len(deps) >= 3 else None
+    c5_dependency = deps[3] if len(deps) >= 4 else None
     phys = load_result(physical_name)
     virt = load_result(virtual_name)
 
@@ -127,7 +127,6 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
         )
 
     # Optional C5 curves (each a (style, xs, ys) tuple).
-    c5_dependency = plot_cfg.get("c5_dependency")
     c5_x_param = plot_cfg.get("c5_x_param", "client.aof_replay_task_count")
     c5_curves = plot_cfg.get("c5_curves") or []
     c5_series: list[tuple[str, list[float], list[float]]] = []
@@ -888,21 +887,18 @@ def render_replay_reader_scaling(
     # count on the x-axis, default client.aof_physical_sublog_count) replacing
     # `sublog_param`. Set a positive `xmin` (a log axis cannot start at 0).
     #
-    # Optionally add extra "C5" curves (the virtual replay-task sweep) from a
-    # separate experiment: set `c5_dependency` (the experiment name) and
-    # `c5_x_param` (default client.aof_replay_task_count). Each series carries a
-    # `c5_filter` to select its distribution. `c5_curves` is a list of
-    # {style, filter} -- one curve each; `style` names a plot_style key (color,
-    # marker, label) and `filter` is merged over the series c5_filter (e.g. to
-    # select a snapshot frequency). No C5 curves are drawn when omitted.
+    # Optionally add extra "C5" curves (the virtual replay-task sweep). Set
+    # `c5_curves` (a list of {style, filter}; `style` names a plot_style key)
+    # and give each series a `c5_dependency` (the C5 experiment for that
+    # distribution). `c5_x_param` defaults to client.aof_replay_task_count;
+    # each curve's `filter` selects e.g. a snapshot frequency. No C5 curves
+    # when `c5_curves` is omitted.
     if not deps:
         raise ValueError("replay_reader_scaling template expects >= 1 dependency")
     x_param = plot_cfg.get("x_param", "client.aof_physical_sublog_count")
     base_filter = dict(plot_cfg.get("filter") or {})
-    c5_dependency = plot_cfg.get("c5_dependency")
     c5_x_param = plot_cfg.get("c5_x_param", "client.aof_replay_task_count")
     c5_curves = plot_cfg.get("c5_curves") or []
-    c5_result = load_result(c5_dependency) if (c5_dependency and c5_curves) else None
 
     unit = str(plot_cfg.get("latency_unit", "us")).lower()
     if unit not in _LATENCY_UNIT_SCALE:
@@ -928,6 +924,9 @@ def render_replay_reader_scaling(
         s_suffix = s.get("suffix", "")
         s_filter = {**base_filter, **(s.get("filter") or {})}
         result = load_result(s.get("dependency", deps[0]))
+        # C5 experiment for this series (e.g. one per distribution).
+        s_c5_dep = s.get("c5_dependency")
+        c5_result = load_result(s_c5_dep) if (s_c5_dep and c5_curves) else None
         for suffix, y_metric, default_ylabel, y_scale in metric_figures:
             fig_cfg = dict(plot_cfg)
             override_tags = [f"_{suffix}"]
