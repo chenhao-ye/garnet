@@ -179,6 +179,9 @@ namespace Resp.benchmark
         [Option("replication-readers", Required = false, Default = 1, HelpText = "ReplicationBench: reader threads issuing GETs to the replica.")]
         public int ReplicationReaders { get; set; }
 
+        [Option("replication-write-ratio", Required = false, Default = 1.0, HelpText = "ReplicationBench: fraction of ops the primary-side client threads issue as SETs (the rest are GETs to the primary). 1.0 = pure writers (default); 0.05 = 5% writes. Only SETs generate AOF records shipped to the replica.")]
+        public double ReplicationWriteRatio { get; set; }
+
         [Option("replication-write-dist", Required = false, Default = KeyDistribution.Uniform, HelpText = "ReplicationBench: key distribution of writer SETs to the primary: Uniform, Zipf, or ZipfRev (Zipf with the hotness order reversed). Zipf theta from --zipf-theta.")]
         public KeyDistribution ReplicationWriteDist { get; set; }
 
