@@ -1,0 +1,32 @@
+# C5 snapshot reader-during-replay: replay dist=Zipf, 1 zipf reader; snapshot freq {5,500} x n {2,4,8,16,32}, m=1.
+name: aof_reader_c5_zipf
+description: "C5 snapshot: replay=Zipf, zipf reader; freq{5,500}ms x n{2,4,8,16,32}, m=1, 10M"
+benchmark: aof
+no_server: true
+repeat: 5
+affinity:
+  client: { numa_node: 0 }
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    aof_gen_pages: 256
+    aof_replay_reader: 1
+    aof_barrier_spin_us: -1
+    aof_replay_drift_threshold: -1
+    aof_read_dist: Zipf
+    aof_replay_dist: Zipf
+    aof_physical_sublog_count: 1
+    aof_read_protocol: snapshot
+sweep:
+  client_params:
+    aof_snapshot_freq: [5, 500]
+    aof_replay_task_count: [2, 4, 8, 16, 32]

@@ -1,0 +1,32 @@
+# C5 variant of aof_replay_virtual: scale AOF replay task count n (1..64) at a single physical
+# sublog (m=1), no reader, C5 snapshot read protocol. Mirrors aof_replay_virtual exactly except
+# aof_read_protocol=snapshot (+ 5ms snapshot freq). With no reader the C5 difference on the replay
+# path is the periodic TakeSnapshot -> Log.Flush(wait:true) stall and the skipped per-key sequence
+# maintenance; this sweep isolates how those affect pure replay throughput as n grows. Compare to
+# aof_replay_virtual (timestamp protocol) run on the same build.
+name: aof_replay_c5
+description: "C5 snapshot: scale AOF replay task count (1-64), m=1, no reader, null device, InProc"
+benchmark: aof
+no_server: true
+repeat: 7
+affinity:
+  client:
+    numa_node: 0
+base:
+  client_params:
+    aof_bench: true
+    aof_bench_type: ReplayDirect
+    cluster: true
+    aof_null_device: true
+    client: InProc
+    aof_commit_freq: -1
+    aof_memory_size: 256m
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    aof_replay_drift_threshold: -1
+    aof_read_protocol: snapshot
+    aof_snapshot_freq: 5
+sweep:
+  client_params:
+    aof_replay_task_count: [2, 4, 8, 16, 32, 64]
