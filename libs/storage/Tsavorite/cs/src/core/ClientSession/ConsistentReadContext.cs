@@ -55,10 +55,23 @@ namespace Tsavorite.core
             private readonly long snapshotMaxAddress;
             internal long foundAddress;
 
-            internal SnapshotVersionScanFunctions(long snapshotMaxAddress)
+            // The read output is produced during the walk from the LogRecord the iterator already
+            // holds, eliminating a second ReadAtAddress fetch. IScanIteratorFunctions cannot be a ref
+            // struct, so the session functions and the input/output are held by value here and copied
+            // back to the caller after the walk completes.
+            internal TFunctions functions;
+            internal TInput input;
+            internal TOutput output;
+            internal bool found;
+
+            internal SnapshotVersionScanFunctions(long snapshotMaxAddress, TFunctions functions, TInput input, TOutput output)
             {
                 this.snapshotMaxAddress = snapshotMaxAddress;
                 foundAddress = LogAddress.kInvalidAddress;
+                this.functions = functions;
+                this.input = input;
+                this.output = output;
+                found = false;
             }
 
             public bool OnStart(long beginAddress, long endAddress) => true;
@@ -73,7 +86,14 @@ namespace Tsavorite.core
                     return true;
                 // Found most recent version at or before snapshot boundary
                 if (!logRecord.Info.Tombstone)
+                {
                     foundAddress = recordMetadata.Address;
+                    // The record is below the snapshot boundary (read-only region) and the epoch is
+                    // held by the walk, so producing the read output here is safe and avoids a second
+                    // epoch-protected ReadAtAddress fetch of the same record.
+                    var readInfo = new ReadInfo { Address = recordMetadata.Address };
+                    found = functions.Reader(in logRecord, ref input, ref output, ref readInfo);
+                }
                 return false; // Stop iteration
             }
 
@@ -85,12 +105,13 @@ namespace Tsavorite.core
         private Status SnapshotRead(TKey key, ref TInput input, ref TOutput output, TContext userContext)
         {
             var snapshotAddr = getSnapshotAddress();
-            var scanFn = new SnapshotVersionScanFunctions(snapshotAddr);
+            var scanFn = new SnapshotVersionScanFunctions(snapshotAddr, Session.functions, input, output);
             Session.store.Log.IterateKeyVersions(ref scanFn, key);
             if (scanFn.foundAddress != LogAddress.kInvalidAddress)
             {
-                var readOptions = default(ReadOptions);
-                return BasicContext.ReadAtAddress(scanFn.foundAddress, key, ref input, ref output, ref readOptions, out _, userContext);
+                // Output was produced from the LogRecord during the walk; copy it back to the caller.
+                output = scanFn.output;
+                return scanFn.found ? new Status(StatusCode.Found) : new Status(StatusCode.NotFound);
             }
             return new Status(StatusCode.NotFound);
         }

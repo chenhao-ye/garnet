@@ -193,7 +193,23 @@ namespace Garnet.cluster
                 {
                     var entryPtr = ptr + entryLength;
                     var replayTaskIdx = replicationManager.AofProcessor.GetReplayTaskIdx(entryPtr);
-                    replayTasks[replayTaskIdx].AddRecord(ptr);
+                    if (replayTaskIdx >= 0)
+                    {
+                        // Standalone record: routed to its single owning replay task.
+                        replayTasks[replayTaskIdx].AddRecord(ptr);
+                    }
+                    else
+                    {
+                        // Transaction / cross-sublog record (checkpoint, flushdb, multi-exec, custom
+                        // txn) has no single owning task. Dispatch it to each participating replay task
+                        // per the header's access vector; the channel consumer replays what it receives
+                        // without re-filtering, so only participants must be enqueued.
+                        for (var i = 0; i < replayTasks.Length; i++)
+                        {
+                            if (replicationManager.AofProcessor.CanReplay(entryPtr, i, out _))
+                                replayTasks[i].AddRecord(ptr);
+                        }
+                    }
                     entryLength += TsavoriteLog.UnsafeAlign(payloadLength);
                 }
                 else if (payloadLength < 0)

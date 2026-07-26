@@ -1,0 +1,59 @@
+# C5 snapshot-read distribution sweep: writers=Uniform, readers=Zipf. m=1 (fixed) x n{2,4,8,16,32} x
+# snapshot-freq{5,500}ms x w{1,2,4,8,16,32}, 10M keys, 16 readers, 1g AOF, performance governor
+# pinned by run.py. C5 = snapshot read protocol; it does not use the replay-drift barrier.
+name: replication_dist_c5_wuniform_rzipf
+description: "C5 snapshot; write=Uniform read=Zipf; m=1 x n{2,4,8,16,32} x freq{5,500}ms x w{1,2,4,8,16,32}, 10M keys, 30s x5"
+benchmark: replication
+no_server: true
+repeat: 5
+remote:
+  primary: { ssh: node0, ip: 10.10.1.1 }
+  replica: { ssh: node1, ip: 10.10.1.2 }
+  client:  { ssh: node2, ip: 10.10.1.3 }
+base:
+  server_params:                 # applied to BOTH primary and replica
+    aof_read_protocol: snapshot
+    aof_physical_sublog_count: 1
+  primary_params:
+    port: 7379
+    cluster: true
+    aof: true
+    aof_null_device: true
+    fast_aof_truncate: true
+    aof_commit_freq: -1
+    repl_diskless_sync: true
+    aof_memory: 1g
+    replica_sync_delay: 1
+    aof_ship_max_lag: 268435456
+  replica_params:
+    port: 7380
+    cluster: true
+    aof: true
+    aof_null_device: true
+    fast_aof_truncate: true
+    aof_commit_freq: -1
+    repl_diskless_sync: true
+    aof_memory: 1g
+    aof_replay_drift_threshold: -1   # C5 does not use the drift barrier
+    replica_sync_delay: 1
+    replica_offset_max_lag: 268435456
+  client_params:
+    replication_bench: true
+    client: GarnetClientSession
+    primary_port: 7379
+    replica_port: 7380
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    replication_readers: 16
+    itp: 256
+    runtime: 30
+    replication_write_dist: Uniform
+    replication_read_dist: Zipf
+sweep:
+  server_params:                 # n coupled to BOTH primary and replica (primary tags records for m*n virtual sublogs)
+    aof_replay_task_count: [2, 4, 8, 16, 32]
+  replica_params:
+    aof_snapshot_freq: [5, 500]
+  client_params:
+    replication_writers: [1, 2, 4, 8, 16, 32]

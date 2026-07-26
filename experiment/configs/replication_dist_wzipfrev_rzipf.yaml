@@ -1,0 +1,56 @@
+# Distribution sweep: writers=ZipfRev, readers=Zipf. w{1,2,4,8,16,32} x m{1,2,4,8,16,32} x
+# drift{10k,50k,100k,500k,1M,5M}, 10M keys, 16 readers, 1g/256MB, performance governor pinned by
+# run.py. zipf theta=0.99 (default).
+name: replication_dist_wzipfrev_rzipf
+description: "write=ZipfRev read=Zipf; w{1,2,4,8,16,32} x m{1,2,4,8,16,32} x drift{10k,50k,100k,500k,1M,5M}, 10M keys, 30s x5"
+benchmark: replication
+no_server: true
+repeat: 5
+remote:
+  primary: { ssh: node0, ip: 10.10.1.1 }
+  replica: { ssh: node1, ip: 10.10.1.2 }
+  client:  { ssh: node2, ip: 10.10.1.3 }
+base:
+  primary_params:
+    port: 7379
+    cluster: true
+    aof: true
+    aof_null_device: true
+    fast_aof_truncate: true
+    aof_commit_freq: -1
+    repl_diskless_sync: true
+    aof_memory: 1g
+    replica_sync_delay: 1
+    aof_ship_max_lag: 268435456
+  replica_params:
+    port: 7380
+    cluster: true
+    aof: true
+    aof_null_device: true
+    fast_aof_truncate: true
+    aof_commit_freq: -1
+    repl_diskless_sync: true
+    aof_memory: 1g
+    aof_replay_task_count: 1
+    replica_sync_delay: 1
+    replica_offset_max_lag: 268435456
+  client_params:
+    replication_bench: true
+    client: GarnetClientSession
+    primary_port: 7379
+    replica_port: 7380
+    keylength: 8
+    valuelength: 8
+    dbsize: 10000000
+    replication_readers: 16
+    itp: 256
+    runtime: 30
+    replication_write_dist: ZipfRev
+    replication_read_dist: Zipf
+sweep:
+  server_params:                 # applied to BOTH primary and replica (coupled m)
+    aof_physical_sublog_count: [1, 2, 4, 8, 16, 32]
+  replica_params:
+    aof_replay_drift_threshold: [10000, 50000, 100000, 500000, 1000000, 5000000]
+  client_params:
+    replication_writers: [1, 2, 4, 8, 16, 32]
