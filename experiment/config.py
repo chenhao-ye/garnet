@@ -396,10 +396,17 @@ def resolve_run_spec(
     server_params = dict(spec.base_server_params)
     server_params.update(combo.get("server_params", {}))
 
-    primary_params = dict(spec.base_primary_params)
+    # server_params is a shared server layer: every key set here (in base or swept) is
+    # applied to BOTH the primary and the replica, with role-specific params overriding it.
+    # This lets a replication sweep vary a value that must stay equal across the pair (e.g.
+    # aof_physical_sublog_count) as a single dimension instead of an explicit sweep_combo.
+    # For single-server benchmarks primary/replica are unused, so this only fills them harmlessly.
+    primary_params = dict(server_params)
+    primary_params.update(spec.base_primary_params)
     primary_params.update(combo.get("primary_params", {}))
 
-    replica_params = dict(spec.base_replica_params)
+    replica_params = dict(server_params)
+    replica_params.update(spec.base_replica_params)
     replica_params.update(combo.get("replica_params", {}))
 
     return ResolvedRunSpec(

@@ -777,7 +777,8 @@ def validate_replication_roles(issues: list[Issue], *, spec: Any) -> None:
             once(
                 scope,
                 f"aof_physical_sublog_count differs between primary_params ({p_m}) and "
-                f"replica_params ({r_m}); pair the values via sweep_combo",
+                f"replica_params ({r_m}); pair the values via sweep_combo or set it once "
+                f"under server_params (applied to both)",
             )
 
         # Endpoint cross-references: the client writes to the primary's port and reads
@@ -987,7 +988,18 @@ def _check_one(config: str, supported_client_params: set[str]) -> bool:
             kind=kind,
         )
 
-    if spec.no_server:
+    # server_params is a shared layer applied to primary and replica, so it is meaningful for
+    # a replication pair even under no_server=true; it is only ignored for a plain no_server
+    # (InProc) bench that launches no server at all.
+    has_replication_roles = (
+        bool(spec.base_primary_params)
+        or bool(spec.base_replica_params)
+        or any(
+            combo.get("primary_params") or combo.get("replica_params")
+            for combo in spec.combos
+        )
+    )
+    if spec.no_server and not has_replication_roles:
         ignored_server_keys = sorted(spec.base_server_params)
         for key in ignored_server_keys:
             add_issue(
