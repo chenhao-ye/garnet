@@ -1,0 +1,48 @@
+name: replication_scaling_wzipfrev_rzipf
+description: "Replication (write ZipfRev / read Zipf): per writer count, metrics vs. number of threads (sublog count)."
+template: replication_scaling
+dependencies: [replication_dist_wzipfrev_rzipf]
+# X = number of threads (sublog count): SingleLog dot at x=1, MultiLog curve
+# over x>=2. One figure-set per writer count.
+x_param: primary.aof_physical_sublog_count
+set_param: client.replication_writers
+# Pin the replay-barrier (drift) threshold to a single value.
+filter:
+  replica.aof_replay_drift_threshold: 100000
+
+scale: 0.5
+legend_separate: true
+legend_scale: 0.5
+
+# Threads (sublog count) on a log2 x-axis (1, 4, 8, 16, 32).
+xscale: log
+xlabel: "Number of threads"
+xticks: [1, 4, 8, 16, 32]
+xmin: 0.8
+xmax: 40
+
+# Per-figure y-axes (latencies in ms). `yticks_<metric>` applies to every
+# writer set; `yticks_w{writers}_<metric>` overrides one figure. Reader tput and
+# p99.9 are stable across writer counts (shared); writer tput and freshness grow
+# with writers, so each writer set gets its own axis.
+yticks_rtput: [0, 5, 10, 15, 20]
+yticks_rp999: [0, 1, 2, 3]
+
+# Writer throughput (Mop/s), per writer count.
+yticks_w1_wtput: [0, 0.5, 1, 1.5]
+yticks_w2_wtput: [0, 0.5, 1, 1.5, 2]
+yticks_w4_wtput: [0, 1, 2, 3, 4]
+yticks_w8_wtput: [0, 2, 4, 6]
+yticks_w16_wtput: [0, 2, 4, 6, 8, 10]
+yticks_w32_wtput: [0, 2, 4, 6, 8, 10, 12]
+
+# Freshness p99.9 (ms, log axis), per writer count. At 1-2 writers the replica
+# keeps up (few ms); at >=4 writers SingleLog blows up to seconds.
+yscale_fresh: log
+ymin_fresh: 1
+yticks_w1_fresh: [1, 10, 100]
+yticks_w2_fresh: [1, 10, 100]
+yticks_w4_fresh: [1, 10, 100, 1000, 10000]
+yticks_w8_fresh: [1, 10, 100, 1000, 10000]
+yticks_w16_fresh: [1, 10, 100, 1000, 10000]
+yticks_w32_fresh: [1, 10, 100, 1000, 10000]

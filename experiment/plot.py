@@ -38,6 +38,15 @@ Each plot config carries a `template` field that selects a renderer:
                      p50/p99/p99.9 latency) vs. sketch size (log x, k/m tick
                      labels), one curve per sublog count
                      dependencies: [<sketch sweep>]
+  - replication:     four figures (writer tput, reader tput, reader p99.9,
+                     freshness p99.9) vs. number of writers, one curve per
+                     sublog config
+                     dependencies: [<replication sweep>]
+  - replication_scaling:
+                     transpose of replication: per writer count, four figures
+                     vs. number of threads (sublog count), SingleLog dot +
+                     MultiLog curve
+                     dependencies: [<replication sweep>]
   - append:          append-scaling figure (sec:6.2)
                      dependencies: [<single experiment>]
   - set:             online SET throughput figure (no AOF vs single-log)
@@ -1176,6 +1185,232 @@ def render_replay_reader_sketch(
             save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
 
 
+def _replication_metric_figures(plot_cfg: dict):
+    """The four replication figures: (suffix, y metric, y label, y scale).
+    Shared by the replication templates. Latencies use `latency_unit`."""
+    unit = str(plot_cfg.get("latency_unit", "ms")).lower()
+    if unit not in _LATENCY_UNIT_SCALE:
+        raise ValueError(
+            f"latency_unit must be one of {sorted(_LATENCY_UNIT_SCALE)}; got {unit!r}"
+        )
+    lat_scale = _LATENCY_UNIT_SCALE[unit]
+    return [
+        ("wtput", "writer_throughput", "Writer tput (Mop/s)", 1.0),
+        ("rtput", "reader_throughput", "Reader tput (Mop/s)", 1.0),
+        ("rp999", "reader_lat_p99_9", f"Reader p99.9 ({unit})", lat_scale),
+        ("fresh", "freshness_lat_p99_9", f"Freshness p99.9 ({unit})", lat_scale),
+    ]
+
+
+def render_replication(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
+    # X = number of writers; one curve per sublog config (SingleLog + MultiLog,
+    # from curve_param). One figure per metric: writer tput, reader tput,
+    # reader p99.9, freshness p99.9. A base `filter` pins the other swept dims.
+    #
+    # Config keys (all optional):
+    #   x_param       x-axis param (default client.replication_writers).
+    #   curve_param   one curve per value (default primary.aof_physical_sublog_count);
+    #                 value 1 -> SingleLog style, otherwise multilog_m{k}.
+    #   filter        base filter, e.g. replica.aof_replay_drift_threshold: 10000.
+    #   latency_unit  "ms" (default here) or "us"; scales the latency figures.
+    #   Figure-suffixed axis overrides: <key>_<metric> (e.g. yscale_fresh: log,
+    #   yticks_rp999, ymin_fresh) override that figure only. Suffixes are
+    #   wtput / rtput / rp999 / fresh.
+    if len(deps) != 1:
+        raise ValueError(
+            f"replication template expects 1 dependency [replication sweep]; got {deps}"
+        )
+    result = load_result(deps[0])
+    x_param = plot_cfg.get("x_param", "client.replication_writers")
+    curve_param = plot_cfg.get("curve_param", "primary.aof_physical_sublog_count")
+    base_filter = dict(plot_cfg.get("filter") or {})
+    k_values = sorted(result["sweep_params"][curve_param])
+
+    metric_figures = _replication_metric_figures(plot_cfg)
+
+    ncol, legend_width = resolve_legend_geom(plot_cfg, len(k_values))
+    ncol = int(plot_cfg.get("legend_ncol", ncol))
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
+
+    legend_saved = False
+    for suffix, y_metric, default_ylabel, y_scale in metric_figures:
+        # Per-figure axis overrides via <key>_<suffix> keys (e.g. yscale_fresh).
+        fig_cfg = dict(plot_cfg)
+        tag = f"_{suffix}"
+        for cfg_key, value in plot_cfg.items():
+            if cfg_key.endswith(tag):
+                fig_cfg[cfg_key[: -len(tag)]] = value
+        fig, ax = _build_metric_fig(plot_cfg)
+
+        all_y: list[float] = []
+        for k in k_values:
+            key = "single_log" if k == 1 else f"multilog_m{k}"
+            filt = {**base_filter, curve_param: k}
+            xs, ys, _ = extract_series(
+                result,
+                x_param=x_param,
+                y_metric=y_metric,
+                y_field="median",
+                filter_params=filt,
+            )
+            ys = [y * y_scale for y in ys]
+            if not xs:
+                print(
+                    f"WARN: no data for {curve_param}={k} under filter {base_filter}",
+                    file=sys.stderr,
+                )
+                continue
+            all_y.extend(ys)
+            ax.plot(
+                xs,
+                ys,
+                color=color_map[key],
+                linestyle=linestyle_map[key],
+                marker=marker_map[key],
+                markersize=MARKER_SIZE,
+                linewidth=LINEWIDTH,
+                label=labels_map[key],
+                zorder=zorder_map.get(key, 2),
+            )
+
+        y_log = fig_cfg.get("yscale") == "log"
+        default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+        apply_axis_cfg(
+            ax,
+            fig_cfg,
+            default_xlabel="Number of writers",
+            default_ylabel=default_ylabel,
+            default_ymax=default_ymax,
+        )
+
+        if plot_cfg.get("legend_separate"):
+            if not legend_saved:
+                save_legend(ax, out_path, width=legend_width, **legend_kwargs)
+                legend_saved = True
+        else:
+            handles, labels = row_major_handles(ax, ncol)
+            ax.legend(
+                handles,
+                labels,
+                loc="upper left",
+                bbox_to_anchor=(0.0, 1.0),
+                **legend_kwargs,
+            )
+
+        # Filename: <stem>_<metric>.<ext>
+        save_fig(fig, out_path.with_name(f"{out_path.stem}_{suffix}{out_path.suffix}"))
+
+
+def render_replication_scaling(
+    plot_cfg: dict, deps: list[str], out_path: Path
+) -> None:
+    # Transpose of render_replication: X = number of threads (sublog count),
+    # SingleLog a lone dot at x=1 and MultiLog a curve over x>=2 (cf.
+    # render_replay_reader_scaling). One figure-set per `set_param` value
+    # (number of writers), same four metrics. Base `filter` pins other dims.
+    #
+    # Config keys (all optional):
+    #   x_param       x-axis param (default primary.aof_physical_sublog_count).
+    #   set_param     one figure-set per value (default client.replication_writers).
+    #   filter        base filter, e.g. replica.aof_replay_drift_threshold: 100000.
+    #   latency_unit  "ms" (default) or "us".
+    #   Figure-suffixed axis overrides: <key>_<metric> (all sets) and
+    #   <key>_<set>_<metric> (one figure), <set> = "w{writers}".
+    if len(deps) != 1:
+        raise ValueError(
+            f"replication_scaling template expects 1 dependency; got {deps}"
+        )
+    result = load_result(deps[0])
+    x_param = plot_cfg.get("x_param", "primary.aof_physical_sublog_count")
+    set_param = plot_cfg.get("set_param", "client.replication_writers")
+    base_filter = dict(plot_cfg.get("filter") or {})
+    set_values = sorted(result["sweep_params"][set_param])
+    metric_figures = _replication_metric_figures(plot_cfg)
+
+    ncol, legend_width = resolve_legend_geom(plot_cfg, 2)
+    ncol = int(plot_cfg.get("legend_ncol", ncol))
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
+
+    legend_saved = False
+    for sv in set_values:
+        set_suffix = f"w{int(sv)}"
+        for suffix, y_metric, default_ylabel, y_scale in metric_figures:
+            # Per-figure axis overrides: <key>_<metric> then <key>_<set>_<metric>.
+            fig_cfg = dict(plot_cfg)
+            for otag in (f"_{suffix}", f"_{set_suffix}_{suffix}"):
+                for cfg_key, value in plot_cfg.items():
+                    if cfg_key.endswith(otag):
+                        fig_cfg[cfg_key[: -len(otag)]] = value
+            fig, ax = _build_metric_fig(plot_cfg)
+
+            filt = {**base_filter, set_param: sv}
+            xs, ys, _ = extract_series(
+                result,
+                x_param=x_param,
+                y_metric=y_metric,
+                y_field="median",
+                filter_params=filt,
+            )
+            ys = [y * y_scale for y in ys]
+            single = [(x, y) for x, y in zip(xs, ys) if x == 1]
+            multi = [(x, y) for x, y in zip(xs, ys) if x >= 2]
+            if not xs:
+                print(f"WARN: no data under filter {filt}", file=sys.stderr)
+
+            if single:
+                ax.plot(
+                    [x for x, _ in single],
+                    [y for _, y in single],
+                    color=color_map["single_log"],
+                    linestyle="none",
+                    marker="o",
+                    markersize=MARKER_SIZE,
+                    label="SingleLog",
+                    zorder=zorder_map.get("single_log", 11),
+                )
+            if multi:
+                ax.plot(
+                    [x for x, _ in multi],
+                    [y for _, y in multi],
+                    color=color_map["multilog_physical"],
+                    linestyle=linestyle_map["multilog_physical"],
+                    marker=marker_map["multilog_physical"],
+                    markersize=MARKER_SIZE,
+                    linewidth=LINEWIDTH,
+                    label="MultiLog",
+                    zorder=zorder_map.get("multilog_physical", 2),
+                )
+
+            y_log = fig_cfg.get("yscale") == "log"
+            all_y = [y for _, y in single] + [y for _, y in multi]
+            default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+            apply_axis_cfg(
+                ax,
+                fig_cfg,
+                default_xlabel="Number of threads",
+                default_ylabel=default_ylabel,
+                default_ymax=default_ymax,
+            )
+
+            if plot_cfg.get("legend_separate"):
+                if not legend_saved:
+                    save_legend(ax, out_path, width=legend_width, **legend_kwargs)
+                    legend_saved = True
+            else:
+                handles, labels = row_major_handles(ax, ncol)
+                ax.legend(
+                    handles,
+                    labels,
+                    loc="upper left",
+                    bbox_to_anchor=(0.0, 1.0),
+                    **legend_kwargs,
+                )
+
+            # Filename: <stem>_w{writers}_<metric>.<ext>
+            tags = [out_path.stem, set_suffix, suffix]
+            save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
+
+
 def render_append(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     # dependencies[0] = MultiLog 2-D sweep (threads x aof_physical_sublog_count);
     # dependencies[1] (optional) = matching NoPrefix sweep, used to draw a
@@ -1351,6 +1586,8 @@ TEMPLATES = {
     "replay_reader_bar": render_replay_reader_bar,
     "replay_reader_scaling": render_replay_reader_scaling,
     "replay_reader_sketch": render_replay_reader_sketch,
+    "replication": render_replication,
+    "replication_scaling": render_replication_scaling,
     "append": render_append,
     "set": render_set,
 }

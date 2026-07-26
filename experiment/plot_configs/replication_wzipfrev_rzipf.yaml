@@ -1,0 +1,32 @@
+name: replication_wzipfrev_rzipf
+description: "Replication (write ZipfRev / read Zipf): writer tput, reader tput, reader p99.9, freshness p99.9 vs. writers."
+template: replication
+dependencies: [replication_dist_wzipfrev_rzipf]
+# One curve per sublog config (primary & replica sublog counts co-vary):
+# SingleLog(1) + MultiLog(4/8/16/32), X = number of writers.
+x_param: client.replication_writers
+curve_param: primary.aof_physical_sublog_count
+# Pin the replay-barrier (drift) threshold to a single value.
+filter:
+  replica.aof_replay_drift_threshold: 100000
+
+scale: 0.5           # 4:3 figure
+legend_separate: true
+legend_scale: 1.0    # full-column legend host for the 5 (long) labels
+legend_ncol: 3       # 3 columns x 2 rows
+
+# Writers on a log2 x-axis (1..32).
+xscale: log
+xlabel: "Number of writers"
+xticks: [1, 2, 4, 8, 16, 32]
+xmin: 0.8
+xmax: 40
+
+# Per-figure y-axes (latencies in ms). Freshness spans ms..thousands of ms, so
+# it uses a log axis; the others are linear.
+yticks_wtput: [0, 2, 4, 6, 8, 10, 12]
+yticks_rtput: [0, 5, 10, 15, 20]
+yticks_rp999: [0, 1, 2, 3]
+yscale_fresh: log
+ymin_fresh: 1
+yticks_fresh: [1, 10, 100, 1000, 10000]
