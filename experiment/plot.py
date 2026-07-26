@@ -1023,9 +1023,9 @@ def render_replay_reader_scaling(
                 default_ylabel=default_ylabel,
                 default_ymax=default_ymax,
             )
-            # Nudge the x-label left so it is not cut off at the right edge,
-            # and the y-label down so it is not cut off at the top.
-            ax.xaxis.label.set_x(0.42)
+            # Center the x-label; nudge the y-label down so it is not cut off
+            # at the top.
+            ax.xaxis.label.set_x(0.5)
             ax.yaxis.label.set_y(0.42)
 
             if plot_cfg.get("legend_separate"):
