@@ -941,13 +941,23 @@ def _check_one(config: str, supported_client_params: set[str]) -> bool:
         supported=supported_client_params,
         kind="client",
     )
-    # A bench in the server slot (split-process Replica role) takes Resp.benchmark flags, not
-    # GarnetServer ones; validate its params against the bench option set.
+    # The replication primary/replica slots run real GarnetServers; their params are
+    # GarnetServer flags, validated against the host option set.
+    supported_garnet_params = option_names_from_options_cs(GARNET_OPTIONS_CS_PATH)
+    # server_params is a shared server layer folded into primary and replica. For a replication
+    # pair those are real GarnetServers, so validate server_params against the full GarnetServer
+    # option set; otherwise it configures the generic single server (narrower supported set), or a
+    # bench in the server slot (split-process Replica role) which takes Resp.benchmark flags.
     bench_as_server = spec.server_project.endswith("Resp.benchmark.csproj")
-    server_supported = (
-        supported_client_params if bench_as_server else SUPPORTED_SERVER_OPTION_NAMES
+    replication_roles = bool(spec.base_primary_params) or bool(spec.base_replica_params) or any(
+        combo.get("primary_params") or combo.get("replica_params") for combo in spec.combos
     )
-    server_kind = "client" if bench_as_server else "server"
+    if bench_as_server:
+        server_supported, server_kind = supported_client_params, "client"
+    elif replication_roles:
+        server_supported, server_kind = supported_garnet_params, "server"
+    else:
+        server_supported, server_kind = SUPPORTED_SERVER_OPTION_NAMES, "server"
     validate_param_keys(
         issues,
         spec.base_server_params,
@@ -955,9 +965,17 @@ def _check_one(config: str, supported_client_params: set[str]) -> bool:
         supported=server_supported,
         kind=server_kind,
     )
-    # The replication primary/replica slots run real GarnetServers; their params are
-    # GarnetServer flags, validated against the host option set.
-    supported_garnet_params = option_names_from_options_cs(GARNET_OPTIONS_CS_PATH)
+    for scope_name, params in (
+        ("base.primary_params", spec.base_primary_params),
+        ("base.replica_params", spec.base_replica_params),
+    ):
+        validate_param_keys(
+            issues,
+            params,
+            scope=scope_name,
+            supported=supported_garnet_params,
+            kind="server",
+        )
     for scope_name, params in (
         ("base.primary_params", spec.base_primary_params),
         ("base.replica_params", spec.base_replica_params),
