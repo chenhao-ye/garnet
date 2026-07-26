@@ -51,12 +51,13 @@ namespace Tsavorite.core
         private Status SnapshotRead(TKey key, ref TInput input, ref TOutput output, TContext userContext)
         {
             var snapshotAddr = getSnapshotAddress();
-            var scanFn = new ConsistentReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator>.SnapshotVersionScanFunctions(snapshotAddr);
+            var scanFn = new ConsistentReadContext<TKey, TInput, TOutput, TContext, TFunctions, TStoreFunctions, TAllocator>.SnapshotVersionScanFunctions(snapshotAddr, Session.functions, input, output);
             Session.store.Log.IterateKeyVersions(ref scanFn, key);
             if (scanFn.foundAddress != LogAddress.kInvalidAddress)
             {
-                var readOptions = default(ReadOptions);
-                return TransactionalContext.ReadAtAddress(scanFn.foundAddress, key, ref input, ref output, ref readOptions, out _, userContext);
+                // Output was produced from the LogRecord during the walk; copy it back to the caller.
+                output = scanFn.output;
+                return scanFn.found ? new Status(StatusCode.Found) : new Status(StatusCode.NotFound);
             }
             return new Status(StatusCode.NotFound);
         }
