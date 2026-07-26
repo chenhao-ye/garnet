@@ -2,10 +2,10 @@
 # snapshot-freq{5,500}ms x w{1,2,4,8,16,32}, 10M keys, 16 readers, 1g AOF, performance governor
 # pinned by run.py. C5 = snapshot read protocol; it does not use the replay-drift barrier.
 name: replication_dist_c5_wzipf_rzipf
-description: "C5 snapshot; write=Zipf read=Zipf; m=1 x n{2,4,8,16,32} x freq{5,500}ms x w{1,2,4,8,16,32}, 10M keys, 30s x3"
+description: "C5 snapshot; write=Zipf read=Zipf; m=1 x n{2,4,8,16,32} x freq{5,500}ms x w{1,2,4,8,16,32}, 10M keys, 30s x5"
 benchmark: replication
 no_server: true
-repeat: 3
+repeat: 5
 remote:
   primary: { ssh: node0, ip: 10.10.1.1 }
   replica: { ssh: node1, ip: 10.10.1.2 }

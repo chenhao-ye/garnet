@@ -2,10 +2,10 @@
 # drift{10k,50k,100k,500k,1M,5M}, 10M keys, 16 readers, 1g/256MB, performance governor pinned by
 # run.py. zipf theta=0.99 (default).
 name: replication_dist_wzipfrev_rzipf
-description: "write=ZipfRev read=Zipf; w{1,2,4,8,16,32} x m{1,2,4,8,16,32} x drift{10k,50k,100k,500k,1M,5M}, 10M keys, 30s x3"
+description: "write=ZipfRev read=Zipf; w{1,2,4,8,16,32} x m{1,2,4,8,16,32} x drift{10k,50k,100k,500k,1M,5M}, 10M keys, 30s x5"
 benchmark: replication
 no_server: true
-repeat: 3
+repeat: 5
 remote:
   primary: { ssh: node0, ip: 10.10.1.1 }
   replica: { ssh: node1, ip: 10.10.1.2 }
