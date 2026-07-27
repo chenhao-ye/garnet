@@ -3,10 +3,10 @@
 # sweep n (replay tasks / virtual sublogs) 2..32 x snapshot freq {5,500}ms. C5 does not use the
 # replay-drift barrier (drift=-1). performance governor pinned by run.py.
 name: replication_mixed_c5_w10
-description: "Mixed-load C5 10% writes: m=1 x n{2,4,8,16,32} x freq{5,500}ms, 32 primary clients + 32 replica readers, uniform/zipf, 10M, 30s x3"
+description: "Mixed-load C5 10% writes: m=1 x n{2,4,8,16,32} x freq{5,500}ms, 32 primary clients + 32 replica readers, uniform/zipf, 10M, 30s x5"
 benchmark: replication
 no_server: true
-repeat: 3
+repeat: 5
 remote:
   primary: { ssh: node0, ip: 10.10.1.1 }
   replica: { ssh: node1, ip: 10.10.1.2 }

@@ -1,12 +1,12 @@
 # Mixed-load replication, MultiLog timestamp protocol, 50% writes. 32 primary-side clients issue
 # a mix (50% SET / 50% GET to the primary), 32 readers on the replica. Drift threshold fixed at
-# 50k; sweep m (physical sublogs) 1..32. Only the SET fraction ships AOF records, so lag is
+# 10k; sweep m (physical sublogs) 1..32. Only the SET fraction ships AOF records, so lag is
 # driven by the absolute SET rate, not the client op rate. performance governor pinned by run.py.
-name: replication_mixed_w50
-description: "Mixed-load TS 50% writes: m{1,2,4,8,16,32}, drift=50k, 32 primary clients + 32 replica readers, uniform/zipf, 10M, 30s x5"
+name: replication_mixed_w50_d10k
+description: "Mixed-load TS 50% writes: m{1,2,4,8,16,32}, drift=10k, 32 primary clients + 32 replica readers, uniform/zipf, 10M, 30s x3"
 benchmark: replication
 no_server: true
-repeat: 5
+repeat: 3
 remote:
   primary: { ssh: node0, ip: 10.10.1.1 }
   replica: { ssh: node1, ip: 10.10.1.2 }
@@ -33,7 +33,7 @@ base:
     repl_diskless_sync: true
     aof_memory: 1g
     aof_replay_task_count: 1
-    aof_replay_drift_threshold: 50000
+    aof_replay_drift_threshold: 10000
     aof_replay_drift_check_freq: 1
     replica_sync_delay: 1
     replica_offset_max_lag: 268435456

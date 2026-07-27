@@ -2,11 +2,11 @@
 # mix (50% SET / 50% GET to the primary), 32 readers on the replica. m=1 (single physical sublog);
 # sweep n (replay tasks / virtual sublogs) 2..32 x snapshot freq {5,500}ms. C5 does not use the
 # replay-drift barrier (drift=-1). performance governor pinned by run.py.
-name: replication_mixed_c5_w50
-description: "Mixed-load C5 50% writes: m=1 x n{2,4,8,16,32} x freq{5,500}ms, 32 primary clients + 32 replica readers, uniform/zipf, 10M, 30s x5"
+name: replication_mixed_c5_w50_pzipfrev
+description: "Mixed-load C5 50% writes: m=1 x n{2,4,8,16,32} x freq{5,500}ms, 32 primary clients + 32 replica readers, zipfrev/zipf, 10M, 30s x3"
 benchmark: replication
 no_server: true
-repeat: 5
+repeat: 3
 remote:
   primary: { ssh: node0, ip: 10.10.1.1 }
   replica: { ssh: node1, ip: 10.10.1.2 }
@@ -51,7 +51,7 @@ base:
     replication_write_ratio: 0.50
     itp: 256
     runtime: 30
-    replication_write_dist: Uniform
+    replication_write_dist: ZipfRev
     replication_read_dist: Zipf
 sweep:
   server_params:                 # n coupled to BOTH primary and replica (primary tags records for m*n virtual sublogs)

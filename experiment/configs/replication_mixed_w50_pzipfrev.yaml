@@ -2,11 +2,11 @@
 # a mix (50% SET / 50% GET to the primary), 32 readers on the replica. Drift threshold fixed at
 # 50k; sweep m (physical sublogs) 1..32. Only the SET fraction ships AOF records, so lag is
 # driven by the absolute SET rate, not the client op rate. performance governor pinned by run.py.
-name: replication_mixed_w50
-description: "Mixed-load TS 50% writes: m{1,2,4,8,16,32}, drift=50k, 32 primary clients + 32 replica readers, uniform/zipf, 10M, 30s x5"
+name: replication_mixed_w50_pzipfrev
+description: "Mixed-load TS 50% writes: m{1,2,4,8,16,32}, drift=50k, 32 primary clients + 32 replica readers, zipfrev/zipf, 10M, 30s x3"
 benchmark: replication
 no_server: true
-repeat: 5
+repeat: 3
 remote:
   primary: { ssh: node0, ip: 10.10.1.1 }
   replica: { ssh: node1, ip: 10.10.1.2 }
@@ -50,7 +50,7 @@ base:
     replication_write_ratio: 0.50
     itp: 256
     runtime: 30
-    replication_write_dist: Uniform
+    replication_write_dist: ZipfRev
     replication_read_dist: Zipf
 sweep:
   server_params:                 # m coupled to BOTH primary and replica
