@@ -1,4 +1,4 @@
-name: replication_mixed_w10
+name: replication_mixed_scaling_w10
 description: "Mixed 10% write: primary/replica tput, replica p99.9, freshness p99.9 vs. #replay threads."
 template: replication_mixed
 # [main sweep (SingleLog + MultiLog), C5 sweep].
