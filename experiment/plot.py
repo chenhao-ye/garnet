@@ -47,6 +47,11 @@ Each plot config carries a `template` field that selects a renderer:
                      vs. number of threads (sublog count), SingleLog dot +
                      MultiLog curve
                      dependencies: [<replication sweep>]
+  - replication_mixed:
+                     four figures (primary tput, replica tput, replica p99.9,
+                     freshness p99.9) vs. #replay threads; SingleLog dot +
+                     MultiLog curve + C5 curves (from a 2nd experiment)
+                     dependencies: [<main sweep>, <c5 sweep>]
   - append:          append-scaling figure (sec:6.2)
                      dependencies: [<single experiment>]
   - set:             online SET throughput figure (no AOF vs single-log)
@@ -1410,6 +1415,166 @@ def render_replication_scaling(
             save_fig(fig, out_path.with_name("_".join(tags) + out_path.suffix))
 
 
+def render_replication_mixed(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
+    # X = number of replay threads. Four figures: primary tput, replica tput,
+    # replica p99.9, freshness p99.9. Curves (cf. render_replay_reader_scaling):
+    #   SingleLog  -- deps[0] at x=1 (a lone dot),
+    #   MultiLog   -- deps[0] curve over x>=2 (x = x_param),
+    #   C5 curves  -- deps[1], one per `c5_curves` entry (x = c5_x_param),
+    #                 e.g. split by snapshot frequency.
+    #
+    # Config keys (all optional):
+    #   x_param       main sweep param (default server.aof_physical_sublog_count).
+    #   c5_x_param    C5 sweep param (default server.aof_replay_task_count).
+    #   c5_curves     list of {style, filter}; `style` names a plot_style key.
+    #   filter        base filter applied to every series.
+    #   latency_unit  "ms" (default) or "us"; scales the latency figures.
+    #   Figure-suffixed axis overrides: <key>_<metric>, suffixes ptput / rtput /
+    #   rp999 / fresh (e.g. yscale_fresh: log, yticks_ptput).
+    if len(deps) != 2:
+        raise ValueError(
+            "replication_mixed template expects 2 dependencies [main, c5]; "
+            f"got {deps}"
+        )
+    main = load_result(deps[0])
+    c5_result = load_result(deps[1])
+    x_param = plot_cfg.get("x_param", "server.aof_physical_sublog_count")
+    c5_x_param = plot_cfg.get("c5_x_param", "server.aof_replay_task_count")
+    base_filter = dict(plot_cfg.get("filter") or {})
+    c5_curves = plot_cfg.get("c5_curves") or []
+
+    unit = str(plot_cfg.get("latency_unit", "ms")).lower()
+    if unit not in _LATENCY_UNIT_SCALE:
+        raise ValueError(
+            f"latency_unit must be one of {sorted(_LATENCY_UNIT_SCALE)}; got {unit!r}"
+        )
+    lat_scale = _LATENCY_UNIT_SCALE[unit]
+
+    metric_figures = [
+        ("ptput", "writer_throughput", "Primary tput (Mop/s)", 1.0),
+        ("rtput", "reader_throughput", "Replica tput (Mop/s)", 1.0),
+        ("rp999", "reader_lat_p99_9", f"Replica p99.9 ({unit})", lat_scale),
+        ("fresh", "freshness_lat_p99_9", f"Freshness ({unit})", lat_scale),
+    ]
+
+    ncol, legend_width = resolve_legend_geom(plot_cfg, 2 + len(c5_curves))
+    ncol = int(plot_cfg.get("legend_ncol", ncol))
+    legend_kwargs = dict(LEGEND_KWARGS, ncol=ncol)
+
+    legend_saved = False
+    for suffix, y_metric, default_ylabel, y_scale in metric_figures:
+        # Per-figure axis overrides via <key>_<suffix> keys (e.g. yscale_fresh).
+        fig_cfg = dict(plot_cfg)
+        tag = f"_{suffix}"
+        for cfg_key, value in plot_cfg.items():
+            if cfg_key.endswith(tag):
+                fig_cfg[cfg_key[: -len(tag)]] = value
+        fig, ax = _build_metric_fig(plot_cfg)
+
+        all_y: list[float] = []
+
+        # SingleLog (dot) + MultiLog (curve) from the main experiment.
+        xs, ys, _ = extract_series(
+            main,
+            x_param=x_param,
+            y_metric=y_metric,
+            y_field="median",
+            filter_params=base_filter,
+        )
+        ys = [y * y_scale for y in ys]
+        single = [(x, y) for x, y in zip(xs, ys) if x == 1]
+        multi = [(x, y) for x, y in zip(xs, ys) if x >= 2]
+        all_y.extend(y for _, y in single)
+        all_y.extend(y for _, y in multi)
+        if single:
+            ax.plot(
+                [x for x, _ in single],
+                [y for _, y in single],
+                color=color_map["single_log"],
+                linestyle="none",
+                marker="o",
+                markersize=MARKER_SIZE,
+                label="SingleLog",
+                zorder=zorder_map.get("single_log", 11),
+            )
+        if multi:
+            ax.plot(
+                [x for x, _ in multi],
+                [y for _, y in multi],
+                color=color_map["multilog_physical"],
+                linestyle=linestyle_map["multilog_physical"],
+                marker=marker_map["multilog_physical"],
+                markersize=MARKER_SIZE,
+                linewidth=LINEWIDTH,
+                label="MultiLog",
+                zorder=zorder_map.get("multilog_physical", 2),
+            )
+
+        # C5 curves from the second experiment (x = c5_x_param).
+        for cc in c5_curves:
+            style = cc["style"]
+            cfilt = {**base_filter, **(cc.get("filter") or {})}
+            cxs, cys, _ = extract_series(
+                c5_result,
+                x_param=c5_x_param,
+                y_metric=y_metric,
+                y_field="median",
+                filter_params=cfilt,
+            )
+            pts = [(x, y * y_scale) for x, y in zip(cxs, cys)]
+            if not pts:
+                print(f"WARN: no C5 data for {style} under {cfilt}", file=sys.stderr)
+                continue
+            all_y.extend(y for _, y in pts)
+            ax.plot(
+                [x for x, _ in pts],
+                [y for _, y in pts],
+                color=color_map[style],
+                linestyle=linestyle_map[style],
+                marker=marker_map[style],
+                markersize=MARKER_SIZE,
+                linewidth=LINEWIDTH,
+                label=labels_map[style],
+                zorder=zorder_map.get(style, 2),
+            )
+
+        y_log = fig_cfg.get("yscale") == "log"
+        default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
+        apply_axis_cfg(
+            ax,
+            fig_cfg,
+            default_xlabel="#replay threads",
+            default_ylabel=default_ylabel,
+            default_ymax=default_ymax,
+        )
+        # Nudge the y-label down so it is not cut off at the top of a small
+        # (square) figure.
+        ax.yaxis.label.set_y(0.42)
+        # Freshness spans up to 10000 ms; that label is too wide for the small
+        # figure, so show the (log) y-ticks with SI suffixes (1k, 10k).
+        if suffix == "fresh":
+            yt = fig_cfg.get("yticks")
+            if yt:
+                ax.set_yticklabels([_fmt_si_count(t) for t in yt])
+
+        if plot_cfg.get("legend_separate"):
+            if not legend_saved:
+                save_legend(ax, out_path, width=legend_width, **legend_kwargs)
+                legend_saved = True
+        else:
+            handles, labels = row_major_handles(ax, ncol)
+            ax.legend(
+                handles,
+                labels,
+                loc="upper left",
+                bbox_to_anchor=(0.0, 1.0),
+                **legend_kwargs,
+            )
+
+        # Filename: <stem>_<metric>.<ext>
+        save_fig(fig, out_path.with_name(f"{out_path.stem}_{suffix}{out_path.suffix}"))
+
+
 def render_append(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     # dependencies[0] = MultiLog 2-D sweep (threads x aof_physical_sublog_count);
     # dependencies[1] (optional) = matching NoPrefix sweep, used to draw a
@@ -1587,6 +1752,7 @@ TEMPLATES = {
     "replay_reader_sketch": render_replay_reader_sketch,
     "replication": render_replication,
     "replication_scaling": render_replication_scaling,
+    "replication_mixed": render_replication_mixed,
     "append": render_append,
     "set": render_set,
 }

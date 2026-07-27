@@ -1,0 +1,32 @@
+name: replication_mixed_w10
+description: "Mixed 10% write: primary/replica tput, replica p99.9, freshness p99.9 vs. #replay threads."
+template: replication_mixed
+# [main sweep (SingleLog + MultiLog), C5 sweep].
+dependencies: [replication_mixed_w10, replication_mixed_c5_w10]
+# SingleLog = main m=1 (dot), MultiLog = main m=2..32 (curve), X = replay threads.
+x_param: server.aof_physical_sublog_count
+# C5 curves: replay-task sweep, split by snapshot frequency (in ms); styles
+# live in plot_style.py (c5_5ms / c5_500ms).
+c5_x_param: server.aof_replay_task_count
+c5_curves:
+  - { style: c5_5ms, filter: { replica.aof_snapshot_freq: 5 } }
+  - { style: c5_500ms, filter: { replica.aof_snapshot_freq: 500 } }
+
+width_scale: 0.33    # square figure, like aof_reader (replay_reader)
+height_scale: 0.33
+legend_separate: true
+
+# Replay threads (sublog / task count) on a linear x-axis (1..32; 2 tick skipped).
+xlabel: "#replay threads"
+xticks: [1, 4, 8, 16, 32]
+xmin: 0
+xmax: 32
+
+# Per-figure y-axes (latencies in ms). Freshness spans ms..thousands of ms, so
+# it uses a log axis; the others are linear.
+yticks_ptput: [0, 10, 20, 30]
+yticks_rtput: [0, 10, 20, 30, 40]
+yticks_rp999: [0, 1, 2, 3, 4]
+yscale_fresh: log
+ymin_fresh: 1
+yticks_fresh: [1, 10, 100, 1000, 10000]
