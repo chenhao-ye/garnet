@@ -1,11 +1,11 @@
-# C5 variant of aof_replay_virtual: scale AOF replay task count n (1..64) at a single physical
-# sublog (m=1), no reader, C5 snapshot read protocol. Mirrors aof_replay_virtual exactly except
-# aof_read_protocol=snapshot (+ 5ms snapshot freq). With no reader the C5 difference on the replay
-# path is the periodic TakeSnapshot -> Log.Flush(wait:true) stall and the skipped per-key sequence
-# maintenance; this sweep isolates how those affect pure replay throughput as n grows. Compare to
-# aof_replay_virtual (timestamp protocol) run on the same build.
+# C5 variant of aof_replay_virtual: scale AOF replay task count n (2..64) at a single physical
+# sublog (m=1), no reader, C5 snapshot read protocol. Mirrors aof_replay_virtual (n omits 1 here)
+# except aof_read_protocol=snapshot, and additionally sweeps snapshot freq {5,500}ms. With no reader
+# the C5 difference on the replay path is the periodic TakeSnapshot -> Log.Flush(wait:true) stall and
+# the skipped per-key sequence maintenance; this sweep isolates how those affect pure replay
+# throughput as n and snapshot freq vary. Compare to aof_replay_virtual (timestamp) on the same build.
 name: aof_replay_c5
-description: "C5 snapshot: scale AOF replay task count (1-64), m=1, no reader, null device, InProc"
+description: "C5 snapshot: replay task count n{2..64} x snapshot freq {5,500}ms, m=1, no reader, null device, InProc"
 benchmark: aof
 no_server: true
 repeat: 7
@@ -26,7 +26,7 @@ base:
     dbsize: 10000000
     aof_replay_drift_threshold: -1
     aof_read_protocol: snapshot
-    aof_snapshot_freq: 5
 sweep:
   client_params:
+    aof_snapshot_freq: [5, 500]
     aof_replay_task_count: [2, 4, 8, 16, 32, 64]

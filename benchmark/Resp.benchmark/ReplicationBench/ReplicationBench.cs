@@ -31,6 +31,9 @@ namespace Resp.benchmark
         readonly string[] keyStrings;
         readonly string valuePayload;
 
+        // Total ops the primary-side client threads complete (SETs + GETs to the primary);
+        // reported as the primary-client end-to-end throughput. Only the SET fraction
+        // (--replication-write-ratio) generates AOF records shipped to the replica.
         long writerOperationsCompleted;
         long readerOperationsCompleted;
         long freshnessProbesCompleted;
@@ -275,20 +278,28 @@ namespace Resp.benchmark
             Console.WriteLine($"[Catch up]: replica reached the primary offset in {swatch.ElapsedMilliseconds:N2} ms");
         }
 
-        // Writer thread: keeps `itp` SETs to the primary in flight, recording per-batch latency
-        // (per-op when itp = 1). Keys drawn from the configured write distribution
-        // (--replication-write-dist) over the preloaded keyspace.
+        // Primary-side client thread: keeps `itp` ops to the primary in flight, recording
+        // per-batch latency (per-op when itp = 1). Each op is a SET with probability
+        // --replication-write-ratio, otherwise a GET to the primary; both draw keys from the
+        // configured write distribution (--replication-write-dist) over the preloaded
+        // keyspace. Only SETs ship AOF records to the replica, so at a low write ratio the
+        // primary sustains a high op rate while the AOF fill (and thus replication lag) stays
+        // low. write-ratio = 1.0 (the default) is the pure-writer path.
         void RunWriter(int threadId, GarnetClientSession client, LongHistogram hist)
         {
             var keyCount = keyStrings.Length;
             var keyDist = new KeyDistAdaptor(options.ReplicationWriteDist, keyCount, 0xBEEF + threadId, options.ZipfTheta);
             var parallel = Math.Max(1, options.IntraThreadParallelism);
             var wait = !options.Burst;
+            var writeRatio = options.ReplicationWriteRatio;
+            var rng = new Random(0xBEEF + threadId);
             var opsCompleted = 0L;
-            // Reused command array: only the key slot changes per op. Passing a pre-allocated
+            // Reused command arrays: only the key slot changes per op. Passing a pre-allocated
             // array to ExecuteBatch avoids the params[] allocation, and InternalExecute
-            // consumes it synchronously, so reuse is safe.
-            var cmd = new string[] { "SET", null, valuePayload };
+            // consumes it synchronously, so reuse is safe. Separate arrays for SET (3 tokens)
+            // and GET (2 tokens) so a mixed batch needs no per-op allocation.
+            var setCmd = new string[] { "SET", null, valuePayload };
+            var getCmd = new string[] { "GET", null };
 
             waiter.Wait();
 
@@ -297,8 +308,17 @@ namespace Resp.benchmark
                 var start = Stopwatch.GetTimestamp();
                 for (var i = 0; i < parallel; i++)
                 {
-                    cmd[1] = keyStrings[keyDist.Next()];
-                    client.ExecuteBatch(cmd);
+                    var key = keyStrings[keyDist.Next()];
+                    if (writeRatio >= 1.0 || rng.NextDouble() < writeRatio)
+                    {
+                        setCmd[1] = key;
+                        client.ExecuteBatch(setCmd);
+                    }
+                    else
+                    {
+                        getCmd[1] = key;
+                        client.ExecuteBatch(getCmd);
+                    }
                 }
                 client.CompletePending(wait);
                 hist.RecordValue(Stopwatch.GetTimestamp() - start);

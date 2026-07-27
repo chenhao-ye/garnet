@@ -178,6 +178,13 @@ the machine the role runs on. See `configs/replication_remote_smoke.yaml`.
 - **`sweep_combo`** is an explicit list of parameter tuples -- use it to walk a
   diagonal instead of a grid. `aof_replay_spectrum_64.yaml` walks the
   `m * n = 64` diagonal: `(1,64), (2,32), ... (64,1)`.
+- **`server_params`** in a `sweep` (or `base`) is a *shared server layer*: each
+  key is applied to BOTH `primary_params` and `replica_params`, with role-specific
+  params overriding it. This lets a replication grid vary a value that must stay
+  equal across the pair (e.g. `aof_physical_sublog_count`) as a single Cartesian
+  dimension instead of an explicit `sweep_combo`. The `replication_dist_*` configs
+  use it: `server_params.aof_physical_sublog_count x replica_params.aof_replay_drift_threshold
+  x client_params.replication_writers` = 5 x 6 x 6 = 180 runs.
 
 ```yaml
 sweep_combo:
