@@ -152,14 +152,25 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     if single_log_y is None:
         raise RuntimeError(
             f"Could not find aof_physical_sublog_count=1 datapoint in "
-            f"{physical_name}; needed for the Single Log reference line."
+            f"{physical_name}; needed for the Single Log reference point."
         )
+
+    # SingleLog is the lone x=1 point; every scaling method starts at x>=2.
+    def _from2(xs, ys):
+        pairs = [(x, y) for x, y in zip(xs, ys) if x >= 2]
+        return [x for x, _ in pairs], [y for _, y in pairs]
+
+    xs_virt, ys_virt = _from2(xs_virt, ys_virt)
+    xs_phys, ys_phys = _from2(xs_phys, ys_phys)
+    xs_nop, ys_nop = _from2(xs_nop, ys_nop)
+    c5_series = [(style, *_from2(cxs, cys)) for style, cxs, cys in c5_series]
 
     scale = float(plot_cfg.get("scale", 1.0))
     fig, ax = build_fig_single_col(1, 1, hw_ratio=0.75, width_scale=scale)
 
     all_x = sorted(
-        set(xs_virt)
+        {1}
+        | set(xs_virt)
         | set(xs_phys)
         | set(xs_nop)
         | {x for _, cxs, _ in c5_series for x in cxs}
@@ -167,11 +178,14 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     if not all_x:
         raise RuntimeError("Empty replay datasets; nothing to plot.")
 
-    ax.axhline(
-        single_log_y,
+    # SingleLog: a single dot at x=1 (baseline), not a reference line.
+    ax.plot(
+        [1],
+        [single_log_y],
         color=color_map["single_log"],
-        linestyle=linestyle_map["single_log"],
-        linewidth=LINEWIDTH,
+        linestyle="none",
+        marker="o",
+        markersize=MARKER_SIZE,
         label=labels_map["single_log"],
         zorder=zorder_map.get("single_log", 11),
     )

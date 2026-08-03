@@ -1,8 +1,8 @@
-name: replication_mixed_scaling_w50
-description: "Mixed 50% write: primary/replica tput, replica p99.9, freshness p99.9 vs. #replay threads."
+name: replication_mixed_scaling_w50_pzipfrev
+description: "Mixed 50% write (primary ZipfRev): primary/replica tput, replica p99.9, freshness p99.9 vs. #replay threads."
 template: replication_mixed
 # [main sweep (SingleLog + MultiLog), C5 sweep].
-dependencies: [replication_mixed_w50, replication_mixed_c5_w50]
+dependencies: [replication_mixed_w50_pzipfrev, replication_mixed_c5_w50_pzipfrev]
 # SingleLog = main m=1 (dot), MultiLog = main m=2..32 (curve), X = replay threads.
 x_param: server.aof_physical_sublog_count
 # C5 curves: replay-task sweep, split by snapshot frequency (in ms); styles
