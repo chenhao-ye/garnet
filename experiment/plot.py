@@ -178,14 +178,12 @@ def render_replay(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     if not all_x:
         raise RuntimeError("Empty replay datasets; nothing to plot.")
 
-    # SingleLog: a single dot at x=1 (baseline), not a reference line.
-    ax.plot(
-        [1],
-        [single_log_y],
+    # SingleLog: horizontal dashed reference line at the m=1 baseline.
+    ax.axhline(
+        single_log_y,
         color=color_map["single_log"],
-        linestyle="none",
-        marker="o",
-        markersize=MARKER_SIZE,
+        linestyle=linestyle_map["single_log"],
+        linewidth=LINEWIDTH,
         label=labels_map["single_log"],
         zorder=zorder_map.get("single_log", 11),
     )
@@ -970,15 +968,14 @@ def render_replay_reader_scaling(
             if not xs:
                 print(f"WARN: no data under filter {s_filter}", file=sys.stderr)
 
-            # SingleLog first so the legend reads SingleLog -> MultiLog.
+            # SingleLog first so the legend reads SingleLog -> MultiLog; drawn
+            # as a horizontal dashed reference line at its x=1 value.
             if single:
-                ax.plot(
-                    [x for x, _ in single],
-                    [y for _, y in single],
+                ax.axhline(
+                    single[0][1],
                     color=color_map["single_log"],
-                    linestyle="none",
-                    marker="o",
-                    markersize=MARKER_SIZE,
+                    linestyle=linestyle_map["single_log"],
+                    linewidth=LINEWIDTH,
                     label="SingleLog",
                     zorder=zorder_map.get("single_log", 11),
                 )
@@ -1500,14 +1497,13 @@ def render_replication_mixed(plot_cfg: dict, deps: list[str], out_path: Path) ->
         multi = [(x, y) for x, y in zip(xs, ys) if x >= 2]
         all_y.extend(y for _, y in single)
         all_y.extend(y for _, y in multi)
+        # SingleLog: horizontal dashed reference line at its x=1 value.
         if single:
-            ax.plot(
-                [x for x, _ in single],
-                [y for _, y in single],
+            ax.axhline(
+                single[0][1],
                 color=color_map["single_log"],
-                linestyle="none",
-                marker="o",
-                markersize=MARKER_SIZE,
+                linestyle=linestyle_map["single_log"],
+                linewidth=LINEWIDTH,
                 label="SingleLog",
                 zorder=zorder_map.get("single_log", 11),
             )

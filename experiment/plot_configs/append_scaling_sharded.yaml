@@ -14,5 +14,6 @@ dependencies: [aof_enqueue_sharded, aof_enqueue_sharded_noprefix]
 scale: 0.5
 xlabel: "#append threads"
 xticks: [1, 8, 16, 32, 64]
+xmin: 0   # start axis at 0 (xticks stay 1..64)
 yticks: [0, 100, 200, 300, 400]
 legend_separate: true

@@ -73,7 +73,7 @@ color_map = {
 }
 
 linestyle_map = {
-    "single_log": "--",
+    "single_log": (0, (2, 1)),  # short dense dash (2:1); reads as dashed in short legend handles
     "multilog_virtual": "-",
     "multilog_physical": "-",
     "multilog_hybrid": "-",
