@@ -32,7 +32,7 @@ legend_separate: true  # SingleLog dot + MultiLog curve named by a shared legend
 
 # Sublog count on a linear x-axis: SingleLog at x=1, MultiLog/C5 over x=2..32.
 xlabel: "#replay threads"
-xticks: [1, 4, 8, 16, 32]
+xticks: [2, 8, 16, 32]
 xmin: 0
 xmax: 32
 

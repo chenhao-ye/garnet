@@ -18,7 +18,7 @@ legend_separate: true
 
 # Replay threads (sublog / task count) on a linear x-axis (1..32; 2 tick skipped).
 xlabel: "#replay threads"
-xticks: [1, 4, 8, 16, 32]
+xticks: [2, 8, 16, 32]
 xmin: 0
 xmax: 32
 
