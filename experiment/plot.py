@@ -1687,13 +1687,15 @@ def render_append(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
 
 def render_set(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
     # dependencies are paired positionally with style keys: index 0 = no_aof
-    # (AOF disabled), index 1 = aof_single (single physical sublog AOF).
-    style_keys = ["no_aof", "aof_single"]
-    if len(deps) != len(style_keys):
+    # (AOF disabled), index 1 = aof_single (single physical sublog AOF),
+    # index 2 = aof_multilog (64-way sharded AOF). 2 or 3 curves.
+    style_keys = ["no_aof", "aof_single", "aof_multilog"]
+    if len(deps) not in (2, 3):
         raise ValueError(
-            f"set template expects {len(style_keys)} dependencies "
+            f"set template expects 2 or 3 dependencies "
             f"[{', '.join(style_keys)}]; got {deps}"
         )
+    style_keys = style_keys[: len(deps)]
 
     x_param = "client.threads"
     y_metric = "tpt_mops"
@@ -1722,6 +1724,32 @@ def render_set(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
             label=labels_map[key],
         )
 
+    # Optional gray dashed reference line (config: `replay_capacity_hline` with
+    # {experiment, filter, label}). The value is pulled live from a replay
+    # experiment -- e.g. the single-threaded replay capacity at
+    # aof_physical_sublog_count=1 -- and drawn behind the curves.
+    ref = plot_cfg.get("replay_capacity_hline")
+    ref_drawn = False
+    if ref:
+        ref_res = load_result(ref["experiment"])
+        ref_filter = ref.get("filter", {})
+        ref_x = next(iter(ref_filter)) if ref_filter else x_param
+        _, ref_ys, _ = extract_series(
+            ref_res, x_param=ref_x, filter_params=ref_filter
+        )
+        if ref_ys:
+            ax.axhline(
+                ref_ys[0],
+                color="gray",
+                linestyle="--",
+                linewidth=LINEWIDTH,
+                label=ref.get("label", "Single-threaded replay capacity"),
+                zorder=1,
+            )
+            ref_drawn = True
+        else:
+            print(f"WARN: no replay-capacity ref point for {ref}", file=sys.stderr)
+
     sorted_threads = sorted(all_threads)
     y_log = plot_cfg.get("yscale") == "log"
     default_ymax = max(all_y) * (1.5 if y_log else 1.1) if all_y else None
@@ -1734,16 +1762,26 @@ def render_set(plot_cfg: dict, deps: list[str], out_path: Path) -> None:
         default_ymax=default_ymax,
     )
 
-    # Set figure has only 2 entries; widen spacing/handles over the LEGEND_KWARGS
-    # defaults tuned for the denser 3-4 entry replay/append legends.
-    ncol, legend_width = resolve_legend_geom(plot_cfg, 2)
-    legend_kwargs = dict(
-        LEGEND_KWARGS,
-        ncol=ncol,
-        columnspacing=1.0,
-        handlelength=1.8,
-        handletextpad=0.5,
-    )
+    # A 2-entry legend can afford the wide handles/spacing; a 3-entry legend
+    # carries the long "Garnet ..." labels, so fall back to the tighter
+    # LEGEND_KWARGS defaults (and widen the host via `legend_scale`) to fit.
+    n_entries = len(style_keys) + (1 if ref_drawn else 0)
+    base_ncol = int(plot_cfg.get("legend_ncol", n_entries))
+    ncol, legend_width = resolve_legend_geom(plot_cfg, base_ncol)
+    if n_entries <= 2:
+        legend_kwargs = dict(
+            LEGEND_KWARGS,
+            ncol=ncol,
+            columnspacing=1.0,
+            handlelength=1.8,
+            handletextpad=0.5,
+        )
+    else:
+        legend_kwargs = dict(
+            LEGEND_KWARGS,
+            ncol=ncol,
+            columnspacing=float(plot_cfg.get("legend_columnspacing", 1.4)),
+        )
     if plot_cfg.get("legend_separate"):
         save_legend(ax, out_path, width=legend_width, **legend_kwargs)
     else:

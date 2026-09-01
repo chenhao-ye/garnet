@@ -61,7 +61,7 @@ color_map = {
     "noprefix": "#9467bd",
     "noprefix_m64": "#9467bd",
     "noprefix_physical": "#9467bd",
-    "no_aof": _sample_cmap(MULTILOG_CMAP, 0.00),
+    "no_aof": "#4daf4a",  # no-logging ceiling; green so it stays distinct from MultiLog red
     "aof_single": "#2c7bb6",
     "aof_multilog": "red",
     "multilog_m2": _sample_cmap(MULTILOG_CMAP, 0.90),
@@ -127,9 +127,9 @@ labels_map = {
     "noprefix": "NoPrefix",
     "noprefix_m64": "NoPrefix(64)",
     "noprefix_physical": "NoPrefix",
-    "no_aof": "Garnet without log",
-    "aof_single": "Garnet with log",
-    "aof_multilog": "Garnet with MultiLog(64)",
+    "no_aof": "SET w/o log",
+    "aof_single": "SET w/ log",
+    "aof_multilog": "SET w/ MultiLog(64)",
 }
 labels_map.update(
     {f"multilog_m{m}": f"MultiLog({m})" for m in APPEND_M_VALUES if m != 1}
